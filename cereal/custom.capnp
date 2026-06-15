@@ -273,6 +273,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
       none @0;
       car @1;
       map @2;
+      external @3;  # phone nav alerts (e.g. TMAP via tmapd)
     }
 
     enum AssistState {
@@ -456,7 +457,29 @@ struct ModelDataV2SP @0xa1680744031fdb2d {
   }
 }
 
-struct CustomReserved10 @0xcb9fd56c7057593a {
+struct ExternalNavDataSP @0xcb9fd56c7057593a {
+  # navigation alerts relayed from an external phone app (e.g. TMAP via Tasker)
+  alerts @0 :List(NavAlert);
+  routeActive @1 :Bool;               # a TMAP route is being followed
+  distanceToDestination @2 :Float32;  # m, 0 when no route
+
+  struct NavAlert {
+    alertType @0 :AlertType;
+    speedLimit @1 :Float32;  # m/s, 0 if not applicable
+    distance @2 :Float32;    # m, remaining distance to the alert point
+    age @3 :Float32;         # s, time since the alert was received
+
+    enum AlertType {
+      none @0;
+      camFixed @1;
+      camMobile @2;
+      camSectionStart @3;
+      camSectionEnd @4;
+      speedBump @5;
+      turnSharp @6;  # from route plan: left/right/u-turn
+      ramp @7;       # from route plan: highway entry/exit, junction ramp
+    }
+  }
 }
 
 struct CustomReserved11 @0xc2243c65e0340384 {

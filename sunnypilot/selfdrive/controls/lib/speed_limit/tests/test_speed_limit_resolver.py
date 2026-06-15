@@ -48,12 +48,17 @@ def setup_sm_mock(mocker: MockerFixture):
   gps_data = create_mock({
     'unixTimestampMillis': time.monotonic() * 1e3,
   }, mocker)
+  external_nav_data = create_mock({
+    'alerts': [],
+  }, mocker)
   sm_mock = mocker.MagicMock()
+  sm_mock.alive = {'externalNavDataSP': False}
   sm_mock.__getitem__.side_effect = lambda key: {
     'carState': car_state,
     'liveMapDataSP': live_map_data,
     'carStateSP': car_state_sp,
     'gpsLocation': gps_data,
+    'externalNavDataSP': external_nav_data,
   }[key]
   return sm_mock
 
@@ -92,6 +97,23 @@ class TestSpeedLimitResolverValidation:
     resolver.update(source_speed_limit, sm_mock)
     assert resolver.speed_limit == source_speed_limit
     assert resolver.source == ALL_SOURCES[function_key]
+
+  def test_resolver_external_priority(self, resolver_class, mocker: MockerFixture):
+    """An active external (camera) solution must win regardless of policy."""
+    resolver = resolver_class()
+    resolver.policy = Policy.combined
+    sm_mock = setup_sm_mock(mocker)
+    external_limit = 13.89  # 50 km/h
+
+    mocker.patch.object(resolver.external, 'update')
+    resolver.external.limit = external_limit
+    resolver.external.distance = 150.
+    resolver.external.offset = 0.
+
+    resolver.update(external_limit + 5., sm_mock)
+    assert resolver.speed_limit == external_limit
+    assert resolver.distance == 150.
+    assert resolver.source == SpeedLimitSource.external
 
   def test_resolver_combined(self, resolver_class, mocker: MockerFixture):
     resolver = resolver_class()

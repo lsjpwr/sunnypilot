@@ -136,7 +136,7 @@ def face_orientation_from_net(angles_desc, pos_desc, rpy_calib):
 
 
 class DriverMonitoring:
-  def __init__(self, rhd_saved=False, settings=None, always_on=False):
+  def __init__(self, rhd_saved=False, settings=None, always_on=False, monitoring_mode=0):
     # init policy settings
     self.settings = settings if settings is not None else DRIVER_MONITOR_SETTINGS(device_type=HARDWARE.get_device_type())
 
@@ -148,6 +148,7 @@ class DriverMonitoring:
     self.phone_prob = 0.
 
     self.always_on = always_on
+    self.monitoring_mode = monitoring_mode  # sunnypilot: 0=standard, 1=warnings suppressed, 2=disabled
     self.distracted_types = []
     self.driver_distracted = False
     self.driver_distraction_filter = FirstOrderFilter(0., self.settings._DISTRACTED_FILTER_TS, self.settings._DT_DMON)
@@ -326,6 +327,12 @@ class DriverMonitoring:
 
   def _update_events(self, driver_engaged, op_engaged, standstill, wrong_gear, car_speed):
     self._reset_events()
+
+    # sunnypilot: driver monitoring fully disabled
+    if self.monitoring_mode >= 2:
+      self._reset_awareness()
+      return
+
     # Block engaging until ignition cycle after max number or time of distractions
     if self.terminal_alert_cnt >= self.settings._MAX_TERMINAL_ALERTS or \
        self.terminal_time >= self.settings._MAX_TERMINAL_DURATION:
@@ -389,7 +396,10 @@ class DriverMonitoring:
       alert = EventName.driverDistracted1 if self.active_monitoring_mode else EventName.driverUnresponsive1
 
     if alert is not None:
-      self.current_events.add(alert)
+      # sunnypilot: mode 1 suppresses pre/prompt warnings, keeps terminal alert as a safety net
+      is_terminal = alert in (EventName.driverDistracted3, EventName.driverUnresponsive3)
+      if self.monitoring_mode != 1 or is_terminal:
+        self.current_events.add(alert)
 
     if self.dcam_uncertain_cnt > self.settings._DCAM_UNCERTAIN_ALERT_COUNT and not self.dcam_uncertain_alerted:
       set_offroad_alert("Offroad_DriverMonitoringUncertain", True)

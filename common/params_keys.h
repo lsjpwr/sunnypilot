@@ -33,6 +33,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DisableUpdates", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"DisengageOnAccelerator", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"DongleId", {PERSISTENT, STRING}},
+    {"DriverMonitoringMode", {PERSISTENT | BACKUP, INT, "0"}},  // 0=standard, 1=warnings suppressed, 2=disabled
     {"DoReboot", {CLEAR_ON_MANAGER_START, BOOL}},
     {"DoShutdown", {CLEAR_ON_MANAGER_START, BOOL}},
     {"DoUninstall", {CLEAR_ON_MANAGER_START, BOOL}},
@@ -116,6 +117,20 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SnoozeUpdate", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"SshEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"TermsVersion", {PERSISTENT, STRING}},
+    {"TmapEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"TmapCamFixedEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"TmapCamFixedOffset", {PERSISTENT | BACKUP, INT, "0"}},  // km/h (mph if not metric)
+    {"TmapCamMobileEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"TmapCamMobileOffset", {PERSISTENT | BACKUP, INT, "0"}},
+    {"TmapCamSectionEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"TmapCamSectionOffset", {PERSISTENT | BACKUP, INT, "0"}},
+    {"TmapCamHoldDistance", {PERSISTENT | BACKUP, INT, "300"}},  // m
+    {"TmapBumpEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"TmapBumpTargetSpeed", {PERSISTENT | BACKUP, INT, "30"}},  // km/h (mph if not metric)
+    {"TmapApiKey", {PERSISTENT | DONT_LOG, STRING}},
+    {"TmapRouteControlEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"TmapRouteTurnSpeed", {PERSISTENT | BACKUP, INT, "35"}},  // km/h
+    {"TmapRouteRampSpeed", {PERSISTENT | BACKUP, INT, "60"}},  // km/h
     {"TorqueBar", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TrainingVersion", {PERSISTENT, STRING}},
     {"UbloxAvailable", {PERSISTENT, BOOL}},
@@ -261,6 +276,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SpeedLimitOffsetType", {PERSISTENT | BACKUP, INT, "0"}},
     {"SpeedLimitPolicy", {PERSISTENT | BACKUP, INT, "3"}},
     {"SpeedLimitValueOffset", {PERSISTENT | BACKUP, INT, "0"}},
+
+    // Stop Distance
+    {"StopDistanceOffset", {PERSISTENT | BACKUP, INT, "0"}},  // cm, applied at low speed only
 
     // Smart Cruise Control
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
