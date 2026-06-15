@@ -217,6 +217,7 @@ class LongitudinalMpc:
   def __init__(self, dt=DT_MDL):
     self.dt = dt
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
+    self.stop_distance_offset = 0.0  # sunnypilot: m, positive stops farther from lead
     self.reset()
     self.source = LongitudinalPlanSource.cruise
 
@@ -326,6 +327,13 @@ class LongitudinalMpc:
     # and then treat that as a stopped car/obstacle at this new distance.
     lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+
+    # sunnypilot: shift lead obstacles at low speed to adjust the stopped gap,
+    # fading out above ~30 km/h so cruise following distance is unaffected
+    if self.stop_distance_offset != 0.0:
+      stop_offset = self.stop_distance_offset * np.interp(v_ego, [3.0, 8.3], [1.0, 0.0])
+      lead_0_obstacle = lead_0_obstacle - stop_offset
+      lead_1_obstacle = lead_1_obstacle - stop_offset
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.

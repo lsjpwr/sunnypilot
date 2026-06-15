@@ -15,6 +15,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, LIMIT_ADAPT_ACC
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy, OffsetType
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.external_nav_limit import ExternalNavLimit
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 
@@ -56,6 +57,7 @@ class SpeedLimitResolver:
       Policy.combined: [SpeedLimitSource.car, SpeedLimitSource.map],
     }
     self.source = SpeedLimitSource.none
+    self.external = ExternalNavLimit()
     for source in ALL_SOURCES:
       self._reset_limit_sources(source)
 
@@ -151,7 +153,17 @@ class SpeedLimitResolver:
         self.limit_solutions[SpeedLimitSource.map] = next_speed_limit
         self.distance_solutions[SpeedLimitSource.map] = distance_to_speed_limit_ahead
 
+  def _get_from_external(self, sm: messaging.SubMaster) -> None:
+    self._reset_limit_sources(SpeedLimitSource.external)
+    self.external.update(self.v_ego, sm)
+    self.limit_solutions[SpeedLimitSource.external] = self.external.limit
+    self.distance_solutions[SpeedLimitSource.external] = self.external.distance
+
   def _get_source_solution_according_to_policy(self) -> custom.LongitudinalPlanSP.SpeedLimit.Source:
+    # enforcement cameras take priority over any policy: they are point-truth, not map estimates
+    if self.limit_solutions[SpeedLimitSource.external] > 0.:
+      return SpeedLimitSource.external
+
     sources_for_policy = self._policy_to_sources_map[self.policy]
 
     if self.policy != Policy.combined:
@@ -171,6 +183,7 @@ class SpeedLimitResolver:
     """Get limit solutions from each data source"""
     self._get_from_car_state(sm)
     self._get_from_map_data(sm)
+    self._get_from_external(sm)
 
     source = self._get_source_solution_according_to_policy()
     speed_limit = self.limit_solutions[source] if source else 0.
@@ -183,7 +196,11 @@ class SpeedLimitResolver:
     self.update_params()
 
     self.speed_limit, self.distance, self.source = self._resolve_limit_sources(sm)
-    self.speed_limit_offset = self._get_speed_limit_offset()
+    # camera alerts carry their own per-type offset, the global offset applies to car/map sources only
+    if self.source == SpeedLimitSource.external:
+      self.speed_limit_offset = self.external.offset
+    else:
+      self.speed_limit_offset = self._get_speed_limit_offset()
 
     self.update_speed_limit_states()
 

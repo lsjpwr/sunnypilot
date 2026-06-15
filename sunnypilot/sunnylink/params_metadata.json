@@ -270,6 +270,24 @@
     "title": "Device ID",
     "description": ""
   },
+  "DriverMonitoringMode": {
+    "title": "Driver Monitoring Mode",
+    "description": "Standard: stock behavior. Warnings Suppressed: hides distraction pre/prompt warnings but keeps the terminal (red) alert as a safety net. Disabled: turns driver monitoring off entirely. Use at your own risk.",
+    "options": [
+      {
+        "value": 0,
+        "label": "Standard"
+      },
+      {
+        "value": 1,
+        "label": "Warnings Suppressed"
+      },
+      {
+        "value": 2,
+        "label": "Disabled"
+      }
+    ]
+  },
   "DriverTooDistracted": {
     "title": "Driver Too Distracted",
     "description": ""
@@ -1227,6 +1245,48 @@
     "max": 30,
     "step": 1
   },
+  "StopDistanceOffset": {
+    "title": "Stop Distance Offset",
+    "description": "Adjust the gap to the lead car when coming to a stop. Applied below ~30 km/h only; cruise following distance is unchanged.",
+    "options": [
+      {
+        "value": -100,
+        "label": "-1.0 m (closer)"
+      },
+      {
+        "value": -50,
+        "label": "-0.5 m"
+      },
+      {
+        "value": 0,
+        "label": "Default"
+      },
+      {
+        "value": 50,
+        "label": "+0.5 m"
+      },
+      {
+        "value": 100,
+        "label": "+1.0 m"
+      },
+      {
+        "value": 150,
+        "label": "+1.5 m"
+      },
+      {
+        "value": 200,
+        "label": "+2.0 m"
+      },
+      {
+        "value": 300,
+        "label": "+3.0 m"
+      },
+      {
+        "value": 400,
+        "label": "+4.0 m (farther)"
+      }
+    ]
+  },
   "SshEnabled": {
     "title": "Enable SSH",
     "description": ""
@@ -1275,6 +1335,312 @@
     "title": "Tesla Coop Steering",
     "description": ""
   },
+  "TmapEnabled": {
+    "title": "TMAP Alerts (Tasker)",
+    "description": "Receive TMAP speed camera and speed bump alerts relayed from your phone by Tasker. The device listens on port 5505 of the hotspot network."
+  },
+  "TmapCamFixedEnabled": {
+    "title": "TMAP: Fixed Speed Camera",
+    "description": "Slow down for fixed speed cameras reported by TMAP."
+  },
+  "TmapCamFixedOffset": {
+    "title": "TMAP: Fixed Camera Offset",
+    "description": "Offset applied to fixed camera limits (km/h). Negative passes the camera under the limit.",
+    "options": [
+      {
+        "value": -10,
+        "label": "-10 km/h"
+      },
+      {
+        "value": -8,
+        "label": "-8 km/h"
+      },
+      {
+        "value": -6,
+        "label": "-6 km/h"
+      },
+      {
+        "value": -4,
+        "label": "-4 km/h"
+      },
+      {
+        "value": -2,
+        "label": "-2 km/h"
+      },
+      {
+        "value": 0,
+        "label": "0"
+      },
+      {
+        "value": 2,
+        "label": "+2 km/h"
+      },
+      {
+        "value": 4,
+        "label": "+4 km/h"
+      },
+      {
+        "value": 6,
+        "label": "+6 km/h"
+      },
+      {
+        "value": 8,
+        "label": "+8 km/h"
+      },
+      {
+        "value": 10,
+        "label": "+10 km/h"
+      }
+    ]
+  },
+  "TmapCamMobileEnabled": {
+    "title": "TMAP: Mobile Speed Camera",
+    "description": "Slow down for mobile/portable enforcement reported by TMAP."
+  },
+  "TmapCamMobileOffset": {
+    "title": "TMAP: Mobile Camera Offset",
+    "description": "Offset applied to mobile camera limits (km/h).",
+    "options": [
+      {
+        "value": -10,
+        "label": "-10 km/h"
+      },
+      {
+        "value": -8,
+        "label": "-8 km/h"
+      },
+      {
+        "value": -6,
+        "label": "-6 km/h"
+      },
+      {
+        "value": -4,
+        "label": "-4 km/h"
+      },
+      {
+        "value": -2,
+        "label": "-2 km/h"
+      },
+      {
+        "value": 0,
+        "label": "0"
+      },
+      {
+        "value": 2,
+        "label": "+2 km/h"
+      },
+      {
+        "value": 4,
+        "label": "+4 km/h"
+      },
+      {
+        "value": 6,
+        "label": "+6 km/h"
+      },
+      {
+        "value": 8,
+        "label": "+8 km/h"
+      },
+      {
+        "value": 10,
+        "label": "+10 km/h"
+      }
+    ]
+  },
+  "TmapCamSectionEnabled": {
+    "title": "TMAP: Section Control",
+    "description": "Manage average speed through section control zones reported by TMAP."
+  },
+  "TmapCamSectionOffset": {
+    "title": "TMAP: Section Control Offset",
+    "description": "Offset applied to the section limit (km/h). Average-speed compensation is applied automatically on top.",
+    "options": [
+      {
+        "value": -10,
+        "label": "-10 km/h"
+      },
+      {
+        "value": -8,
+        "label": "-8 km/h"
+      },
+      {
+        "value": -6,
+        "label": "-6 km/h"
+      },
+      {
+        "value": -4,
+        "label": "-4 km/h"
+      },
+      {
+        "value": -2,
+        "label": "-2 km/h"
+      },
+      {
+        "value": 0,
+        "label": "0"
+      },
+      {
+        "value": 2,
+        "label": "+2 km/h"
+      },
+      {
+        "value": 4,
+        "label": "+4 km/h"
+      },
+      {
+        "value": 6,
+        "label": "+6 km/h"
+      },
+      {
+        "value": 8,
+        "label": "+8 km/h"
+      },
+      {
+        "value": 10,
+        "label": "+10 km/h"
+      }
+    ]
+  },
+  "TmapCamHoldDistance": {
+    "title": "TMAP: Camera Hold Distance",
+    "description": "Distance before a camera within which the camera limit is held even when already driving below it (m).",
+    "options": [
+      {
+        "value": 100,
+        "label": "100 m"
+      },
+      {
+        "value": 150,
+        "label": "150 m"
+      },
+      {
+        "value": 200,
+        "label": "200 m"
+      },
+      {
+        "value": 300,
+        "label": "300 m"
+      },
+      {
+        "value": 400,
+        "label": "400 m"
+      },
+      {
+        "value": 500,
+        "label": "500 m"
+      },
+      {
+        "value": 700,
+        "label": "700 m"
+      },
+      {
+        "value": 1000,
+        "label": "1000 m"
+      }
+    ]
+  },
+  "TmapBumpEnabled": {
+    "title": "TMAP: Speed Bumps",
+    "description": "Slow down to a target speed for speed bumps reported by TMAP."
+  },
+  "TmapBumpTargetSpeed": {
+    "title": "TMAP: Speed Bump Target",
+    "description": "Target speed when crossing a speed bump (km/h).",
+    "options": [
+      {
+        "value": 15,
+        "label": "15 km/h"
+      },
+      {
+        "value": 20,
+        "label": "20 km/h"
+      },
+      {
+        "value": 25,
+        "label": "25 km/h"
+      },
+      {
+        "value": 30,
+        "label": "30 km/h"
+      },
+      {
+        "value": 35,
+        "label": "35 km/h"
+      },
+      {
+        "value": 40,
+        "label": "40 km/h"
+      }
+    ]
+  },
+  "TmapApiKey": {
+    "title": "TMAP: API Key",
+    "description": "TMAP open API appKey for route guidance. Get a free key at openapi.sk.com (1,000 route calls/day free tier)."
+  },
+  "TmapRouteControlEnabled": {
+    "title": "TMAP: Route Control",
+    "description": "Slow down ahead of turns and highway ramps along the TMAP route. Requires a TMAP API key and a destination sent from Tasker."
+  },
+  "TmapRouteTurnSpeed": {
+    "title": "TMAP: Turn Target Speed",
+    "description": "Target speed approaching left/right/U-turns on the route (km/h).",
+    "options": [
+      {
+        "value": 20,
+        "label": "20 km/h"
+      },
+      {
+        "value": 25,
+        "label": "25 km/h"
+      },
+      {
+        "value": 30,
+        "label": "30 km/h"
+      },
+      {
+        "value": 35,
+        "label": "35 km/h"
+      },
+      {
+        "value": 40,
+        "label": "40 km/h"
+      },
+      {
+        "value": 45,
+        "label": "45 km/h"
+      },
+      {
+        "value": 50,
+        "label": "50 km/h"
+      }
+    ]
+  },
+  "TmapRouteRampSpeed": {
+    "title": "TMAP: Ramp Target Speed",
+    "description": "Target speed approaching highway entries/exits and junction ramps (km/h).",
+    "options": [
+      {
+        "value": 40,
+        "label": "40 km/h"
+      },
+      {
+        "value": 50,
+        "label": "50 km/h"
+      },
+      {
+        "value": 60,
+        "label": "60 km/h"
+      },
+      {
+        "value": 70,
+        "label": "70 km/h"
+      },
+      {
+        "value": 80,
+        "label": "80 km/h"
+      }
+    ]
+  },
   "TorqueBar": {
     "title": "[TIZI/TICI only] Steering Arc",
     "description": "Display steering arc on the driving screen when lateral control is enabled."
@@ -1314,7 +1680,7 @@
     "min": 0.1,
     "max": 5.0,
     "step": 0.1,
-    "unit": "m/s\u00b2"
+    "unit": "m/s²"
   },
   "ToyotaEnforceStockLongitudinal": {
     "title": "Toyota: Enforce Factory Longitudinal Control",
