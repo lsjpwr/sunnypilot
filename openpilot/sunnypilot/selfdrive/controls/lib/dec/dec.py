@@ -9,8 +9,10 @@ See the LICENSE.md file in the root directory for more details.
 from openpilot.cereal import messaging
 from opendbc.car import structs
 from numpy import interp
+from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.constants import WMACConstants
 from typing import Literal
 
@@ -135,7 +137,10 @@ class DynamicExperimentalController:
     self._CP = CP
     self._mpc = mpc
     self._params = params or Params()
-    self._enabled: bool = self._params.get_bool("DynamicExperimentalControl")
+    self._mode: int = get_sanitize_int_param("DynamicExperimentalControl", 0, 2, self._params)
+    self._map_max_speed: int = get_sanitize_int_param("DynamicExperimentalControlMapMaxSpeed", 20, 120, self._params)
+    self._is_metric: bool = self._params.get_bool("IsMetric")
+    self._enabled: bool = self._mode > 0
     self._active: bool = False
     self._frame: int = 0
     self._urgency = 0.0
@@ -186,7 +191,10 @@ class DynamicExperimentalController:
 
   def _read_params(self) -> None:
     if self._frame % int(1. / DT_MDL) == 0:
-      self._enabled = self._params.get_bool("DynamicExperimentalControl")
+      self._mode = get_sanitize_int_param("DynamicExperimentalControl", 0, 2, self._params)
+      self._map_max_speed = get_sanitize_int_param("DynamicExperimentalControlMapMaxSpeed", 20, 120, self._params)
+      self._is_metric = self._params.get_bool("IsMetric")
+      self._enabled = self._mode > 0
 
   def mode(self) -> str:
     return self._mode_manager.get_mode()
@@ -302,6 +310,22 @@ class DynamicExperimentalController:
     self._has_slow_down = urgency_filtered > (WMACConstants.SLOW_DOWN_PROB * 0.8)
     self._urgency = urgency_filtered
 
+  def _map_mode(self, sm: messaging.SubMaster) -> None:
+    """Dynamic Experimental Control Map mode based on road speed limit."""
+    map_data = sm['liveMapDataSP']
+    speed_limit_valid = map_data.speedLimitValid and map_data.speedLimit > 0.0
+
+    if speed_limit_valid:
+      speed_conv = CV.MS_TO_KPH if self._is_metric else CV.MS_TO_MPH
+      speed_limit_user = map_data.speedLimit * speed_conv
+      if speed_limit_user >= self._map_max_speed:
+        self._mode_manager.request_mode('acc', confidence=1.0, emergency=True)
+      else:
+        self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
+    else:
+      # Road maxspeed undefined -> blended (full e2e mode)
+      self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
+
   def _radarless_mode(self) -> None:
     """Radarless mode decision logic with emergency handling."""
 
@@ -378,11 +402,15 @@ class DynamicExperimentalController:
 
     self._update_calculations(sm)
 
-    if self._CP.radarUnavailable:
-      self._radarless_mode()
-    else:
-      self._radar_mode()
+    if self._mode == 2:
+      self._map_mode(sm)
+    elif self._mode == 1:
+      if self._CP.radarUnavailable:
+        self._radarless_mode()
+      else:
+        self._radar_mode()
 
     self._mode_manager.update()
     self._active = sm['selfdriveState'].experimentalMode and self._enabled
     self._frame += 1
+
