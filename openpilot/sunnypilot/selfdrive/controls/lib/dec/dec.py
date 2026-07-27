@@ -311,20 +311,34 @@ class DynamicExperimentalController:
     self._urgency = urgency_filtered
 
   def _map_mode(self, sm: messaging.SubMaster) -> None:
-    """Dynamic Experimental Control Map mode based on road speed limit."""
+    """Dynamic Experimental Control Map mode based on road speed limit with safety overrides."""
+
+    # EMERGENCY: MPC FCW - immediate blended mode
+    if self._has_mpc_fcw:
+      self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
+      return
+
+    # Standstill: use blended
+    if self._standstill_count > 3:
+      self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
+      return
+
+    # High urgency slowdown (imminent stop scenario)
+    if self._has_slow_down and self._urgency > 0.7:
+      self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
+      return
+
     map_data = sm['liveMapDataSP']
     speed_limit_valid = map_data.speedLimitValid and map_data.speedLimit > 0.0
 
+    target_mode: ModeType = 'blended'
     if speed_limit_valid:
       speed_conv = CV.MS_TO_KPH if self._is_metric else CV.MS_TO_MPH
       speed_limit_user = map_data.speedLimit * speed_conv
       if speed_limit_user >= self._map_max_speed:
-        self._mode_manager.request_mode('acc', confidence=1.0, emergency=True)
-      else:
-        self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
-    else:
-      # Road maxspeed undefined -> blended (full e2e mode)
-      self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
+        target_mode = 'acc'
+
+    self._mode_manager.request_mode(target_mode, confidence=1.0, emergency=True)
 
   def _radarless_mode(self) -> None:
     """Radarless mode decision logic with emergency handling."""
