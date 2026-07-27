@@ -323,8 +323,8 @@ class DynamicExperimentalController:
       self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
       return
 
-    # High urgency slowdown (imminent stop scenario)
-    if self._has_slow_down and self._urgency > 0.7:
+    # High urgency slowdown (red light, stop sign, or imminent stop scenario)
+    if self._has_slow_down and self._urgency > 0.5:
       self._mode_manager.request_mode('blended', confidence=1.0, emergency=True)
       return
 
