@@ -334,11 +334,11 @@ class DynamicExperimentalController:
     target_mode: ModeType = 'blended'
     if speed_limit_valid:
       speed_conv = CV.MS_TO_KPH if self._is_metric else CV.MS_TO_MPH
-      speed_limit_user = map_data.speedLimit * speed_conv
+      speed_limit_user = round(map_data.speedLimit * speed_conv)
       if speed_limit_user >= self._map_max_speed:
         target_mode = 'acc'
 
-    self._mode_manager.request_mode(target_mode, confidence=1.0, emergency=True)
+    self._mode_manager.request_mode(target_mode, confidence=1.0)
 
   def _radarless_mode(self) -> None:
     """Radarless mode decision logic with emergency handling."""
