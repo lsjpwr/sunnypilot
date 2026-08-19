@@ -103,6 +103,11 @@ class ExternalNavSource:
         # A datagram bigger than MAX_DATAGRAM also raises OSError here (WSAEMSGSIZE on
         # Windows) while the socket is still open -- drop it and keep listening rather
         # than let an oversize hostile packet kill the loop the same way.
+        # ponytail: no backoff here. Every OSError reachable on an unconnected UDP socket
+        # is one-shot per datagram (recvfrom blocks again next iteration), and on Linux --
+        # the actual device -- an oversize datagram truncates silently instead of raising,
+        # so this branch should never fire in production. Add a sleep only if a persistent
+        # non-blocking error is ever observed spinning here.
         continue
 
       try:
