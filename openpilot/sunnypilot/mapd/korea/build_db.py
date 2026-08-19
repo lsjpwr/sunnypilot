@@ -45,6 +45,16 @@ CAMERA_COLUMNS = {
 # an r-tree entry needs a non-degenerate box; ~0.1 m is far below GPS noise
 POINT_BOX_DEG = 1e-6
 
+# verified against the 2026 release; re-check with the inspection step if a load returns 0 rows
+LINK_COLUMNS = {
+  "max_spd": "MAX_SPD",
+  "name": "ROAD_NAME",
+}
+
+SHP_ENCODING = "cp949"
+UTM_K_EPSG = 5179  # ITS ships 표준노드링크 in UTM-K
+WGS84_EPSG = 4326
+
 SCHEMA = """
 CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
 
@@ -123,6 +133,76 @@ def insert_cameras(con: sqlite3.Connection, cameras) -> int:
     con.execute("INSERT INTO cameras_idx VALUES (?, ?, ?, ?, ?)",
                 (cur.lastrowid, lat - POINT_BOX_DEG, lat + POINT_BOX_DEG,
                  lon - POINT_BOX_DEG, lon + POINT_BOX_DEG))
+    count += 1
+  return count
+
+
+def pack_geom(points: list[tuple[float, float]]) -> bytes:
+  """little-endian float32 (lat, lon) pairs. ~0.5 m at Korean latitudes, plenty for a link."""
+  flat = [coord for point in points for coord in point]
+  return struct.pack(f"<{len(flat)}f", *flat)
+
+
+def make_to_wgs84(shp_path: str):
+  """Return an (x, y) -> (lat, lon) converter matching the shapefile's own .prj.
+
+  ITS ships UTM-K; some data.go.kr mirrors are already WGS84, so read the .prj
+  rather than assuming either one.
+  """
+  prj_path = os.path.splitext(shp_path)[0] + ".prj"
+  wkt = ""
+  if os.path.exists(prj_path):
+    with open(prj_path, encoding="utf-8", errors="replace") as f:
+      wkt = f.read()
+
+  if "PROJCS" not in wkt.upper():
+    return lambda x, y: (y, x)  # already lon/lat
+
+  from pyproj import CRS, Transformer  # PC-only dependency
+  source = CRS.from_wkt(wkt) if wkt else CRS.from_epsg(UTM_K_EPSG)
+  transformer = Transformer.from_crs(source, CRS.from_epsg(WGS84_EPSG), always_xy=True)
+
+  def to_wgs84(x: float, y: float) -> tuple[float, float]:
+    lon, lat = transformer.transform(x, y)
+    return lat, lon
+
+  return to_wgs84
+
+
+def load_links(path: str) -> Iterator[tuple[int, str, list[tuple[float, float]]]]:
+  """Yield (max_spd, name, [(lat, lon), ...]) for every link with a usable speed limit."""
+  import shapefile  # PC-only dependency
+
+  reader = shapefile.Reader(path, encoding=SHP_ENCODING)
+  fields = [f[0] for f in reader.fields[1:]]
+  for key in LINK_COLUMNS.values():
+    if key not in fields:
+      raise KeyError(f"expected field {key!r}, got {fields}")
+
+  to_wgs84 = make_to_wgs84(path)
+
+  for shape_record in reader.iterShapeRecords():
+    max_spd = to_int(shape_record.record[LINK_COLUMNS["max_spd"]])
+    if not 0 < max_spd <= MAX_SPEED_LIMIT_KPH:
+      continue
+
+    points = [to_wgs84(x, y) for x, y in shape_record.shape.points]
+    points = [p for p in points if in_korea(*p)]
+    if len(points) < 2:
+      continue
+
+    yield max_spd, str(shape_record.record[LINK_COLUMNS["name"]] or ""), points
+
+
+def insert_links(con: sqlite3.Connection, links) -> int:
+  count = 0
+  for max_spd, name, points in links:
+    lats = [p[0] for p in points]
+    lons = [p[1] for p in points]
+    cur = con.execute("INSERT INTO links(max_spd, name, geom) VALUES (?, ?, ?)",
+                      (max_spd, name, pack_geom(points)))
+    con.execute("INSERT INTO links_idx VALUES (?, ?, ?, ?, ?)",
+                (cur.lastrowid, min(lats), max(lats), min(lons), max(lons)))
     count += 1
   return count
 
