@@ -4,12 +4,15 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import os
 import sqlite3
 
 import pytest
 
-from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, FALLBACK_PROJECTED_EPSG, WGS84_EPSG, \
-                                                     build, in_korea, insert_links, load_cameras, load_links, \
+from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, SCHEMA_CAMERAS, SCHEMA_LINKS, \
+                                                     FALLBACK_PROJECTED_EPSG, WGS84_EPSG, \
+                                                     build_cameras, build_links, write_db, in_korea, insert_cameras, \
+                                                     insert_links, load_cameras, load_links, \
                                                      pack_geom, to_float, to_int
 
 CSV_HEADER = "무인교통단속카메라관리번호,위도,경도,단속구분,제한속도,과속단속구간길이\n"
@@ -57,33 +60,57 @@ def test_load_cameras_reads_utf8_too(tmp_path):
   assert len(rows) == 2
 
 
-def test_build_writes_schema_and_rtree(tmp_path):
-  out = str(tmp_path / "korea_map.sqlite")
-  n_cameras, n_links = build(out, cameras_csv=write_csv(tmp_path))
-  assert (n_cameras, n_links) == (2, 0)
+def test_build_cameras_writes_only_camera_tables(tmp_path):
+  csv_path = tmp_path / "cams.csv"
+  csv_path.write_text(CSV_HEADER + CSV_ROWS, encoding="cp949")
+  out = str(tmp_path / "korea_cameras.sqlite")
+
+  n = build_cameras(out, str(csv_path))
+  assert n == 2
 
   con = sqlite3.connect(out)
+  tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+  assert "cameras" in tables
+  assert "links" not in tables, tables
   assert con.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()[0] == SCHEMA_VERSION
-  assert con.execute("SELECT COUNT(*) FROM cameras").fetchone()[0] == 2
-  # the r-tree must find the 강남역 camera and nothing at sea
-  hit = con.execute("SELECT COUNT(*) FROM cameras_idx WHERE maxlat>=? AND minlat<=? AND maxlon>=? AND minlon<=?",
-                    (37.4970, 37.4990, 127.0270, 127.0285)).fetchone()[0]
-  assert hit == 1
-  miss = con.execute("SELECT COUNT(*) FROM cameras_idx WHERE maxlat>=? AND minlat<=? AND maxlon>=? AND minlon<=?",
-                     (35.0, 35.1, 129.0, 129.1)).fetchone()[0]
-  assert miss == 0
+  assert con.execute("SELECT COUNT(*) FROM cameras_idx").fetchone()[0] == 2
   con.close()
 
 
-def test_build_is_idempotent(tmp_path):
-  out = str(tmp_path / "korea_map.sqlite")
-  csv_path = write_csv(tmp_path)
-  build(out, cameras_csv=csv_path)
-  n_cameras, _ = build(out, cameras_csv=csv_path)
-  assert n_cameras == 2
+def test_build_links_writes_only_link_tables(tmp_path):
+  out = str(tmp_path / "korea_links.sqlite")
+
+  def fill(con):
+    return insert_links(con, [(60, "테헤란로", [(37.4979, 127.0276), (37.5000, 127.0300)])])
+
+  n = write_db(out, SCHEMA_LINKS, fill)
+  assert n == 1
+
   con = sqlite3.connect(out)
-  assert con.execute("SELECT COUNT(*) FROM cameras").fetchone()[0] == 2
+  tables = {r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+  assert "links" in tables
+  assert "cameras" not in tables, tables
+  assert con.execute("SELECT COUNT(*) FROM links_idx").fetchone()[0] == 1
   con.close()
+
+
+def test_write_db_leaves_the_old_file_untouched_when_fill_raises(tmp_path):
+  out = str(tmp_path / "korea_cameras.sqlite")
+
+  def good(con):
+    return insert_cameras(con, [(37.4979, 127.0276, 60, 0)])
+
+  assert write_db(out, SCHEMA_CAMERAS, good) == 1
+  before = open(out, "rb").read()
+
+  def boom(con):
+    raise RuntimeError("build failed halfway")
+
+  with pytest.raises(RuntimeError):
+    write_db(out, SCHEMA_CAMERAS, boom)
+
+  assert open(out, "rb").read() == before, "a failed rebuild must not touch the live database"
+  assert not os.path.exists(out + ".tmp"), "the temp file must be cleaned up"
 
 
 import struct
@@ -103,24 +130,6 @@ def test_pack_geom_roundtrips():
 
 def test_pack_geom_empty():
   assert pack_geom([]) == b""
-
-
-def test_insert_links_fills_bbox(tmp_path):
-  out = str(tmp_path / "links.sqlite")
-  build(out)  # empty db with the schema
-  con = sqlite3.connect(out)
-  n = insert_links(con, [(60, "테헤란로", [(37.4979, 127.0276), (37.5000, 127.0300)])])
-  con.commit()
-  assert n == 1
-
-  row = con.execute("SELECT max_spd, name FROM links").fetchone()
-  assert row == (60, "테헤란로")
-
-  minlat, maxlat, minlon, maxlon = con.execute(
-    "SELECT minlat, maxlat, minlon, maxlon FROM links_idx").fetchone()
-  assert minlat <= 37.4979 and maxlat >= 37.5000
-  assert minlon <= 127.0276 and maxlon >= 127.0300
-  con.close()
 
 
 def test_load_links_reprojects_utm_k_when_no_prj(tmp_path):

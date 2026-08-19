@@ -5,9 +5,10 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-build_db: turns the Korean public map datasets into the one sqlite file the device
-reads. Runs on a PC, never on the comma device -- shapefile and pyproj are imported
-lazily inside the link loader so the device never needs them.
+build_db: turns the Korean public map datasets into the sqlite files the device
+reads -- one for cameras, one for links, built and refreshed independently. Runs
+on a PC, never on the comma device -- shapefile and pyproj are imported lazily
+inside the link loader so the device never needs them.
 
   cameras: 전국무인교통단속카메라표준데이터  https://www.data.go.kr/data/15028200/standard.do
   links:   전국표준노드링크                  https://www.its.go.kr/nodelink/
@@ -15,9 +16,9 @@ lazily inside the link loader so the device never needs them.
 Usage:
   pip install pyshp pyproj
   python -m openpilot.sunnypilot.mapd.korea.build_db \
-      --cameras 전국무인교통단속카메라표준데이터.csv \
-      --links MOCT_LINK.shp \
-      --out korea_map.sqlite
+      --cameras 전국무인교통단속카메라표준데이터.csv --out-cameras korea_cameras.sqlite
+  python -m openpilot.sunnypilot.mapd.korea.build_db \
+      --links MOCT_LINK.shp --out-links korea_links.sqlite
 """
 import argparse
 import csv
@@ -65,9 +66,9 @@ SHP_ENCODING = "cp949"
 FALLBACK_PROJECTED_EPSG = 5179
 WGS84_EPSG = 4326
 
-SCHEMA = """
-CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
+_META = "CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);"
 
+SCHEMA_CAMERAS = _META + """
 CREATE TABLE cameras(
   id        INTEGER PRIMARY KEY,
   lat       REAL    NOT NULL,
@@ -80,7 +81,9 @@ CREATE TABLE cameras(
   section_m INTEGER NOT NULL
 );
 CREATE VIRTUAL TABLE cameras_idx USING rtree(id, minlat, maxlat, minlon, maxlon);
+"""
 
+SCHEMA_LINKS = _META + """
 CREATE TABLE links(
   id      INTEGER PRIMARY KEY,
   max_spd INTEGER NOT NULL,
@@ -240,37 +243,63 @@ def insert_links(con: sqlite3.Connection, links) -> int:
   return count
 
 
-def build(out_path: str, cameras_csv: str | None = None, links_shp: str | None = None) -> tuple[int, int]:
-  """Rebuild out_path from scratch. Returns (camera count, link count)."""
-  if os.path.exists(out_path):
-    os.remove(out_path)
+def write_db(out_path: str, schema: str, fill) -> int:
+  """Create out_path from scratch and swap it in atomically.
 
-  con = sqlite3.connect(out_path)
+  fill(con) does the inserting and returns a row count. Everything happens in a
+  sibling .tmp file, so a crash or an exception leaves the live database exactly as
+  it was -- there is never a half-built database on disk for a reader to open.
+  """
+  tmp = out_path + ".tmp"
+  if os.path.exists(tmp):
+    os.remove(tmp)
+
   try:
-    con.executescript(SCHEMA)
-    con.execute("INSERT INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
-    n_cameras = insert_cameras(con, load_cameras(cameras_csv)) if cameras_csv else 0
-    n_links = insert_links(con, load_links(links_shp)) if links_shp else 0
-    con.commit()
-    con.execute("VACUUM")
-  finally:
-    con.close()
-  return n_cameras, n_links
+    con = sqlite3.connect(tmp)
+    try:
+      con.executescript(schema)
+      con.execute("INSERT INTO meta VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
+      count = fill(con)
+      con.commit()
+      con.execute("VACUUM")
+    finally:
+      con.close()
+    os.replace(tmp, out_path)  # atomic on POSIX and Windows
+  except BaseException:
+    if os.path.exists(tmp):
+      os.remove(tmp)
+    raise
+
+  return count
+
+
+def build_cameras(out_path: str, cameras_csv: str) -> int:
+  """Rebuild the camera database. Returns the row count."""
+  return write_db(out_path, SCHEMA_CAMERAS, lambda con: insert_cameras(con, load_cameras(cameras_csv)))
+
+
+def build_links(out_path: str, links_shp: str) -> int:
+  """Rebuild the link database. Returns the row count. PC only -- needs pyshp and pyproj."""
+  return write_db(out_path, SCHEMA_LINKS, lambda con: insert_links(con, load_links(links_shp)))
 
 
 def main() -> None:
-  parser = argparse.ArgumentParser(description="Build the Korean map database.")
+  parser = argparse.ArgumentParser(description="Build the Korean map databases.")
   parser.add_argument("--cameras", help="전국무인교통단속카메라표준데이터 CSV")
   parser.add_argument("--links", help="전국표준노드링크 LINK shapefile (.shp)")
-  parser.add_argument("--out", default="korea_map.sqlite")
+  parser.add_argument("--out-cameras", default="korea_cameras.sqlite")
+  parser.add_argument("--out-links", default="korea_links.sqlite")
   args = parser.parse_args()
 
   if not args.cameras and not args.links:
     parser.error("at least one of --cameras / --links is required")
 
-  n_cameras, n_links = build(args.out, args.cameras, args.links)
-  size_mb = os.path.getsize(args.out) / 1e6
-  print(f"{args.out}: {n_cameras} cameras, {n_links} links, {size_mb:.1f} MB")
+  if args.cameras:
+    n = build_cameras(args.out_cameras, args.cameras)
+    print(f"{args.out_cameras}: {n} cameras, {os.path.getsize(args.out_cameras) / 1e6:.1f} MB")
+  if args.links:
+    n = build_links(args.out_links, args.links)
+    print(f"{args.out_links}: {n} links, {os.path.getsize(args.out_links) / 1e6:.1f} MB")
 
 
 if __name__ == "__main__":
