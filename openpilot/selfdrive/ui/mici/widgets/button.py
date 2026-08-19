@@ -385,7 +385,13 @@ class BigMultiParamToggle(BigMultiToggle):
     self._load_value()
 
   def _load_value(self):
-    self.set_value(self._options[self._params.get(self._param) or 0])
+    # An out-of-range value would raise IndexError here and take the settings page down --
+    # DriverMonitoringMode is remotely writable, so that is reachable. Fall back to the
+    # FIRST option, never the last: for driver monitoring the last one is "off", and the
+    # runtime already treats an unrecognised mode as standard (monitoring/policy.py).
+    # Folding to the end would show "off" and then write a real off on the next tap.
+    idx = self._params.get(self._param) or 0
+    self.set_value(self._options[idx if 0 <= idx < len(self._options) else 0])
 
   def _handle_mouse_release(self, mouse_pos: MousePos):
     super()._handle_mouse_release(mouse_pos)
