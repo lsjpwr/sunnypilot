@@ -155,7 +155,9 @@ def make_to_wgs84(shp_path: str):
     with open(prj_path, encoding="utf-8", errors="replace") as f:
       wkt = f.read()
 
-  if "PROJCS" not in wkt.upper():
+  # Only a .prj that exists AND says GEOGCS means the file is already lon/lat degrees.
+  # No .prj at all is the ITS-native case, which is UTM-K -- fall through and reproject.
+  if wkt and "PROJCS" not in wkt.upper():
     return lambda x, y: (y, x)  # already lon/lat
 
   from pyproj import CRS, Transformer  # PC-only dependency
@@ -181,7 +183,9 @@ def load_links(path: str) -> Iterator[tuple[int, str, list[tuple[float, float]]]
 
   to_wgs84 = make_to_wgs84(path)
 
+  read = kept = 0
   for shape_record in reader.iterShapeRecords():
+    read += 1
     max_spd = to_int(shape_record.record[LINK_COLUMNS["max_spd"]])
     if not 0 < max_spd <= MAX_SPEED_LIMIT_KPH:
       continue
@@ -191,7 +195,15 @@ def load_links(path: str) -> Iterator[tuple[int, str, list[tuple[float, float]]]
     if len(points) < 2:
       continue
 
+    kept += 1
     yield max_spd, str(shape_record.record[LINK_COLUMNS["name"]] or ""), points
+
+  if read and not kept:
+    raise ValueError(
+      f"{path}: read {read} shapes but kept none -- every coordinate fell outside Korea. "
+      f"This usually means the CRS assumption is wrong (no .prj is treated as UTM-K "
+      f"EPSG:{UTM_K_EPSG}). Inspect the first few points before rebuilding."
+    )
 
 
 def insert_links(con: sqlite3.Connection, links) -> int:
