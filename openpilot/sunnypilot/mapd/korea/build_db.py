@@ -224,8 +224,8 @@ def load_links(path: str) -> Iterator[tuple[int, str, list[tuple[float, float]]]
 
   if read and not kept:
     raise ValueError(
-      f"{path}: read {read} shapes but kept none -- every coordinate fell outside Korea. "
-      f"This usually means the CRS assumption is wrong (no .prj is treated as UTM-K "
+      f"{path}: read {read} shapes but kept none -- every coordinate fell outside Korea. " +
+      "This usually means the CRS assumption is wrong (no .prj is treated as UTM-K " +
       f"EPSG:{FALLBACK_PROJECTED_EPSG}). Inspect the first few points before rebuilding."
     )
 
