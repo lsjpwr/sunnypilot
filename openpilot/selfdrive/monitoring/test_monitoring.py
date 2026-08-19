@@ -329,3 +329,10 @@ class TestMonitoringMode(OpenpilotTestCase):
       DM._update_events(False, True, False, 0)
       default.append(DM.alert_level)
     assert explicit == default
+
+  # an unrecognised mode value must fail safe to standard monitoring, not disable it
+  def test_unknown_mode_falls_back_to_standard(self):
+    standard_lvls, _ = self._run_seq(always_distracted, DM_MODE_STANDARD)
+    unknown_lvls, DM = self._run_seq(always_distracted, 3)
+    assert DM.timeout_scale == 1.
+    assert unknown_lvls == standard_lvls
