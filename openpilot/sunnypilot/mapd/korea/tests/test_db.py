@@ -22,6 +22,19 @@ CAM_AHEAD = (37.5000, 127.0257, 50, 0)
 CAM_BEHIND = (37.5000, 127.0143, 30, 0)
 CAM_SECTION = (37.5000, 127.0280, 80, 4200)
 
+# A 50 km/h road running east for ~1 km, coincident with a short 80 km/h overpass link
+# for its first ~790 m -- an overpass and the road under it, or two links meeting at a
+# shared node, both digitised with the same start point. current_link's tie-break and
+# hysteresis tests use these.
+OVERPASS_LOW = (50, "고가도로", [(37.5100, 127.0500), (37.5100, 127.0620)])
+OVERPASS_HIGH = (80, "고가차도", [(37.5100, 127.0500), (37.5100, 127.0510)])
+
+# Two parallel east-west roads ~33 m apart -- far enough to never tie, close enough that
+# both are legitimate candidates within LINK_MAX_DISTANCE_M. Proves the tie-break only
+# fires on genuinely coincident links, not just "a faster road is somewhere nearby".
+FAR_LOW = (30, "이면도로", [(37.5200, 127.0500), (37.5200, 127.0620)])
+FAR_HIGH = (100, "고속도로", [(37.5203, 127.0500), (37.5203, 127.0620)])
+
 # os.replace() of a file with an open sqlite3 connection on it is a POSIX guarantee
 # (existing readers keep the old inode) that Windows does not provide (PermissionError:
 # WinError 5, even for a read-only, idle connection). These tests exercise exactly that
@@ -35,6 +48,15 @@ def _make_pair(tmp_path):
   write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_AHEAD, CAM_BEHIND, CAM_SECTION]))
   write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [ROAD_60, ROAD_100]))
   return cams, links
+
+
+def _make_links_db(tmp_path, links):
+  """Like _make_pair, but with a caller-chosen link set and no cameras."""
+  cams = str(tmp_path / "korea_cameras.sqlite")
+  links_path = str(tmp_path / "korea_links.sqlite")
+  write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, []))
+  write_db(links_path, SCHEMA_LINKS, lambda con: insert_links(con, links))
+  return cams, links_path
 
 
 @pytest.fixture
@@ -92,8 +114,11 @@ def test_reload_keeps_the_old_db_when_the_new_one_is_broken(tmp_path):
     os.replace(bad, cams)
     os.utime(cams, (0, 0))
     assert database.reload_if_changed() is False
-    # the live connection must still answer from the database it already had open
-    assert database.next_camera(37.4990, 127.0260, 0.) is not None
+    # the live connection must still answer from the database it already had open --
+    # check the specific camera, not just non-None, so a reload silently swapping in
+    # different-but-non-None data would fail this
+    cam = database.next_camera(37.4990, 127.0260, 0.)
+    assert cam is not None and cam.limit_kph == 50
   finally:
     database.close()
 
@@ -149,7 +174,9 @@ def test_next_camera_behind_us_is_ignored(db):
   assert camera is not None and camera.limit_kph == 30
 
 
-def test_next_camera_reports_section_length(db):
+def test_next_camera_passes_section_field_through(db):
+  # section_m is raw provenance, not a real length (see Camera's docstring) -- this only
+  # checks it passes through the field unmodified, not that 4200 means anything as a distance
   camera = db.next_camera(37.5000, 127.0270, heading_deg=90.)
   assert camera is not None
   assert camera.limit_kph == 80
@@ -162,3 +189,42 @@ def test_next_camera_needs_a_heading(db):
 
 def test_next_camera_none_when_far_away(db):
   assert db.next_camera(37.6000, 127.2000, heading_deg=90.) is None
+
+
+def test_current_link_prefers_the_higher_limit_when_tied(tmp_path):
+  cams, links = _make_links_db(tmp_path, [OVERPASS_LOW, OVERPASS_HIGH])
+  database = KoreaMapDB(cams, links)
+  try:
+    # exactly on the shared start point: both links are 0 m away, a dead tie
+    link = database.current_link(37.5100, 127.0500)
+    assert link is not None and link.max_spd == 80
+  finally:
+    database.close()
+
+
+def test_current_link_holds_the_match_then_moves_on(tmp_path):
+  cams, links = _make_links_db(tmp_path, [OVERPASS_LOW, OVERPASS_HIGH])
+  database = KoreaMapDB(cams, links)
+  try:
+    first = database.current_link(37.5100, 127.0500)
+    second = database.current_link(37.5100, 127.0500)
+    assert first is not None and first.max_spd == 80
+    assert second is not None and second.max_spd == 80
+
+    # past the overpass (~790 m on): OVERPASS_HIGH no longer covers this point at all, so
+    # stickiness releases on its own and OVERPASS_LOW is the only remaining candidate
+    later = database.current_link(37.5100, 127.0600)
+    assert later is not None and later.max_spd == 50
+  finally:
+    database.close()
+
+
+def test_current_link_tie_break_does_not_apply_across_separate_roads(tmp_path):
+  cams, links = _make_links_db(tmp_path, [FAR_LOW, FAR_HIGH])
+  database = KoreaMapDB(cams, links)
+  try:
+    # sitting on FAR_LOW; FAR_HIGH is a real candidate ~33 m away but nowhere near tied
+    link = database.current_link(37.5200, 127.0510)
+    assert link is not None and link.max_spd == 30
+  finally:
+    database.close()

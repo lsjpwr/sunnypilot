@@ -23,6 +23,12 @@ LINK_MAX_DISTANCE_M = 40.
 # a link running more than this far off our heading is a crossing road, not ours
 LINK_BEARING_TOLERANCE = 60.
 
+# Geometry is stored as float32, which quantises to about 0.3 m, so anything inside this
+# is the same place as far as this database can tell. Measured: 0.1 m captures the
+# genuinely coincident cases (overpasses, shared nodes) without merging roads that are
+# actually a few metres apart.
+TIE_DISTANCE_M = 0.1
+
 # ~3.3 km box, then filtered down to CAMERA_MAX_DISTANCE_M
 CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.
@@ -39,9 +45,16 @@ class Link:
 
 @dataclass(frozen=True)
 class Camera:
+  """A speed camera ahead of us.
+
+  section_m is raw provenance carried through from 과속단속구간길이, not a usable
+  distance: see the cameras table's schema comment in build_db.py (only ~2.6% of rows
+  populate it, units are inconsistent between submitting agencies, and 99999 is a
+  sentinel, not a real value). Never feed it to a distance calculation.
+  """
   limit_kph: int
   distance_m: float
-  section_m: int  # 0 for a point camera, >0 for 구간단속
+  section_m: int  # 0 for a point camera, >0 for 구간단속 -- see docstring, not metres
 
 
 def _unpack_geom(blob: bytes) -> list[tuple[float, float]]:
@@ -51,9 +64,18 @@ def _unpack_geom(blob: bytes) -> list[tuple[float, float]]:
 
 
 class KoreaMapDB:
+  """Read-only lookups against the camera and link databases.
+
+  Not thread-safe: reload_if_changed() swaps self.cam, so the caller must call it from
+  the same thread as the queries. check_same_thread=False below is there so the
+  connection can be opened in one place and used from whichever thread ends up owning
+  this object, not to license calling into it concurrently from multiple threads.
+  """
+
   def __init__(self, cameras_path: str, links_path: str):
     self.cameras_path = cameras_path
     self._cameras_mtime = 0.
+    self._last_link_id: int | None = None
     # Two connections, not one attached database: Task 13 replaces the camera file
     # underneath us with os.replace while this process keeps running, and reopening one
     # connection must not disturb the 220 MB link database that never changes.
@@ -99,30 +121,58 @@ class KoreaMapDB:
     return True
 
   def close(self) -> None:
-    self.cam.close()
-    self.lnk.close()
+    try:
+      self.cam.close()
+    finally:
+      self.lnk.close()
 
   def current_link(self, lat: float, lon: float, heading_deg: float | None = None) -> Link | None:
-    """Nearest road segment we are plausibly driving on, or None when off the network."""
+    """Nearest road segment we are plausibly driving on, or None when off the network.
+
+    Ties (an overpass, a ramp, two links meeting at a node -- all within TIE_DISTANCE_M
+    of each other) are broken toward the higher max_spd: guessing low makes speed limit
+    assist brake for a limit that does not apply, guessing high only means it assists
+    less, which is where the driver already is without this feature. The previous match
+    is held as long as it is still a candidate, so the pick does not flap between tied
+    links frame to frame; it releases on its own once the old link falls out of
+    LINK_MAX_DISTANCE_M or fails the heading check, e.g. after taking a diverging ramp.
+    """
     rows = self.lnk.execute(
-      "SELECT l.max_spd, l.name, l.geom FROM links_idx i JOIN links l ON l.id = i.id " + _RTREE_OVERLAP,
+      "SELECT l.id, l.max_spd, l.name, l.geom FROM links_idx i JOIN links l ON l.id = i.id " + _RTREE_OVERLAP,
       (lat - LINK_SEARCH_DEG, lat + LINK_SEARCH_DEG, lon - LINK_SEARCH_DEG, lon + LINK_SEARCH_DEG),
     ).fetchall()
 
     best: Link | None = None
     best_distance = LINK_MAX_DISTANCE_M
+    best_id: int | None = None
+    sticky: Link | None = None
 
-    for max_spd, name, blob in rows:
+    for link_id, max_spd, name, blob in rows:
       points = _unpack_geom(blob)
       for (alat, alon), (blat, blon) in zip(points, points[1:], strict=False):
         distance = point_segment_distance(lat, lon, alat, alon, blat, blon)
-        if distance >= best_distance:
+        if distance >= best_distance + TIE_DISTANCE_M:
           continue
         if heading_deg is not None and not _heading_matches(heading_deg, alat, alon, blat, blon):
           continue
-        best_distance = distance
+        if link_id == self._last_link_id:
+          sticky = Link(max_spd=max_spd, name=name)
+        # Coincident candidates -- an overpass, a ramp, two links meeting at a node --
+        # cannot be told apart by distance, so prefer the higher limit. Guessing low makes
+        # the car brake for a limit that does not apply; guessing high only means it
+        # assists less, which is where the driver already is without this feature.
+        tied = best is not None and abs(distance - best_distance) <= TIE_DISTANCE_M
+        if tied and max_spd <= best.max_spd:
+          continue
+        if not tied and distance >= best_distance:
+          continue
+        best_distance = min(distance, best_distance)
         best = Link(max_spd=max_spd, name=name)
+        best_id = link_id
 
+    if sticky is not None:
+      best, best_id = sticky, self._last_link_id
+    self._last_link_id = best_id
     return best
 
   def next_camera(self, lat: float, lon: float, heading_deg: float | None) -> Camera | None:
