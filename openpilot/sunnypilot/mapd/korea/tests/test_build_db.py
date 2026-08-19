@@ -6,8 +6,11 @@ See the LICENSE.md file in the root directory for more details.
 """
 import sqlite3
 
-from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_VERSION, build, in_korea, insert_links, \
-                                                     load_cameras, pack_geom, to_float, to_int
+import pytest
+
+from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, UTM_K_EPSG, WGS84_EPSG, \
+                                                     build, in_korea, insert_links, load_cameras, load_links, \
+                                                     pack_geom, to_float, to_int
 
 CSV_HEADER = "무인교통단속카메라관리번호,위도,경도,단속구분,제한속도,과속단속구간길이\n"
 CSV_ROWS = (
@@ -118,3 +121,84 @@ def test_insert_links_fills_bbox(tmp_path):
   assert minlat <= 37.4979 and maxlat >= 37.5000
   assert minlon <= 127.0276 and maxlon >= 127.0300
   con.close()
+
+
+def test_load_links_reprojects_utm_k_when_no_prj(tmp_path):
+  """The ITS default: no .prj file alongside the .shp, coordinates are raw UTM-K (EPSG:5179) metres."""
+  import shapefile
+  from pyproj import CRS, Transformer
+
+  lat, lon = 37.4979, 127.0276
+  lat2, lon2 = 37.5000, 127.0300
+  to_utm = Transformer.from_crs(CRS.from_epsg(WGS84_EPSG), CRS.from_epsg(UTM_K_EPSG), always_xy=True)
+  x1, y1 = to_utm.transform(lon, lat)
+  x2, y2 = to_utm.transform(lon2, lat2)
+
+  shp_path = str(tmp_path / "link_utm.shp")
+  with shapefile.Writer(shp_path, shapeType=shapefile.POLYLINE) as w:
+    w.field(LINK_COLUMNS["max_spd"], "N")
+    w.field(LINK_COLUMNS["name"], "C", size=80)
+    w.line([[(x1, y1), (x2, y2)]])
+    w.record(**{LINK_COLUMNS["max_spd"]: 60, LINK_COLUMNS["name"]: "TestRoad"})
+  # deliberately no .prj written -- this is the real ITS distribution shape
+
+  links = list(load_links(shp_path))
+  assert len(links) == 1
+  max_spd, name, points = links[0]
+  assert max_spd == 60
+  assert abs(points[0][0] - lat) < 1e-4
+  assert abs(points[0][1] - lon) < 1e-4
+  assert abs(points[1][0] - lat2) < 1e-4
+  assert abs(points[1][1] - lon2) < 1e-4
+
+
+def test_load_links_honors_wgs84_prj(tmp_path):
+  """A .prj present and geographic (not projected): coordinates are already degrees, untouched."""
+  import shapefile
+  from pyproj import CRS
+
+  lat, lon = 37.4979, 127.0276
+  lat2, lon2 = 37.5000, 127.0300
+
+  shp_path = str(tmp_path / "link_wgs84.shp")
+  with shapefile.Writer(shp_path, shapeType=shapefile.POLYLINE) as w:
+    w.field(LINK_COLUMNS["max_spd"], "N")
+    w.field(LINK_COLUMNS["name"], "C", size=80)
+    w.line([[(lon, lat), (lon2, lat2)]])
+    w.record(**{LINK_COLUMNS["max_spd"]: 60, LINK_COLUMNS["name"]: "TestRoad"})
+  with open(tmp_path / "link_wgs84.prj", "w", encoding="utf-8") as f:
+    f.write(CRS.from_epsg(WGS84_EPSG).to_wkt())
+
+  links = list(load_links(shp_path))
+  assert len(links) == 1
+  max_spd, name, points = links[0]
+  assert max_spd == 60
+  assert abs(points[0][0] - lat) < 1e-6
+  assert abs(points[0][1] - lon) < 1e-6
+  assert abs(points[1][0] - lat2) < 1e-6
+  assert abs(points[1][1] - lon2) < 1e-6
+
+
+def test_load_links_raises_when_every_point_falls_outside_korea(tmp_path):
+  """Fix 2: a wrong CRS assumption (or a wrong-region file) must fail loudly, not go silent."""
+  import shapefile
+  from pyproj import CRS, Transformer
+
+  # Tokyo, correctly reprojected from UTM-K metres -- still outside in_korea's box either way,
+  # which is exactly the "every point survived reprojection but none belong" case Fix 2 guards.
+  lat, lon = 35.6762, 139.6503
+  lat2, lon2 = 35.6800, 139.6600
+  to_utm = Transformer.from_crs(CRS.from_epsg(WGS84_EPSG), CRS.from_epsg(UTM_K_EPSG), always_xy=True)
+  x1, y1 = to_utm.transform(lon, lat)
+  x2, y2 = to_utm.transform(lon2, lat2)
+
+  shp_path = str(tmp_path / "link_outside_korea.shp")
+  with shapefile.Writer(shp_path, shapeType=shapefile.POLYLINE) as w:
+    w.field(LINK_COLUMNS["max_spd"], "N")
+    w.field(LINK_COLUMNS["name"], "C", size=80)
+    w.line([[(x1, y1), (x2, y2)]])
+    w.record(**{LINK_COLUMNS["max_spd"]: 60, LINK_COLUMNS["name"]: "TestRoad"})
+  # no .prj -- same ITS-native shape as the UTM-K test above
+
+  with pytest.raises(ValueError, match="CRS"):
+    list(load_links(shp_path))
