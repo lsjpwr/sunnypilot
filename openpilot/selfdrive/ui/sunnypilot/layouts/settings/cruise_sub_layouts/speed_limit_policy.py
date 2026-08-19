@@ -19,10 +19,10 @@ SPEED_LIMIT_POLICY_BUTTONS = [tr("Car Only"), tr("Map Only"), tr("Car First"), t
 
 SPEED_LIMIT_POLICY_DESCRIPTIONS = [
   tr("Car Only: Use Speed Limit data only from Car"),
-  tr("Map Only: Use Speed Limit data only from OpenStreetMaps"),
-  tr("Car First: Use Speed Limit data from Car if available, else use from OpenStreetMaps"),
-  tr("Map First: Use Speed Limit data from OpenStreetMaps if available, else use from Car"),
-  tr("Combined: Use combined Speed Limit data from Car & OpenStreetMaps")
+  tr("Map Only: Use Speed Limit data only from the map database"),
+  tr("Car First: Use Speed Limit data from Car if available, else use the map database"),
+  tr("Map First: Use Speed Limit data from the map database if available, else use from Car"),
+  tr("Combined: Use combined Speed Limit data from Car & the map database")
 ]
 
 

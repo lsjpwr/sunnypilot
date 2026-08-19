@@ -246,26 +246,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LaneTurnValue", {PERSISTENT | BACKUP, FLOAT, "19.0"}},
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
 
-    // mapd
+    // korea map
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},
-    {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
-    {"MapdVersion", {PERSISTENT, STRING}},
-    {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
-    {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
-    {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
-    {"OsmDbUpdatesCheck", {CLEAR_ON_MANAGER_START, BOOL}},  // mapd database update happens with device ON, reset on boot
-    {"OSMDownloadBounds", {PERSISTENT, STRING}},
-    {"OsmDownloadedDate", {PERSISTENT, STRING, "0.0"}},
-    {"OSMDownloadLocations", {PERSISTENT, JSON}},
-    {"OSMDownloadProgress", {CLEAR_ON_MANAGER_START, JSON}},
-    {"OsmLocal", {PERSISTENT, BOOL}},
-    {"OsmLocationName", {PERSISTENT, STRING}},
-    {"OsmLocationTitle", {PERSISTENT, STRING}},
-    {"OsmLocationUrl", {PERSISTENT, STRING}},
-    {"OsmStateName", {PERSISTENT, STRING, "All"}},
-    {"OsmStateTitle", {PERSISTENT, STRING}},
-    {"OsmWayTest", {PERSISTENT, STRING}},
-    {"RoadName", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"Offroad_KoreaMapMissing", {CLEAR_ON_MANAGER_START, JSON}},
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // Speed Limit
