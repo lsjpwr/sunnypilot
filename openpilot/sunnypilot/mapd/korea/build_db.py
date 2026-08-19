@@ -34,7 +34,10 @@ KOREA_LON = (124.0, 132.0)
 
 CSV_ENCODINGS = ("cp949", "utf-8-sig")
 
-# verified against the 2026 release; re-check with the inspection step if a load returns 0 rows
+# Column names of the CSV distribution on data.go.kr. The open API for the same dataset
+# uses romanised keys instead (latitude/longitude/lmttVe/ovrspdRegltSctnLt), so a fetcher
+# pulling from the API must normalise to these headers before calling load_cameras.
+# Verified against the 2026-08 release; re-check if a load returns 0 rows.
 CAMERA_COLUMNS = {
   "lat": "위도",
   "lon": "경도",
@@ -52,7 +55,14 @@ LINK_COLUMNS = {
 }
 
 SHP_ENCODING = "cp949"
-UTM_K_EPSG = 5179  # ITS ships 표준노드링크 in UTM-K
+
+# Last-resort fallback only. The real ITS 표준노드링크 ships a .prj reading
+# PROJCS["ITRF2000_Central_Belt_60", ...] -- a Transverse Mercator on the ITRF2000 datum
+# that pyproj cannot map to ANY epsg code (to_epsg() returns None), so no constant here
+# could ever be right for it. make_to_wgs84 therefore reads the .prj and this value is
+# never used in practice. If a distribution ever ships without a .prj, expect load_links
+# to raise rather than silently produce garbage.
+FALLBACK_PROJECTED_EPSG = 5179
 WGS84_EPSG = 4326
 
 SCHEMA = """
@@ -63,6 +73,10 @@ CREATE TABLE cameras(
   lat       REAL    NOT NULL,
   lon       REAL    NOT NULL,
   limit_kph INTEGER NOT NULL,
+  -- NOT A USABLE DISTANCE. Carried through verbatim from 과속단속구간길이 for provenance
+  -- only. In the 2026-08 dataset just 1120 of 43347 rows populate it at all, and the unit
+  -- is inconsistent between submitting agencies: values run 1, 2, 3 ... 45, 200, 18637,
+  -- and 99999 as a sentinel. Never feed this to anything that computes a distance.
   section_m INTEGER NOT NULL
 );
 CREATE VIRTUAL TABLE cameras_idx USING rtree(id, minlat, maxlat, minlon, maxlon);
@@ -108,7 +122,14 @@ def load_cameras(path: str) -> Iterator[tuple[float, float, int, int]]:
   """Yield (lat, lon, limit_kph, section_m) for every usable speed-enforcement camera.
 
   Rows without a speed limit are red-light or parking cameras: they carry no target
-  speed, so there is nothing for the longitudinal controller to do with them.
+  speed, so there is nothing for the longitudinal controller to do with them. That filter
+  keeps 33415 of the 43347 rows in the 2026-08 dataset.
+
+  section_m is passed through unvalidated -- see the schema comment. Treat it as a label,
+  never as metres. 단속구분 is deliberately not used to classify rows: the field mixes
+  zero-padded and unpadded spellings of the same code plus combined values
+  ('2', '02', '01+02', '1+2', '99'), so a speed limit greater than zero is the only
+  reliable signal that a row describes speed enforcement.
   """
   rows = read_csv_rows(path)
   if rows and CAMERA_COLUMNS["lat"] not in rows[0]:
@@ -161,7 +182,7 @@ def make_to_wgs84(shp_path: str):
     return lambda x, y: (y, x)  # already lon/lat
 
   from pyproj import CRS, Transformer  # PC-only dependency
-  source = CRS.from_wkt(wkt) if wkt else CRS.from_epsg(UTM_K_EPSG)
+  source = CRS.from_wkt(wkt) if wkt else CRS.from_epsg(FALLBACK_PROJECTED_EPSG)
   transformer = Transformer.from_crs(source, CRS.from_epsg(WGS84_EPSG), always_xy=True)
 
   def to_wgs84(x: float, y: float) -> tuple[float, float]:
@@ -202,7 +223,7 @@ def load_links(path: str) -> Iterator[tuple[int, str, list[tuple[float, float]]]
     raise ValueError(
       f"{path}: read {read} shapes but kept none -- every coordinate fell outside Korea. "
       f"This usually means the CRS assumption is wrong (no .prj is treated as UTM-K "
-      f"EPSG:{UTM_K_EPSG}). Inspect the first few points before rebuilding."
+      f"EPSG:{FALLBACK_PROJECTED_EPSG}). Inspect the first few points before rebuilding."
     )
 
 
