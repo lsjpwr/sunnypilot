@@ -6,12 +6,14 @@ See the LICENSE.md file in the root directory for more details.
 """
 import time
 
+import openpilot.cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras,
                                                       insert_links, write_db)
 from openpilot.sunnypilot.mapd.korea.db import Camera, Link
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import KoreaMapData
+from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
 class StubExternal:
@@ -126,7 +128,66 @@ def test_open_db_gives_up_after_a_bad_database(tmp_path):
   assert data.db is None
   assert data.open_failed
 
-  # a second call must not even try again
-  data.cameras_path = "/nonexistent/tripwire"
+  # A second call must not even try again. Both paths point at openable files now, so
+  # only the open_failed short-circuit can keep db None -- aiming the tripwire at a
+  # nonexistent path instead would be satisfied by the os.path.exists precheck and would
+  # pass whether or not the short-circuit exists.
+  data.links_path = cameras
   data.open_db()
+  assert data.db is None, "open_db retried after giving up"
+
+
+class StubDB:
+  """Counts reload_if_changed() so a test can prove update_location calls it."""
+
+  def __init__(self):
+    self.reloads = 0
+
+  def reload_if_changed(self):
+    self.reloads += 1
+    return False
+
+  def current_link(self, lat, lon, heading_deg=None):
+    return None
+
+  def next_camera(self, lat, lon, heading_deg):
+    return None
+
+
+def location_message():
+  """A default liveLocationKalman: status uninitialized, positionGeodetic invalid.
+
+  That leaves last_position as whatever the test preset, which is what we want -- this
+  test is about the reload call, not about the localizer.
+  """
+  return {'liveLocationKalman': messaging.new_message('liveLocationKalman').liveLocationKalman}
+
+
+def test_update_location_reloads_a_swapped_camera_database():
+  """Task 13 swaps korea_cameras.sqlite with os.replace while this process runs.
+
+  update_location is the only caller of reload_if_changed in the repo; without it a
+  refreshed camera database never reaches a running process and the failure is silent.
+  """
+  data = make_data()
+  data.sm = location_message()
+  data.db = StubDB()
+  data.last_position = Coordinate(37.5000, 127.0260)
+  data.last_bearing = None
+
+  data.update_location()
+  data.update_location()
+
+  assert data.db.reloads == 2
+
+
+def test_update_location_does_not_reload_before_the_database_is_open():
+  """The guard order matters: reload_if_changed on a None db is an AttributeError."""
+  data = make_data()
+  data.sm = location_message()
+  data.last_position = Coordinate(37.5000, 127.0260)
+  data.last_bearing = None
+
+  data.update_location()  # db stays None -- cameras_path/links_path are ""
+
   assert data.db is None
