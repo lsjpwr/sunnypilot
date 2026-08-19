@@ -4,7 +4,9 @@ from openpilot.common.test import OpenpilotTestCase
 from openpilot.cereal import log
 from opendbc.car.structs import car
 from openpilot.common.realtime import DT_DMON
-from openpilot.selfdrive.monitoring.policy import DriverMonitoring, DRIVER_MONITOR_SETTINGS
+from openpilot.selfdrive.monitoring.policy import DriverMonitoring, DRIVER_MONITOR_SETTINGS, \
+                                                  DM_MODE_STANDARD, DM_MODE_RELAXED, DM_MODE_OFF, \
+                                                  RELAXED_TIMEOUT_SCALE
 
 EventName = log.OnroadEvent.EventName
 dm_settings = DRIVER_MONITOR_SETTINGS()
@@ -278,3 +280,52 @@ class TestRunStepEngagement(OpenpilotTestCase):
     dm.run_step(sm, demo=False)
     assert captured['op_engaged'] == expected_op_engaged
     assert captured['driver_engaged'] == expected_driver_engaged
+
+
+class TestMonitoringMode(OpenpilotTestCase):
+  def _run_seq(self, msgs, monitoring_mode):
+    DM = DriverMonitoring(monitoring_mode=monitoring_mode)
+    alert_lvls = []
+    for msg in msgs:
+      DM._update_states(msg, [0, 0, 0], 0, True, False)
+      DM._update_events(False, True, False, 0)
+      alert_lvls.append(DM.alert_level)
+    return alert_lvls, DM
+
+  # mode 2: no alert ever fires and awareness never decays
+  def test_disabled_never_alerts(self):
+    alert_lvls, DM = self._run_seq(always_distracted, DM_MODE_OFF)
+    assert all(a == 0 for a in alert_lvls)
+    assert DM.awareness == 1.
+
+  # mode 2 must also clear a lockout that was already latched
+  def test_disabled_clears_lockout(self):
+    DM = DriverMonitoring(monitoring_mode=DM_MODE_OFF)
+    DM.lockout_active = True
+    DM.alert_3_cnt = DM.settings._MAX_ALERT_3
+    DM._update_events(False, True, False, 0)
+    assert not DM.lockout_active
+    assert DM.alert_3_cnt == 0
+
+  # mode 1: red takes RELAXED_TIMEOUT_SCALE times longer than mode 0
+  def test_relaxed_stretches_timeouts(self):
+    standard_lvls, _ = self._run_seq(always_distracted, DM_MODE_STANDARD)
+    relaxed_lvls, DM = self._run_seq(always_distracted, DM_MODE_RELAXED)
+    assert DM.timeout_scale == RELAXED_TIMEOUT_SCALE
+
+    def first_red(levels):
+      return next(i for i, lvl in enumerate(levels) if lvl == 3)
+
+    ratio = first_red(relaxed_lvls) / first_red(standard_lvls)
+    assert abs(ratio - RELAXED_TIMEOUT_SCALE) < 0.1, f"got {ratio}"
+
+  # mode 0 must reproduce upstream behaviour exactly
+  def test_standard_is_unchanged(self):
+    explicit, _ = self._run_seq(always_distracted, DM_MODE_STANDARD)
+    DM = DriverMonitoring()
+    default = []
+    for msg in always_distracted:
+      DM._update_states(msg, [0, 0, 0], 0, True, False)
+      DM._update_events(False, True, False, 0)
+      default.append(DM.alert_level)
+    assert explicit == default
