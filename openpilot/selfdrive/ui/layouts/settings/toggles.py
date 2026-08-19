@@ -33,8 +33,8 @@ DESCRIPTIONS = {
   ),
   "AlwaysOnDM": tr_noop("Enable driver monitoring even when sunnypilot is not engaged."),
   "DriverMonitoringMode": tr_noop(
-    "Standard: upstream driver monitoring. "
-    "Relaxed: the same alerts, three times longer before each one. "
+    "Standard: upstream driver monitoring. " +
+    "Relaxed: the same alerts, three times longer before each one. " +
     "Off: no driver monitoring alerts. You remain responsible for the vehicle at all times."
   ),
   'RecordFront': tr_noop("Upload data from the driver facing camera and help improve the driver monitoring algorithm."),
