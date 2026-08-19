@@ -23,6 +23,16 @@ def to_percent(v):
 #  We recommend that you do not change these numbers from the defaults.
 # ******************************************************************************************
 
+# sunnypilot: driver monitoring modes
+DM_MODE_STANDARD = 0  # upstream behaviour
+DM_MODE_RELAXED = 1   # same alert ladder, every timeout stretched
+DM_MODE_OFF = 2       # no alerts, awareness pinned at 1.0
+
+# Uniform multiplier on every distraction timeout. threshold_alert_1/2 are ratios of
+# _ALERT_3_TIMEOUT, so scaling step_change alone stretches the whole ladder and leaves
+# the orange/red split where it was.
+RELAXED_TIMEOUT_SCALE = 3.0
+
 class DRIVER_MONITOR_SETTINGS:
   def __init__(self):
     # https://eur-lex.europa.eu/legal-content/EN/TXT/PDF/?uri=OJ:L_202501899
@@ -128,7 +138,7 @@ def face_orientation_from_model(orient_model, pos_model, rpy_calib):
 
 
 class DriverMonitoring:
-  def __init__(self, rhd_saved=False, settings=None, always_on=False):
+  def __init__(self, rhd_saved=False, settings=None, always_on=False, monitoring_mode=DM_MODE_STANDARD):
     # init policy settings
     self.settings = settings if settings is not None else DRIVER_MONITOR_SETTINGS()
 
@@ -141,6 +151,7 @@ class DriverMonitoring:
 
     self.alert_level = AlertLevel.none
     self.always_on = always_on
+    self.monitoring_mode = monitoring_mode
     self.distracted_types = defaultdict(bool)
     self.driver_distracted = False
     self.driver_distraction_filter = FirstOrderFilter(0., self.settings._DISTRACTED_FILTER_TS, DT_DMON)
@@ -170,6 +181,10 @@ class DriverMonitoring:
     self._reset_awareness()
     self._set_policy(MonitoringPolicy.vision)
 
+  @property
+  def timeout_scale(self) -> float:
+    return RELAXED_TIMEOUT_SCALE if self.monitoring_mode == DM_MODE_RELAXED else 1.
+
   def _reset_awareness(self):
     self.awareness = 1.
     self.last_vision_awareness = 1.
@@ -178,7 +193,7 @@ class DriverMonitoring:
   def _set_policy(self, target_policy):
     if self.active_policy == MonitoringPolicy.vision and self.awareness <= self.threshold_alert_2:
       if target_policy == MonitoringPolicy.vision:
-        self.step_change = DT_DMON / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
+        self.step_change = DT_DMON / (self.settings._VISION_POLICY_ALERT_3_TIMEOUT * self.timeout_scale)
       else:
         self.step_change = 0.
       return  # no exploit after orange alert
@@ -193,7 +208,7 @@ class DriverMonitoring:
 
       self.threshold_alert_1 = 1. - self.settings._VISION_POLICY_ALERT_1_TIMEOUT / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
       self.threshold_alert_2 = 1. - self.settings._VISION_POLICY_ALERT_2_TIMEOUT / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
-      self.step_change = DT_DMON / self.settings._VISION_POLICY_ALERT_3_TIMEOUT
+      self.step_change = DT_DMON / (self.settings._VISION_POLICY_ALERT_3_TIMEOUT * self.timeout_scale)
       self.active_policy = MonitoringPolicy.vision
     else:
       if self.active_policy == MonitoringPolicy.vision:
@@ -202,7 +217,7 @@ class DriverMonitoring:
 
       self.threshold_alert_1 = 1. - self.settings._WHEELTOUCH_POLICY_ALERT_1_TIMEOUT / self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT
       self.threshold_alert_2 = 1. - self.settings._WHEELTOUCH_POLICY_ALERT_2_TIMEOUT / self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT
-      self.step_change = DT_DMON / self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT
+      self.step_change = DT_DMON / (self.settings._WHEELTOUCH_POLICY_ALERT_3_TIMEOUT * self.timeout_scale)
       self.active_policy = MonitoringPolicy.wheeltouch
 
   def _set_pose_strictness(self, brake_disengage_prob, car_speed):
@@ -310,6 +325,16 @@ class DriverMonitoring:
   def _update_events(self, driver_engaged, op_engaged, lowspeed, wrong_gear):
     self.alert_level = AlertLevel.none
     self.driver_interacting = driver_engaged
+
+    # sunnypilot: monitoring disabled - hold awareness green and drop any latched lockout
+    if self.monitoring_mode >= DM_MODE_OFF:
+      self._reset_awareness()
+      self.alert_3_cnt = 0
+      self.cnt_since_alert_3 = 0
+      self.no_response_cnt = 0
+      self.lockout_active = False
+      self.lockout_time_elapsed = 0
+      return
 
     if self.alert_3_cnt >= self.settings._MAX_ALERT_3 or self.no_response_cnt >= self.settings._MAX_NO_RESPONSE:
       if not self.lockout_active:
