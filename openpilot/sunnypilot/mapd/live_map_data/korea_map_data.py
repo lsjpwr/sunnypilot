@@ -4,7 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-korea_map_data: fills liveMapDataSP from the Korean public datasets instead of OSM.
+korea_map_data: fills liveMapDataSP from the Korean public datasets, replacing the prior map source.
 Everything downstream -- SpeedLimitAssist, the onroad speed limit widget, DEC --
 reads liveMapDataSP and needs no change.
 
@@ -14,6 +14,7 @@ speedLimitAheadDistance, which is exactly what a camera calls for.
 """
 import math
 import os
+import sqlite3
 
 from openpilot.cereal import log
 from openpilot.common.constants import CV
@@ -83,8 +84,19 @@ class KoreaMapData(BaseMapData):
     self.db.reload_if_changed()
 
     lat, lon = self.last_position.latitude, self.last_position.longitude
-    self.link = self.db.current_link(lat, lon, self.last_bearing)
-    self.camera = self.db.next_camera(lat, lon, self.last_bearing)
+    try:
+      self.link = self.db.current_link(lat, lon, self.last_bearing)
+      self.camera = self.db.next_camera(lat, lon, self.last_bearing)
+    except sqlite3.DatabaseError:
+      # A corrupt page raises on every query from here on, so retrying at 1 Hz would only
+      # crash-loop the process. Drop the database and keep publishing zeros: no speed limit
+      # is a safe answer, a dead mapd is a worse one.
+      self.open_failed = True
+      self.db.close()
+      self.db = None
+      self.link = None
+      self.camera = None
+      cloudlog.exception("korea_map: dropping the database after a query error")
 
   def get_current_speed_limit(self) -> float:
     nav = self.nav()

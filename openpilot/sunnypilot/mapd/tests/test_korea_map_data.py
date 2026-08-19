@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import sqlite3
 import time
 
 import openpilot.cereal.messaging as messaging
@@ -190,4 +191,42 @@ def test_update_location_does_not_reload_before_the_database_is_open():
 
   data.update_location()  # db stays None -- cameras_path/links_path are ""
 
+  assert data.db is None
+
+
+class ExplodingDB:
+  """Raises the way a corrupt sqlite page does, and records that it was closed."""
+
+  def __init__(self):
+    self.closed = False
+
+  def reload_if_changed(self):
+    return False
+
+  def current_link(self, lat, lon, heading_deg=None):
+    raise sqlite3.DatabaseError("database disk image is malformed")
+
+  def next_camera(self, lat, lon, heading_deg):
+    raise sqlite3.DatabaseError("database disk image is malformed")
+
+  def close(self):
+    self.closed = True
+
+
+def test_a_corrupt_database_is_dropped_instead_of_killing_the_process():
+  db = ExplodingDB()
+  data = make_data()
+  data.sm = location_message()
+  data.db = db
+  data.last_position = Coordinate(37.5000, 127.0260)
+  data.last_bearing = None
+
+  data.update_location()          # must not raise
+
+  assert data.db is None
+  assert data.open_failed
+  assert db.closed
+  assert data.get_current_speed_limit() == 0.
+
+  data.update_location()          # and must not reopen it
   assert data.db is None

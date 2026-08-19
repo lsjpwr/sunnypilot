@@ -53,8 +53,7 @@ class VisualsLayout(Widget):
       "RoadNameToggle": (
         lambda: tr("Display Road Name"),
         tr("Displays the name of the road the car is traveling on." +
-           "<br>The OpenStreetMap database of the location must be downloaded from " +
-           "the OSM panel to fetch the road name."),
+           "<br>Requires the map database to be installed on the device."),
         None,
       ),
       "GreenLightAlert": (
