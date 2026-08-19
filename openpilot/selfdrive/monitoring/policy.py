@@ -328,10 +328,6 @@ class DriverMonitoring:
 
     # sunnypilot: monitoring disabled - hold awareness green and drop any latched lockout.
     # Deliberately `==`, not `>=`: an unrecognised mode must fall through to standard
-    # monitoring rather than silently disabling it. This param is persistent, backed up,
-    # and remotely writable, so a stale or bad value has to fail safe. timeout_scale
-    # already treats anything other than RELAXED as 1.0, so the two agree.
-    # Deliberately `==`, not `>=`: an unrecognised mode must fall through to standard
     # monitoring rather than silently disabling it. This param is PERSISTENT|BACKUP and
     # is remotely writable over sunnylink, so a stale or bad value has to fail safe.
     # timeout_scale already treats anything other than RELAXED as 1.0; the two agree.
