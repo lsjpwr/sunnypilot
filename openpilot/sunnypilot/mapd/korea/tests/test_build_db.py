@@ -6,7 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 """
 import sqlite3
 
-from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_VERSION, build, in_korea, load_cameras, to_float, to_int
+from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_VERSION, build, in_korea, insert_links, \
+                                                     load_cameras, pack_geom, to_float, to_int
 
 CSV_HEADER = "무인교통단속카메라관리번호,위도,경도,단속구분,제한속도,과속단속구간길이\n"
 CSV_ROWS = (
@@ -79,4 +80,41 @@ def test_build_is_idempotent(tmp_path):
   assert n_cameras == 2
   con = sqlite3.connect(out)
   assert con.execute("SELECT COUNT(*) FROM cameras").fetchone()[0] == 2
+  con.close()
+
+
+import struct
+
+
+def test_pack_geom_roundtrips():
+  points = [(37.4979, 127.0276), (37.5000, 127.0300)]
+  blob = pack_geom(points)
+  assert len(blob) == 2 * 8  # two float32 pairs
+  flat = struct.unpack(f"<{len(blob) // 4}f", blob)
+  # float32 keeps ~0.5 m at Korean latitudes
+  assert abs(flat[0] - 37.4979) < 1e-5
+  assert abs(flat[1] - 127.0276) < 1e-5
+  assert abs(flat[2] - 37.5000) < 1e-5
+  assert abs(flat[3] - 127.0300) < 1e-5
+
+
+def test_pack_geom_empty():
+  assert pack_geom([]) == b""
+
+
+def test_insert_links_fills_bbox(tmp_path):
+  out = str(tmp_path / "links.sqlite")
+  build(out)  # empty db with the schema
+  con = sqlite3.connect(out)
+  n = insert_links(con, [(60, "테헤란로", [(37.4979, 127.0276), (37.5000, 127.0300)])])
+  con.commit()
+  assert n == 1
+
+  row = con.execute("SELECT max_spd, name FROM links").fetchone()
+  assert row == (60, "테헤란로")
+
+  minlat, maxlat, minlon, maxlon = con.execute(
+    "SELECT minlat, maxlat, minlon, maxlon FROM links_idx").fetchone()
+  assert minlat <= 37.4979 and maxlat >= 37.5000
+  assert minlon <= 127.0276 and maxlon >= 127.0300
   con.close()
