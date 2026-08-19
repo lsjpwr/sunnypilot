@@ -5,8 +5,8 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
 external_source: a UDP JSON sink a phone-side navigation app can push into. Nothing
-ships that app yet -- this is the socket it will connect to, and it stays closed
-unless KoreaExternalNavEnabled is set.
+ships that app yet -- this is the socket it will connect to; the caller is responsible
+for only starting it when KoreaExternalNavEnabled is set.
 
 Wire format, one JSON object per datagram, every key optional:
 
@@ -98,14 +98,23 @@ class ExternalNavSource:
       try:
         data, _ = sock.recvfrom(MAX_DATAGRAM)
       except OSError:
-        return  # socket closed by stop()
+        if self._sock is None:
+          return  # socket closed by stop()
+        # A datagram bigger than MAX_DATAGRAM also raises OSError here (WSAEMSGSIZE on
+        # Windows) while the socket is still open -- drop it and keep listening rather
+        # than let an oversize hostile packet kill the loop the same way.
+        continue
 
       try:
         payload = json.loads(data)
-      except (ValueError, UnicodeDecodeError):
-        continue
-      if not isinstance(payload, dict):
+        if not isinstance(payload, dict):
+          continue
+        nav = parse_payload(payload)
+      except Exception:
+        # One datagram must never kill this loop. Deeply nested JSON raises
+        # RecursionError (a RuntimeError, not a ValueError), and anything uncaught
+        # here silently disables the feature until the process restarts.
         continue
 
       with self._lock:
-        self._latest = parse_payload(payload)
+        self._latest = nav
