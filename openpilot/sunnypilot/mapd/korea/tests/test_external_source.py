@@ -10,7 +10,7 @@ import time
 
 import pytest
 
-from openpilot.sunnypilot.mapd.korea.external_source import EXTERNAL_TTL, ExternalNavSource, parse_payload
+from openpilot.sunnypilot.mapd.korea.external_source import EXTERNAL_TTL, MAX_DATAGRAM, ExternalNavSource, parse_payload
 
 VALID = {
   "speed_limit_kph": 60,
@@ -38,7 +38,7 @@ def test_parse_missing_keys_are_zero():
   assert nav.road_name == ""
 
 
-@pytest.mark.parametrize("value", [-10, 0, 500, "60", None, [60]])
+@pytest.mark.parametrize("value", [-10, 0, 500, "60", None, [60], True, False])
 def test_parse_clamps_implausible_speed(value):
   assert parse_payload({"speed_limit_kph": value}).speed_limit_kph == 0.
 
@@ -109,3 +109,27 @@ def test_stale_data_expires(source):
   # rewind the timestamp past the TTL instead of sleeping through it
   source._latest.received_at -= EXTERNAL_TTL + 1.
   assert source.latest() is None
+
+
+def test_deeply_nested_json_does_not_kill_loop(source):
+  # RecursionError is a RuntimeError, not a ValueError/UnicodeDecodeError -- a naive
+  # except clause lets it escape and kill the recv thread. Under MAX_DATAGRAM in size.
+  sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  sock.sendto(b"[" * 6000, ("127.0.0.1", source.port))
+  sock.close()
+  send(source.port, VALID)
+  nav = wait_for(source)
+  assert nav is not None
+  assert nav.speed_limit_kph == 60.
+
+
+def test_oversize_datagram_does_not_kill_loop(source):
+  # A datagram bigger than MAX_DATAGRAM can raise OSError out of recvfrom itself
+  # (WSAEMSGSIZE on Windows) -- must not be confused with the socket being closed.
+  sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  sock.sendto(b"x" * (MAX_DATAGRAM + 1000), ("127.0.0.1", source.port))
+  sock.close()
+  send(source.port, VALID)
+  nav = wait_for(source)
+  assert nav is not None
+  assert nav.speed_limit_kph == 60.
