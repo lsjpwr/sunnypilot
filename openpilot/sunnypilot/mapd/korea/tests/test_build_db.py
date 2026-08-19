@@ -11,17 +11,17 @@ import pytest
 
 from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, SCHEMA_CAMERAS, SCHEMA_LINKS, \
                                                      FALLBACK_PROJECTED_EPSG, WGS84_EPSG, \
-                                                     build_cameras, build_links, write_db, in_korea, insert_cameras, \
+                                                     build_cameras, write_db, in_korea, insert_cameras, \
                                                      insert_links, load_cameras, load_links, \
                                                      pack_geom, to_float, to_int
 
 CSV_HEADER = "무인교통단속카메라관리번호,위도,경도,단속구분,제한속도,과속단속구간길이\n"
 CSV_ROWS = (
-  "A-1,37.4979,127.0276,과속,60,0\n"        # kept
-  "A-2,37.5000,127.0300,구간단속,80,4200\n"  # kept, section
-  "A-3,37.5100,127.0400,신호,0,0\n"          # dropped: no speed limit
-  "A-4,0,0,과속,60,0\n"                      # dropped: outside Korea
-  "A-5,37.5200,127.0500,과속,999,0\n"        # dropped: implausible limit
+  "A-1,37.4979,127.0276,과속,60,0\n" +      # kept
+  "A-2,37.5000,127.0300,구간단속,80,4200\n" + # kept, section
+  "A-3,37.5100,127.0400,신호,0,0\n" +        # dropped: no speed limit
+  "A-4,0,0,과속,60,0\n" +                    # dropped: outside Korea
+  "A-5,37.5200,127.0500,과속,999,0\n" +      # dropped: implausible limit
   "A-6,,,과속,,\n"                            # dropped: empty row
 )
 
