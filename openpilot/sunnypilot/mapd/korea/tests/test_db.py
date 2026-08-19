@@ -35,6 +35,13 @@ OVERPASS_HIGH = (80, "고가차도", [(37.5100, 127.0500), (37.5100, 127.0510)])
 FAR_LOW = (30, "이면도로", [(37.5200, 127.0500), (37.5200, 127.0620)])
 FAR_HIGH = (100, "고속도로", [(37.5203, 127.0500), (37.5203, 127.0620)])
 
+# Two parallel roads ~24.5 m apart -- 245x TIE_DISTANCE_M, nowhere near tied. Dangerous
+# direction: the far road is faster (100) than the one the query point actually sits on
+# (30), reproducing the reviewer's finding that a stale sticky link ~25 m away could
+# outrank the road we are really on.
+STICKY_NEAR = (30, "이면도로", [(37.5300, 127.0500), (37.5300, 127.0620)])
+STICKY_FAR = (100, "고속도로", [(37.53022, 127.0500), (37.53022, 127.0620)])  # ~24.5 m north
+
 # os.replace() of a file with an open sqlite3 connection on it is a POSIX guarantee
 # (existing readers keep the old inode) that Windows does not provide (PermissionError:
 # WinError 5, even for a read-only, idle connection). These tests exercise exactly that
@@ -228,3 +235,40 @@ def test_current_link_tie_break_does_not_apply_across_separate_roads(tmp_path):
     assert link is not None and link.max_spd == 30
   finally:
     database.close()
+
+
+def test_current_link_holds_the_match_across_calls_when_still_tied(tmp_path):
+  # the other half of the hysteresis contract: two links tied well within TIE_DISTANCE_M
+  # must keep returning the same (higher-limit) link across consecutive calls
+  cams, links = _make_links_db(tmp_path, [OVERPASS_LOW, OVERPASS_HIGH])
+  database = KoreaMapDB(cams, links)
+  try:
+    first = database.current_link(37.5100, 127.0500)
+    second = database.current_link(37.5100, 127.0500)
+    assert first is not None and second is not None
+    assert first.max_spd == second.max_spd == 80
+  finally:
+    database.close()
+
+
+def test_current_link_stale_sticky_link_does_not_outrank_the_nearer_road(tmp_path):
+  # Reviewer-reported regression: a sticky link ~24.5 m away (245x TIE_DISTANCE_M, nowhere
+  # near tied) must never outrank the road the query point is actually sitting on.
+  # Dangerous direction: the stale/far link carries the HIGHER limit, so a bug here would
+  # silently permit 100 km/h on a road signed for 30. Checked both insertion orders --
+  # the old bug's outcome depended on the order sqlite happened to return rows in.
+  for order in ([STICKY_FAR, STICKY_NEAR], [STICKY_NEAR, STICKY_FAR]):
+    cams, links = _make_links_db(tmp_path, order)
+    database = KoreaMapDB(cams, links)
+    try:
+      # sit on the far link first, so hysteresis latches onto it for real, the way it
+      # would after actually driving that road
+      first = database.current_link(37.53022, 127.0500)
+      assert first is not None and first.max_spd == 100
+
+      # now the query point is on the near, slower road -- the far link is still within
+      # LINK_MAX_DISTANCE_M but 24.5 m away is not a tie, so it must not win
+      second = database.current_link(37.5300, 127.0500)
+      assert second is not None and second.max_spd == 30
+    finally:
+      database.close()

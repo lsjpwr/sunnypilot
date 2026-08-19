@@ -133,47 +133,52 @@ class KoreaMapDB:
     of each other) are broken toward the higher max_spd: guessing low makes speed limit
     assist brake for a limit that does not apply, guessing high only means it assists
     less, which is where the driver already is without this feature. The previous match
-    is held as long as it is still a candidate, so the pick does not flap between tied
-    links frame to frame; it releases on its own once the old link falls out of
-    LINK_MAX_DISTANCE_M or fails the heading check, e.g. after taking a diverging ramp.
+    is held only while it stays tied with the nearest candidate, so the pick does not
+    flap between tied links frame to frame; it releases as soon as a clearly nearer link
+    appears, not merely when it falls out of LINK_MAX_DISTANCE_M or fails the heading check.
     """
     rows = self.lnk.execute(
       "SELECT l.id, l.max_spd, l.name, l.geom FROM links_idx i JOIN links l ON l.id = i.id " + _RTREE_OVERLAP,
       (lat - LINK_SEARCH_DEG, lat + LINK_SEARCH_DEG, lon - LINK_SEARCH_DEG, lon + LINK_SEARCH_DEG),
     ).fetchall()
 
-    best: Link | None = None
-    best_distance = LINK_MAX_DISTANCE_M
-    best_id: int | None = None
-    sticky: Link | None = None
-
+    # Collect every link in range with its own closest distance BEFORE deciding anything.
+    # A running minimum made the outcome depend on the order sqlite returned rows in,
+    # which let a stale sticky link outrank a clearly nearer road.
+    candidates: dict[int, tuple[float, int, str]] = {}
     for link_id, max_spd, name, blob in rows:
       points = _unpack_geom(blob)
       for (alat, alon), (blat, blon) in zip(points, points[1:], strict=False):
-        distance = point_segment_distance(lat, lon, alat, alon, blat, blon)
-        if distance >= best_distance + TIE_DISTANCE_M:
-          continue
         if heading_deg is not None and not _heading_matches(heading_deg, alat, alon, blat, blon):
           continue
-        if link_id == self._last_link_id:
-          sticky = Link(max_spd=max_spd, name=name)
-        # Coincident candidates -- an overpass, a ramp, two links meeting at a node --
-        # cannot be told apart by distance, so prefer the higher limit. Guessing low makes
-        # the car brake for a limit that does not apply; guessing high only means it
-        # assists less, which is where the driver already is without this feature.
-        tied = best is not None and abs(distance - best_distance) <= TIE_DISTANCE_M
-        if tied and max_spd <= best.max_spd:
+        distance = point_segment_distance(lat, lon, alat, alon, blat, blon)
+        if distance >= LINK_MAX_DISTANCE_M:
           continue
-        if not tied and distance >= best_distance:
-          continue
-        best_distance = min(distance, best_distance)
-        best = Link(max_spd=max_spd, name=name)
-        best_id = link_id
+        previous = candidates.get(link_id)
+        if previous is None or distance < previous[0]:
+          candidates[link_id] = (distance, max_spd, name)
 
-    if sticky is not None:
-      best, best_id = sticky, self._last_link_id
+    if not candidates:
+      self._last_link_id = None
+      return None
+
+    nearest = min(distance for distance, _, _ in candidates.values())
+    # Everything inside the tie band is the same place as far as float32 geometry can tell.
+    tied = {link_id: value for link_id, value in candidates.items()
+            if value[0] <= nearest + TIE_DISTANCE_M}
+
+    if self._last_link_id in tied:
+      # Hold the previous match, but only against links it is genuinely tied with.
+      # Anything beyond the tie band is a different road and must outrank stickiness.
+      best_id = self._last_link_id
+    else:
+      # Prefer the higher limit among tied candidates, nearest first as a deterministic
+      # tiebreak so the result never depends on row order.
+      best_id = max(tied, key=lambda link_id: (tied[link_id][1], -tied[link_id][0]))
+
     self._last_link_id = best_id
-    return best
+    _, max_spd, name = candidates[best_id]
+    return Link(max_spd=max_spd, name=name)
 
   def next_camera(self, lat: float, lon: float, heading_deg: float | None) -> Camera | None:
     """Nearest speed camera ahead of us, or None. Needs a heading to know what 'ahead' means."""
