@@ -77,6 +77,33 @@ def test_build_cameras_writes_only_camera_tables(tmp_path):
   con.close()
 
 
+def test_build_cameras_rtree_finds_camera_by_bbox(tmp_path):
+  out = str(tmp_path / "korea_cameras.sqlite")
+  build_cameras(out, write_csv(tmp_path))
+
+  con = sqlite3.connect(out)
+  # the r-tree must find the 강남역 camera and nothing at sea off Busan
+  hit = con.execute("SELECT COUNT(*) FROM cameras_idx WHERE maxlat>=? AND minlat<=? AND maxlon>=? AND minlon<=?",
+                    (37.4970, 37.4990, 127.0270, 127.0285)).fetchone()[0]
+  assert hit == 1
+  miss = con.execute("SELECT COUNT(*) FROM cameras_idx WHERE maxlat>=? AND minlat<=? AND maxlon>=? AND minlon<=?",
+                     (35.0, 35.1, 129.0, 129.1)).fetchone()[0]
+  assert miss == 0
+  con.close()
+
+
+def test_build_cameras_is_idempotent(tmp_path):
+  out = str(tmp_path / "korea_cameras.sqlite")
+  csv_path = write_csv(tmp_path)
+
+  assert build_cameras(out, csv_path) == 2
+  assert build_cameras(out, csv_path) == 2  # os.replace over a live file, not a merge
+
+  con = sqlite3.connect(out)
+  assert con.execute("SELECT COUNT(*) FROM cameras").fetchone()[0] == 2
+  con.close()
+
+
 def test_build_links_writes_only_link_tables(tmp_path):
   out = str(tmp_path / "korea_links.sqlite")
 
@@ -92,6 +119,38 @@ def test_build_links_writes_only_link_tables(tmp_path):
   assert "cameras" not in tables, tables
   assert con.execute("SELECT COUNT(*) FROM links_idx").fetchone()[0] == 1
   con.close()
+
+
+def test_insert_links_bbox_matches_geometry(tmp_path):
+  out = str(tmp_path / "korea_links.sqlite")
+  points = [(37.4979, 127.0276), (37.5000, 127.0300)]
+
+  def fill(con):
+    return insert_links(con, [(60, "테헤란로", points)])
+
+  write_db(out, SCHEMA_LINKS, fill)
+
+  con = sqlite3.connect(out)
+  lats = [p[0] for p in points]
+  lons = [p[1] for p in points]
+  minlat, maxlat, minlon, maxlon = con.execute(
+    "SELECT minlat, maxlat, minlon, maxlon FROM links_idx").fetchone()
+  con.close()
+
+  # sqlite stores r-tree bounds as float32 and rounds OUTWARD by design, so the stored
+  # box is always a superset of the true one. That direction is the safe one: the r-tree
+  # is a coarse filter and point_segment_distance ranks precisely afterwards, so a box
+  # that is slightly too big costs a few extra candidates while one that is slightly too
+  # small silently drops the road the car is on.
+  assert minlat <= min(lats), (minlat, min(lats))
+  assert maxlat >= max(lats), (maxlat, max(lats))
+  assert minlon <= min(lons), (minlon, min(lons))
+  assert maxlon >= max(lons), (maxlon, max(lons))
+
+  # ...but it must still be tight enough to be a useful filter: float32 at Korean
+  # longitudes is good to ~1.5e-5 deg, roughly 1.5 m.
+  assert maxlat - minlat < (max(lats) - min(lats)) + 1e-4
+  assert maxlon - minlon < (max(lons) - min(lons)) + 1e-4
 
 
 def test_write_db_leaves_the_old_file_untouched_when_fill_raises(tmp_path):
