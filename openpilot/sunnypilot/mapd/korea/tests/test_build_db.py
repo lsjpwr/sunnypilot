@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, UTM_K_EPSG, WGS84_EPSG, \
+from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, FALLBACK_PROJECTED_EPSG, WGS84_EPSG, \
                                                      build, in_korea, insert_links, load_cameras, load_links, \
                                                      pack_geom, to_float, to_int
 
@@ -130,7 +130,7 @@ def test_load_links_reprojects_utm_k_when_no_prj(tmp_path):
 
   lat, lon = 37.4979, 127.0276
   lat2, lon2 = 37.5000, 127.0300
-  to_utm = Transformer.from_crs(CRS.from_epsg(WGS84_EPSG), CRS.from_epsg(UTM_K_EPSG), always_xy=True)
+  to_utm = Transformer.from_crs(CRS.from_epsg(WGS84_EPSG), CRS.from_epsg(FALLBACK_PROJECTED_EPSG), always_xy=True)
   x1, y1 = to_utm.transform(lon, lat)
   x2, y2 = to_utm.transform(lon2, lat2)
 
@@ -188,7 +188,7 @@ def test_load_links_raises_when_every_point_falls_outside_korea(tmp_path):
   # which is exactly the "every point survived reprojection but none belong" case Fix 2 guards.
   lat, lon = 35.6762, 139.6503
   lat2, lon2 = 35.6800, 139.6600
-  to_utm = Transformer.from_crs(CRS.from_epsg(WGS84_EPSG), CRS.from_epsg(UTM_K_EPSG), always_xy=True)
+  to_utm = Transformer.from_crs(CRS.from_epsg(WGS84_EPSG), CRS.from_epsg(FALLBACK_PROJECTED_EPSG), always_xy=True)
   x1, y1 = to_utm.transform(lon, lat)
   x2, y2 = to_utm.transform(lon2, lat2)
 
