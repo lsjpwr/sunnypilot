@@ -237,9 +237,11 @@ def test_current_link_tie_break_does_not_apply_across_separate_roads(tmp_path):
     database.close()
 
 
-def test_current_link_holds_the_match_across_calls_when_still_tied(tmp_path):
-  # the other half of the hysteresis contract: two links tied well within TIE_DISTANCE_M
-  # must keep returning the same (higher-limit) link across consecutive calls
+def test_current_link_tied_pair_returns_the_higher_limit_on_repeated_calls(tmp_path):
+  # NOTE: this alone does not prove hysteresis is doing anything -- max(tied, ...) picks
+  # 80 here every time regardless of the sticky branch, since 80 is genuinely the higher
+  # limit of the tied pair. It only pins that repeated calls stay consistent. The sticky
+  # branch itself is isolated by test_current_link_sticky_link_wins_over_the_tie_break_when_tied.
   cams, links = _make_links_db(tmp_path, [OVERPASS_LOW, OVERPASS_HIGH])
   database = KoreaMapDB(cams, links)
   try:
@@ -247,6 +249,34 @@ def test_current_link_holds_the_match_across_calls_when_still_tied(tmp_path):
     second = database.current_link(37.5100, 127.0500)
     assert first is not None and second is not None
     assert first.max_spd == second.max_spd == 80
+  finally:
+    database.close()
+
+
+def test_current_link_sticky_link_wins_over_the_tie_break_when_tied(tmp_path):
+  """Isolates hysteresis: without the sticky branch the tie-break would pick the other one."""
+  cams, links = _make_links_db(tmp_path, [OVERPASS_LOW, OVERPASS_HIGH])
+  database = KoreaMapDB(cams, links)
+  try:
+    # Both overpass links are coincident, so the tie-break alone always yields the higher
+    # limit (80) -- confirm that baseline first.
+    on_top = database.current_link(37.5100, 127.0500)
+    assert on_top is not None and on_top.max_spd == 80, on_top
+
+    # Pin the previous match to the LOWER link by its real rowid (looked up, not
+    # hardcoded, so this does not break if insertion order ever changes). max_spd = 50
+    # is unambiguous: OVERPASS_HIGH is the only other row and it is 80.
+    con = sqlite3.connect(links)
+    low_id = con.execute("SELECT id FROM links WHERE max_spd = 50").fetchone()[0]
+    con.close()
+    database._last_link_id = low_id
+
+    # Only the sticky branch can make the lower link come back here.
+    held = database.current_link(37.5100, 127.0500)
+    assert held is not None and held.max_spd == 50, held
+
+    # and it keeps holding it
+    assert database.current_link(37.5100, 127.0500).max_spd == 50
   finally:
     database.close()
 
