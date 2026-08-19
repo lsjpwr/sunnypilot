@@ -32,6 +32,11 @@ DESCRIPTIONS = {
     "without a turn signal activated while driving over 31 mph (50 km/h)."
   ),
   "AlwaysOnDM": tr_noop("Enable driver monitoring even when sunnypilot is not engaged."),
+  "DriverMonitoringMode": tr_noop(
+    "Standard: upstream driver monitoring. "
+    "Relaxed: the same alerts, three times longer before each one. "
+    "Off: no driver monitoring alerts. You remain responsible for the vehicle at all times."
+  ),
   'RecordFront': tr_noop("Upload data from the driver facing camera and help improve the driver monitoring algorithm."),
   "IsMetric": tr_noop("Display speed in km/h instead of mph."),
   "RecordAudio": tr_noop("Record and store microphone audio while driving. The audio will be included in the dashcam video in comma connect."),
@@ -106,6 +111,16 @@ class TogglesLayout(Widget):
       icon="speed_limit.png"
     )
 
+    self._driver_monitoring_mode_setting = multiple_button_item(
+      lambda: tr("Driver Monitoring Mode"),
+      lambda: tr(DESCRIPTIONS["DriverMonitoringMode"]),
+      buttons=[lambda: tr("Standard"), lambda: tr("Relaxed"), lambda: tr("Off")],
+      button_width=300,
+      callback=self._set_driver_monitoring_mode,
+      selected_index=self._params.get("DriverMonitoringMode", return_default=True),
+      icon="monitoring.png",
+    )
+
     self._toggles = {}
     self._locked_toggles = set()
     for param, (title, desc, icon, needs_restart) in self._toggle_defs.items():
@@ -138,6 +153,10 @@ class TogglesLayout(Widget):
       # insert longitudinal personality after NDOG toggle
       if param == "DisengageOnAccelerator":
         self._toggles["LongitudinalPersonality"] = self._long_personality_setting
+
+      # insert driver monitoring mode right after the always-on DM toggle
+      if param == "AlwaysOnDM":
+        self._toggles["DriverMonitoringMode"] = self._driver_monitoring_mode_setting
 
     self._update_experimental_mode_icon()
     self._scroller = Scroller(list(self._toggles.values()), line_separator=True, spacing=0)
@@ -247,3 +266,6 @@ class TogglesLayout(Widget):
 
   def _set_longitudinal_personality(self, button_index: int):
     self._params.put("LongitudinalPersonality", button_index, block=True)
+
+  def _set_driver_monitoring_mode(self, button_index: int):
+    self._params.put("DriverMonitoringMode", button_index, block=True)
