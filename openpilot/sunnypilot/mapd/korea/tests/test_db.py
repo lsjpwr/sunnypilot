@@ -22,15 +22,11 @@ CAM_AHEAD = (37.5000, 127.0257, 50, 0)
 CAM_BEHIND = (37.5000, 127.0143, 30, 0)
 CAM_SECTION = (37.5000, 127.0280, 80, 4200)
 
-# Windows will not os.replace() (nor otherwise swap the bytes of) a file that has an open
-# sqlite3 connection -- PermissionError: WinError 5 -- even a read-only, idle connection.
-# Confirmed with an isolated repro outside this suite: identical write_db()-style
-# tmp-file-then-os.replace sequence fails on win32 with an open ro connection on the
-# destination, and succeeds with nothing open. This is a Windows file-sharing limitation,
-# not a defect in reload_if_changed(): the real target is the comma device (Linux), where
-# POSIX rename semantics let existing readers keep the old inode. Skipped here rather than
-# weakened, so the assertions stay meaningful on POSIX CI where they do exercise the swap.
-_REPLACE_WHILE_OPEN_SKIP_REASON = "os.replace() of a file with an open sqlite3 connection always raises PermissionError on win32"
+# os.replace() of a file with an open sqlite3 connection on it is a POSIX guarantee
+# (existing readers keep the old inode) that Windows does not provide (PermissionError:
+# WinError 5, even for a read-only, idle connection). These tests exercise exactly that
+# guarantee, so they run on Linux, which is the device platform.
+_REPLACE_WHILE_OPEN_SKIP_REASON = "os.replace over an open sqlite file is a POSIX guarantee Windows lacks; these run on Linux, which is the device platform"
 
 
 def _make_pair(tmp_path):
@@ -86,9 +82,15 @@ def test_reload_keeps_the_old_db_when_the_new_one_is_broken(tmp_path):
   cams, links = _make_pair(tmp_path)
   database = KoreaMapDB(cams, links)
   try:
-    os.utime(cams, (0, 0))
-    with open(cams, "wb") as f:
+    # Corrupt it the way a bad refresh actually would: build a garbage file and
+    # os.replace it in. Truncating the live file in place instead would destroy the
+    # inode the open connection is reading and no amount of defensive code could
+    # survive that -- but Task 13 never does that, it always swaps a new file in.
+    bad = cams + ".bad"
+    with open(bad, "wb") as f:
       f.write(b"not a database at all")
+    os.replace(bad, cams)
+    os.utime(cams, (0, 0))
     assert database.reload_if_changed() is False
     # the live connection must still answer from the database it already had open
     assert database.next_camera(37.4990, 127.0260, 0.) is not None
