@@ -246,6 +246,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // korea map
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},
+    {"KoreaMapApiKey", {PERSISTENT | BACKUP, STRING, ""}},
     {"Offroad_KoreaMapMissing", {CLEAR_ON_MANAGER_START, JSON}},
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
 

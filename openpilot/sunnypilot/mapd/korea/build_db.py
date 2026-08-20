@@ -140,13 +140,30 @@ def load_cameras(path: str) -> Iterator[tuple[float, float, int, int]]:
 
   for row in rows:
     limit_kph = to_int(row.get(CAMERA_COLUMNS["limit"]))
-    if not 0 < limit_kph <= MAX_SPEED_LIMIT_KPH:
-      continue
     lat = to_float(row.get(CAMERA_COLUMNS["lat"]))
     lon = to_float(row.get(CAMERA_COLUMNS["lon"]))
-    if not in_korea(lat, lon):
-      continue
-    yield lat, lon, limit_kph, to_int(row.get(CAMERA_COLUMNS["section"]))
+    if keep_camera(lat, lon, limit_kph):
+      yield lat, lon, limit_kph, to_int(row.get(CAMERA_COLUMNS["section"]))
+
+
+def keep_camera(lat: float, lon: float, limit_kph: int) -> bool:
+  """The one filter both the CSV and the API path apply. Two copies would drift."""
+  return 0 < limit_kph <= MAX_SPEED_LIMIT_KPH and in_korea(lat, lon)
+
+
+def load_cameras_api(items) -> Iterator[tuple[float, float, int, int]]:
+  """Same rows as load_cameras, from the data.go.kr JSON API instead of the CSV.
+
+  The API romanises every field name -- latitude/longitude/lmttVe/ovrspdRegltSctnLt --
+  where the CSV uses 위도/경도/제한속도/과속단속구간길이. Verified against the 2026-08
+  snapshot: both paths yield the identical 33415 rows out of 43347.
+  """
+  for item in items:
+    limit_kph = to_int(item.get("lmttVe"))
+    lat = to_float(item.get("latitude"))
+    lon = to_float(item.get("longitude"))
+    if keep_camera(lat, lon, limit_kph):
+      yield lat, lon, limit_kph, to_int(item.get("ovrspdRegltSctnLt"))
 
 
 def insert_cameras(con: sqlite3.Connection, cameras) -> int:

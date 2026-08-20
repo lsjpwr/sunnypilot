@@ -11,6 +11,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper, config_realtime_process
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
+from openpilot.sunnypilot.mapd.korea.camera_refresh import CameraRefresher
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNavSource
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KOREA_CAMERAS_PATH, KOREA_LINKS_PATH,
                                                                     KOREA_MAP_DIR, KoreaMapData)
@@ -31,6 +32,9 @@ def main_thread() -> None:
     cloudlog.info("mapd: external nav listening on udp/%d", external.port)
 
   live_map_sp = KoreaMapData(external=external)
+
+  refresher = CameraRefresher(KOREA_CAMERAS_PATH)
+  refresher.start()
   rk = Ratekeeper(1, print_delay_threshold=None)
 
   # only touch the param on a transition; this loop runs forever and params live on flash
