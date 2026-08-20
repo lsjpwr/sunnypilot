@@ -27,8 +27,8 @@ sections:
   - key: RoadNameToggle
     widget: toggle
     title: Display Road Name
-    description: Displays the name of the road the car is traveling on. The OpenStreetMap database of the location must be
-      downloaded to fetch the road name.
+    description: Displays the name of the road the car is traveling on. Requires the map database to be installed on the
+      device.
     visibility:
     - $ref: '#/macros/hide_on_mici'
   - key: StandstillTimer

@@ -220,3 +220,49 @@ class TestNotEngagedReplacement(OpenpilotTestCase):
     rule_types = _flatten_rule_types(item.get("enablement"))
     assert "offroad_only" not in rule_types, f"{key} still uses offroad_only"
     assert "not_engaged" in rule_types, f"{key} missing not_engaged"
+
+
+class TestDriverMonitoringModeRemote(OpenpilotTestCase):
+  def test_driver_monitoring_mode_present(self, schema):
+    """DriverMonitoringMode must be remotely configurable, not device-only."""
+    item = _find_item(schema, "DriverMonitoringMode")
+    assert item is not None, "DriverMonitoringMode missing from settings_ui schema"
+    assert item.get("widget") == "multiple_button"
+    assert [o["value"] for o in item.get("options", [])] == [0, 1, 2]
+
+  def test_driver_monitoring_mode_is_offroad_only(self, schema):
+    """Never let a phone weaken driver monitoring on a car that is driving."""
+    item = _find_item(schema, "DriverMonitoringMode")
+    assert item is not None
+    assert "offroad_only" in _flatten_rule_types(item.get("enablement"))
+
+  def test_driver_monitoring_mode_requires_attestation(self, schema):
+    """Each remote write needs an explicit confirmation modal."""
+    item = _find_item(schema, "DriverMonitoringMode")
+    assert item is not None
+    assert item.get("requires_attestation") is True
+
+
+class TestKoreaMapRemote(OpenpilotTestCase):
+  def test_external_nav_toggle_present(self, schema):
+    item = _find_item(schema, "KoreaExternalNavEnabled")
+    assert item is not None, "KoreaExternalNavEnabled missing from settings_ui schema"
+    assert item.get("widget") == "toggle"
+
+  def test_external_nav_toggle_needs_onroad_cycle(self, schema):
+    """mapd_manager binds the UDP socket once at startup, so the change needs a cycle."""
+    item = _find_item(schema, "KoreaExternalNavEnabled")
+    assert item is not None
+    assert item.get("needs_onroad_cycle") is True
+
+  def test_external_nav_toggle_is_offroad_only(self, schema):
+    """Opening a control-plane UDP port mid-drive from a phone is not allowed."""
+    item = _find_item(schema, "KoreaExternalNavEnabled")
+    assert item is not None
+    assert "offroad_only" in _flatten_rule_types(item.get("enablement"))
+
+  def test_no_stale_map_source_references(self, schema):
+    """Task 9 removed OSM; no user-facing copy may still name it."""
+    blob = json.dumps(schema, ensure_ascii=False).lower()
+    for term in ("openstreetmap", "osm", "mapd"):
+      assert term not in blob, f"stale map source reference {term!r} in settings_ui schema"
