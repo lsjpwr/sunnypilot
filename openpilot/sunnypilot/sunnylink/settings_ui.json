@@ -906,6 +906,18 @@
                   ]
                 },
                 {
+                  "key": "KoreaExternalNavEnabled",
+                  "widget": "toggle",
+                  "needs_onroad_cycle": true,
+                  "title": "External Navigation Input",
+                  "description": "Accept speed limit and speed camera data from a companion navigation app on the local network. Leave this off unless you are running one \u2014 the built-in offline map database works without it.",
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
                   "key": "SpeedLimitOffsetType",
                   "widget": "multiple_button",
                   "title": "Speed Limit Offset Type",
@@ -1393,7 +1405,7 @@
               "key": "RoadNameToggle",
               "widget": "toggle",
               "title": "Display Road Name",
-              "description": "Displays the name of the road the car is traveling on. The OpenStreetMap database of the location must be downloaded to fetch the road name.",
+              "description": "Displays the name of the road the car is traveling on. Requires the map database to be installed on the device.",
               "visibility": [
                 {
                   "type": "not",
@@ -1599,6 +1611,33 @@
               "widget": "toggle",
               "title": "Always-On Driver Monitoring",
               "description": "Enable driver monitoring even when sunnypilot is not engaged."
+            },
+            {
+              "key": "DriverMonitoringMode",
+              "widget": "multiple_button",
+              "requires_attestation": true,
+              "title": "Driver Monitoring Mode",
+              "description": "Standard is the stock driver monitoring behavior. Relaxed keeps the same alerts but waits three times longer before each one. Off disables driver monitoring alerts entirely.",
+              "details": "Relaxed and Off weaken or remove the system that checks whether you are watching the road. You remain fully responsible for the vehicle and for keeping your eyes on the road at all times. Confirm that your local law permits this before changing it.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "Standard"
+                },
+                {
+                  "value": 1,
+                  "label": "Relaxed"
+                },
+                {
+                  "value": 2,
+                  "label": "Off"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                }
+              ]
             },
             {
               "key": "IsMetric",

@@ -186,6 +186,14 @@ sections:
         label: Map Data Priority
       - value: 4
         label: Combined
+    - key: KoreaExternalNavEnabled
+      widget: toggle
+      needs_onroad_cycle: true
+      title: External Navigation Input
+      description: Accept speed limit and speed camera data from a companion navigation app on the local network. Leave
+        this off unless you are running one — the built-in offline map database works without it.
+      enablement:
+      - $ref: '#/macros/offroad'
     - key: SpeedLimitOffsetType
       widget: multiple_button
       title: Speed Limit Offset Type

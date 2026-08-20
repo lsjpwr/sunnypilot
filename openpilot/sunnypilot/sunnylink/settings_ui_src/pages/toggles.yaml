@@ -28,6 +28,23 @@ sections:
     widget: toggle
     title: Always-On Driver Monitoring
     description: Enable driver monitoring even when sunnypilot is not engaged.
+  - key: DriverMonitoringMode
+    widget: multiple_button
+    requires_attestation: true
+    title: Driver Monitoring Mode
+    description: Standard is the stock driver monitoring behavior. Relaxed keeps the same alerts but waits three times
+      longer before each one. Off disables driver monitoring alerts entirely.
+    details: |-
+      Relaxed and Off weaken or remove the system that checks whether you are watching the road. You remain fully responsible for the vehicle and for keeping your eyes on the road at all times. Confirm that your local law permits this before changing it.
+    options:
+    - value: 0
+      label: Standard
+    - value: 1
+      label: Relaxed
+    - value: 2
+      label: 'Off'
+    enablement:
+    - $ref: '#/macros/offroad'
   - key: IsMetric
     widget: toggle
     title: Use Metric System
