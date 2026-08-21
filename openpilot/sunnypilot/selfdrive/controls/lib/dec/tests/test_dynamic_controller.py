@@ -26,8 +26,20 @@ class MockSelfDriveState:
     self.experimentalMode = experimentalMode
 
 class MockParams:
-  def get_bool(self, name):
-    return True
+  def __init__(self, params=None):
+    self.params = params or {}
+
+  def get(self, name, return_default=False):
+    return self.params.get(name, 1 if name == "DynamicExperimentalControl" else 0)
+
+  def get_int(self, name):
+    return self.params.get(name, 1 if name == "DynamicExperimentalControl" else 0)
+
+  def get_bool(self, name, return_default=False):
+    return self.params.get(name, True)
+
+  def put(self, key, val, block=False):
+    self.params[key] = val
 
 def default_sm():
   sm = {
