@@ -14,7 +14,6 @@ speedLimitAheadDistance, which is exactly what a camera calls for.
 """
 import math
 import os
-import sqlite3
 
 from openpilot.cereal import log
 from openpilot.common.constants import CV
@@ -87,10 +86,14 @@ class KoreaMapData(BaseMapData):
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing)
       self.camera = self.db.next_camera(lat, lon, self.last_bearing)
-    except sqlite3.DatabaseError:
-      # A corrupt page raises on every query from here on, so retrying at 1 Hz would only
-      # crash-loop the process. Drop the database and keep publishing zeros: no speed limit
-      # is a safe answer, a dead mapd is a worse one.
+    except Exception:
+      # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
+      # geometry blob raises struct.error from _unpack_geom -- not a sqlite exception at
+      # all -- and anything that escapes here reaches mapd_manager's bare `while True`,
+      # kills the process, and raises processNotRunning, which blocks engagement. Whatever
+      # the corruption is, it raises on every query from here on, so retrying at 1 Hz would
+      # only crash-loop. Drop the database and keep publishing zeros: no speed limit is a
+      # safe answer, a dead mapd is a worse one.
       self.open_failed = True
       self.db.close()
       self.db = None

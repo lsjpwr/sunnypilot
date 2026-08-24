@@ -9,6 +9,9 @@ import json
 import logging
 import os
 import sqlite3
+import sys
+import threading
+import types
 import urllib.error
 
 import pytest
@@ -165,3 +168,71 @@ def test_an_already_encoded_key_is_not_encoded_twice():
   assert "%252F" not in seen[0], "the escaped key was escaped a second time"
   # both forms must produce the identical query string
   assert seen[0] == seen[1]
+
+
+class OneShotStop(threading.Event):
+  """Lets _loop run exactly one iteration: the trailing wait() ends the loop."""
+
+  def wait(self, timeout=None):
+    self.set()
+    return True
+
+
+def run_one_iteration(monkeypatch, *, recv_frame, metered, api_key="a-key"):
+  """Drives CameraRefresher._loop once with the device stack faked out.
+
+  _loop imports cereal.messaging and Params inside the function so the module stays
+  importable under a bare interpreter. Injecting into sys.modules keeps that property --
+  a real SubMaster here would drag the whole device stack into this test file.
+  """
+  class FakeSubMaster:
+    def __init__(self):
+      self.recv_frame = {'deviceState': recv_frame}
+
+    def update(self, timeout):
+      pass
+
+    def __getitem__(self, service):
+      return types.SimpleNamespace(networkMetered=metered)
+
+  sm = FakeSubMaster()
+
+  messaging = types.ModuleType("cereal.messaging")
+  messaging.SubMaster = lambda services: sm
+  params_mod = types.ModuleType("openpilot.common.params")
+  params_mod.Params = lambda: types.SimpleNamespace(get=lambda k, return_default=False: api_key)
+
+  monkeypatch.setitem(sys.modules, "cereal", types.ModuleType("cereal"))
+  monkeypatch.setitem(sys.modules, "cereal.messaging", messaging)
+  monkeypatch.setitem(sys.modules, "openpilot.common.params", params_mod)
+
+  refreshed = []
+  monkeypatch.setattr(camera_refresh, "refresh", lambda path, key: refreshed.append(key) or True)
+
+  r = camera_refresh.CameraRefresher("/nonexistent/korea_cameras.sqlite")  # missing file: always due
+  r._stop = OneShotStop()
+  r._loop()
+  return refreshed
+
+
+def test_no_deviceState_yet_does_not_download(monkeypatch):
+  """A SubMaster that has received nothing reports networkMetered False -- the capnp
+  default, not an answer. Downloading on that would put several megabytes on a metered
+  link on the first tick after boot."""
+  assert run_one_iteration(monkeypatch, recv_frame=0, metered=False) == []
+
+
+def test_a_metered_network_does_not_download(monkeypatch):
+  assert run_one_iteration(monkeypatch, recv_frame=1, metered=True) == []
+
+
+def test_an_unmetered_network_downloads(monkeypatch):
+  assert run_one_iteration(monkeypatch, recv_frame=1, metered=False) == ["a-key"]
+
+
+def test_the_refresher_thread_survives_an_unexpected_error(monkeypatch):
+  """The thread has no supervisor; anything escaping _loop silently ends camera refreshes
+  for the life of the process."""
+  monkeypatch.setattr(camera_refresh.CameraRefresher, "_due",
+                      lambda self: (_ for _ in ()).throw(RuntimeError("boom")))
+  assert run_one_iteration(monkeypatch, recv_frame=1, metered=False) == []
