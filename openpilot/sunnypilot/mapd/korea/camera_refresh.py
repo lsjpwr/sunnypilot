@@ -169,13 +169,24 @@ class CameraRefresher:
 
     while not self._stop.is_set():
       wait = RETRY_INTERVAL_S
-      if self._due():
-        sm.update(0)
-        api_key = params.get("KoreaMapApiKey", return_default=True) or ""
-        if not api_key:
-          LOG.info("camera refresh: no KoreaMapApiKey set")
-        elif sm['deviceState'].networkMetered:
-          LOG.info("camera refresh: network is metered, waiting")
-        elif refresh(self.cameras_path, api_key):
-          wait = REFRESH_INTERVAL_S
+      try:
+        if self._due():
+          sm.update(0)
+          api_key = params.get("KoreaMapApiKey", return_default=True) or ""
+          if not api_key:
+            LOG.info("camera refresh: no KoreaMapApiKey set")
+          elif not sm.recv_frame['deviceState']:
+            # A SubMaster that has received nothing reports networkMetered False, which is
+            # the capnp default, not an answer. On the first tick after boot that would
+            # start a multi-megabyte download over a metered link.
+            LOG.info("camera refresh: no deviceState yet, waiting")
+          elif sm['deviceState'].networkMetered:
+            LOG.info("camera refresh: network is metered, waiting")
+          elif refresh(self.cameras_path, api_key):
+            wait = REFRESH_INTERVAL_S
+      except Exception:
+        # This thread has no supervisor. Anything that escapes here ends camera refreshes
+        # for the life of the process, silently -- so the guard goes around the whole body
+        # rather than around whichever call raised today.
+        LOG.exception("camera refresh: unexpected error, retrying later")
       self._stop.wait(wait)

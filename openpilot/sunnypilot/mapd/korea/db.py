@@ -79,9 +79,13 @@ class KoreaMapDB:
     # Two connections, not one attached database: Task 13 replaces the camera file
     # underneath us with os.replace while this process keeps running, and reopening one
     # connection must not disturb the 220 MB link database that never changes.
+    # Sample the mtime BEFORE opening, not after: opening the 220 MB link database takes
+    # long enough that a swap can land in between, and recording the new mtime against the
+    # old inode would leave reload_if_changed permanently satisfied -- stale cameras for
+    # the life of the process. Sampling early can only cause one redundant reload.
+    self._cameras_mtime = os.path.getmtime(cameras_path)
     self.cam = self._open(cameras_path)
     self.lnk = self._open(links_path)
-    self._cameras_mtime = os.path.getmtime(cameras_path)
 
   @staticmethod
   def _open(path: str) -> sqlite3.Connection:

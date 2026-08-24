@@ -5,7 +5,10 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import sqlite3
+import struct
 import time
+
+import pytest
 
 import openpilot.cereal.messaging as messaging
 from openpilot.common.constants import CV
@@ -195,26 +198,33 @@ def test_update_location_does_not_reload_before_the_database_is_open():
 
 
 class ExplodingDB:
-  """Raises the way a corrupt sqlite page does, and records that it was closed."""
+  """Raises the way a corrupt database does, and records that it was closed."""
 
-  def __init__(self):
+  def __init__(self, exc):
+    self.exc = exc
     self.closed = False
 
   def reload_if_changed(self):
     return False
 
   def current_link(self, lat, lon, heading_deg=None):
-    raise sqlite3.DatabaseError("database disk image is malformed")
+    raise self.exc
 
   def next_camera(self, lat, lon, heading_deg):
-    raise sqlite3.DatabaseError("database disk image is malformed")
+    raise self.exc
 
   def close(self):
     self.closed = True
 
 
-def test_a_corrupt_database_is_dropped_instead_of_killing_the_process():
-  db = ExplodingDB()
+# Both are reachable from one truncated file. A corrupt page raises out of sqlite, but a
+# short geometry blob raises struct.error out of _unpack_geom -- not a sqlite exception at
+# all. Either one escaping reaches mapd_manager's bare `while True` and takes the process
+# down, which raises processNotRunning and blocks engagement.
+@pytest.mark.parametrize("exc", [sqlite3.DatabaseError("database disk image is malformed"),
+                                 struct.error("unpack requires a buffer of 16 bytes")])
+def test_a_corrupt_database_is_dropped_instead_of_killing_the_process(exc):
+  db = ExplodingDB(exc)
   data = make_data()
   data.sm = location_message()
   data.db = db
