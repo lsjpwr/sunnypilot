@@ -63,6 +63,18 @@ def distance_to_point(ax, ay, bx, by):
 
 
 class SmartCruiseControlMap:
+  """Curve speed from map geometry. Inert on this branch -- kept, not wired.
+
+  It reads LastGPSPosition and MapTargetVelocities out of /dev/shm/params, and the only
+  writer of those was the pfeiferj mapd process that this branch replaced with the Korean
+  public map database. Nothing writes them now, so target_velocities stays empty and
+  get_v_target_from_control returns V_CRUISE_UNSET forever. The settings toggle was removed
+  rather than left advertising a dead feature; SmartCruiseControlMap itself stays so the
+  upstream merge surface does not move, and so a future producer only has to fill the two
+  params. Speed limits and cameras do not come through here -- they come through
+  liveMapDataSP from openpilot/sunnypilot/mapd/.
+  """
+
   v_target: float = 0
   a_target: float = 0.
   v_ego: float = 0.
