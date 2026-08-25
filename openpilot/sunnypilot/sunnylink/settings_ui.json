@@ -877,6 +877,28 @@
                   ]
                 },
                 {
+                  "key": "MapDataSource",
+                  "widget": "multiple_button",
+                  "needs_onroad_cycle": true,
+                  "title": "Map Data Source",
+                  "description": "Which map database feeds speed limits and road names. OpenStreetMap also provides curve geometry for Smart Cruise Control - Map; the Korean public database provides speed cameras instead.",
+                  "options": [
+                    {
+                      "value": 0,
+                      "label": "OpenStreetMap"
+                    },
+                    {
+                      "value": 1,
+                      "label": "Korea Public Data"
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    }
+                  ]
+                },
+                {
                   "key": "KoreaExternalNavEnabled",
                   "widget": "toggle",
                   "needs_onroad_cycle": true,

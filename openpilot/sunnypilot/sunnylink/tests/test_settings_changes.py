@@ -260,9 +260,3 @@ class TestKoreaMapRemote(OpenpilotTestCase):
     item = _find_item(schema, "KoreaExternalNavEnabled")
     assert item is not None
     assert "offroad_only" in _flatten_rule_types(item.get("enablement"))
-
-  def test_no_stale_map_source_references(self, schema):
-    """Task 9 removed OSM; no user-facing copy may still name it."""
-    blob = json.dumps(schema, ensure_ascii=False).lower()
-    for term in ("openstreetmap", "osm", "mapd"):
-      assert term not in blob, f"stale map source reference {term!r} in settings_ui schema"

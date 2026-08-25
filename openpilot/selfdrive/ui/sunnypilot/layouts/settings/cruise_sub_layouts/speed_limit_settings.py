@@ -19,6 +19,14 @@ from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
+MAP_SOURCE_BUTTONS = [tr("OpenStreetMap"), tr("Korea Public Data")]
+
+MAP_SOURCE_DESCRIPTIONS = [
+  tr("OpenStreetMap: worldwide coverage. Enables curve slowdown from map geometry."),
+  tr("Korea Public Data: speed limits and speed cameras from the Korean public datasets. " +
+     "No map curve data -- Smart Cruise Control - Vision covers curves."),
+]
+
 SPEED_LIMIT_MODE_BUTTONS = [tr("Off"), tr("Info"), tr("Warning"), tr("Assist")]
 SPEED_LIMIT_OFFSET_TYPE_BUTTONS = [tr("None"), tr("Fixed"), tr("%")]
 
@@ -55,6 +63,14 @@ class SpeedLimitSettingsLayout(Widget):
     self._scroller = Scroller(items, line_separator=False, spacing=0)
 
   def _initialize_items(self):
+    self._map_source = multiple_button_item_sp(
+      title=lambda: tr("Map Data Source"),
+      description=self._get_map_source_description,
+      buttons=MAP_SOURCE_BUTTONS,
+      param="MapDataSource",
+      button_width=380,
+    )
+
     self._speed_limit_mode = multiple_button_item_sp(
       title=lambda: tr("Speed Limit"),
       description=self._get_mode_description,
@@ -87,6 +103,8 @@ class SpeedLimitSettingsLayout(Widget):
     )
 
     items = [
+      self._map_source,
+      LineSeparatorSP(40),
       self._speed_limit_mode,
       LineSeparatorSP(40),
       self._source_button,
@@ -100,6 +118,10 @@ class SpeedLimitSettingsLayout(Widget):
     self._current_panel = panel
     if panel == PanelType.POLICY:
       self._policy_layout.show_event()
+
+  @staticmethod
+  def _get_map_source_description():
+    return get_highlighted_description(ui_state.params, "MapDataSource", MAP_SOURCE_DESCRIPTIONS)
 
   @staticmethod
   def _get_mode_description():
@@ -122,6 +144,10 @@ class SpeedLimitSettingsLayout(Widget):
 
   def _update_state(self):
     super()._update_state()
+
+    # Switching sources onroad would leave the running mapd_manager on the old database
+    # and the mapd binary in the wrong state until the next restart.
+    self._map_source.action_item.set_enabled(ui_state.is_offroad())
 
     speed_limit_mode_param = ui_state.params.get("SpeedLimitMode", return_default=True)
     if ui_state.CP is not None and ui_state.CP_SP is not None:

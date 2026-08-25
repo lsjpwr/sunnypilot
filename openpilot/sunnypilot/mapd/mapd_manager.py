@@ -5,17 +5,26 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import glob
+import json
 import logging
 import os
+import platform
+import shutil
+from datetime import datetime
 
+from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper, config_realtime_process
 from openpilot.common.swaglog import cloudlog, ForwardingHandler
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
+from openpilot.sunnypilot.mapd import MAPD_PATH, MapSource
 from openpilot.sunnypilot.mapd.korea.camera_refresh import CameraRefresher
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNavSource
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KOREA_CAMERAS_PATH, KOREA_LINKS_PATH,
                                                                     KOREA_MAP_DIR, KoreaMapData)
+from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
+from openpilot.sunnypilot.mapd.mapd_installer import VERSION, update_installed_version
 
 
 # openpilot/sunnypilot/mapd/korea/ logs through stdlib logging, not cloudlog, so that it
@@ -28,7 +37,108 @@ _korea_log.setLevel(logging.INFO)
 _korea_log.addHandler(ForwardingHandler(cloudlog))
 
 
-def main_thread() -> None:
+def get_files_for_cleanup() -> list[str]:
+  paths = [
+    f"{Paths.mapd_root()}/db",
+    f"{Paths.mapd_root()}/v*"
+  ]
+  files_to_remove = []
+  for path in paths:
+    if os.path.exists(path):
+      files = glob.glob(path + '/**', recursive=True)
+      files_to_remove.extend(files)
+  # check for version and mapd files
+  if not os.path.isfile(MAPD_PATH):
+    files_to_remove.append(MAPD_PATH)
+  return files_to_remove
+
+
+def cleanup_old_osm_data(files_to_remove: list[str]) -> None:
+  for file in files_to_remove:
+    # Remove trailing slash if path is file
+    if file.endswith('/') and os.path.isfile(file[:-1]):
+      file = file[:-1]
+    # Try to remove as file or symbolic link first
+    if os.path.islink(file) or os.path.isfile(file):
+      os.remove(file)
+    elif os.path.isdir(file):  # If it's a directory
+      shutil.rmtree(file, ignore_errors=False)
+
+
+def request_refresh_osm_location_data(params, mem_params, nations: list[str], states: list[str] | None = None) -> None:
+  params.put("OsmDownloadedDate", str(datetime.now().timestamp()), block=True)
+  params.put_bool("OsmDbUpdatesCheck", False, block=True)
+
+  osm_download_locations = {
+    "nations": nations,
+    "states": states or []
+  }
+
+  cloudlog.info("mapd: downloading maps for %s", json.dumps(osm_download_locations))
+  mem_params.put("OSMDownloadLocations", osm_download_locations, block=True)
+
+
+def filter_nations_and_states(nations: list[str], states: list[str] | None = None) -> tuple[list[str], list[str]]:
+  """Filters and prepares nation and state data for OSM map download.
+
+  If the nation is 'US' and a specific state is provided, the nation 'US' is removed from the list.
+  If the nation is 'US' and the state is 'All', the 'All' is removed from the list.
+  The idea behind these filters is that if a specific state in the US is provided,
+  there's no need to download map data for the entire US. Conversely,
+  if the state is unspecified (i.e., 'All'), we intend to download map data for the whole US,
+  and 'All' isn't a valid state name, so it's removed.
+  """
+  if "US" in nations and states and not any(x.lower() == "all" for x in states):
+    # If a specific state in the US is provided, remove 'US' from nations
+    nations.remove("US")
+  elif "US" in nations and states and any(x.lower() == "all" for x in states):
+    # If 'All' is provided as a state (case invariant), remove those instances from states
+    states = [x for x in states if x.lower() != "all"]
+  elif "US" not in nations and states and any(x.lower() == "all" for x in states):
+    states.remove("All")
+  return nations, states or []
+
+
+def update_osm_db(params, mem_params) -> None:
+  if params.get_bool("OsmDbUpdatesCheck"):
+    cleanup_old_osm_data(get_files_for_cleanup())
+    country = params.get("OsmLocationName", return_default=True)
+    state = params.get("OsmStateName", return_default=True)
+    filtered_nations, filtered_states = filter_nations_and_states([country], [state])
+    request_refresh_osm_location_data(params, mem_params, filtered_nations, filtered_states)
+
+  if not mem_params.get("OSMDownloadBounds"):
+    mem_params.put("OSMDownloadBounds", "", block=True)
+
+  if not mem_params.get("LastGPSPosition"):
+    mem_params.put("LastGPSPosition", "{}", block=True)
+
+
+def osm_main() -> None:
+  params = Params()
+  mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else params
+
+  update_installed_version(VERSION, params)
+  config_realtime_process([0, 1, 2, 3], 5)
+
+  rk = Ratekeeper(1, print_delay_threshold=None)
+  live_map_sp = OsmMapData()
+
+  try:
+    os.makedirs(Paths.mapd_root(), exist_ok=True)
+  except OSError:
+    cloudlog.exception("mapd: failed to make %s", Paths.mapd_root())
+
+  while True:
+    show_alert = bool(get_files_for_cleanup() and params.get_bool("OsmLocal"))
+    set_offroad_alert("Offroad_OSMUpdateRequired", show_alert, "This alert will be cleared when new maps are downloaded.")
+
+    update_osm_db(params, mem_params)
+    live_map_sp.tick()
+    rk.keep_time()
+
+
+def korea_main() -> None:
   config_realtime_process([0, 1, 2, 3], 5)
 
   try:
@@ -71,7 +181,14 @@ def main_thread() -> None:
 
 
 def main() -> None:
-  main_thread()
+  # Read once at startup. Switching sources mid-drive is not supported: the link database
+  # opens once when the process starts, and the mapd binary is managed by manager, not by
+  # this loop. The settings UI restricts the change to offroad for the same reason.
+  source = Params().get("MapDataSource", return_default=True)
+  if source == MapSource.osm:
+    osm_main()
+  else:
+    korea_main()
 
 
 if __name__ == "__main__":

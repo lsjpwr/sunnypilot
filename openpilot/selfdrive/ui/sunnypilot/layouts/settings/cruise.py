@@ -8,6 +8,7 @@ from enum import IntEnum
 
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import SpeedLimitSettingsLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.mapd import MapSource
 from openpilot.system.ui.lib.multilang import tr, tr_noop
 from openpilot.system.ui.sunnypilot.widgets.list_view import (toggle_item_sp, option_item_sp, simple_button_item_sp,
                                                               multiple_button_item_sp)
@@ -25,6 +26,11 @@ ICBM_DESC = tr_noop("When enabled, sunnypilot will attempt to manage the built-i
 ICMB_UNAVAILABLE = tr_noop("Intelligent Cruise Button Management is currently unavailable on this platform.")
 ICMB_UNAVAILABLE_LONG_AVAILABLE = tr_noop("Disable the sunnypilot Longitudinal Control (alpha) toggle to allow Intelligent Cruise Button Management.")
 ICMB_UNAVAILABLE_LONG_UNAVAILABLE = tr_noop("sunnypilot Longitudinal Control is the default longitudinal control for this platform.")
+
+SCC_MAP_KOREA_DESCRIPTION = tr_noop("Requires the OpenStreetMap data source. " +
+                                    "The Korean public database has no curve geometry; " +
+                                    "Smart Cruise Control - Vision covers curves instead.")
+SCC_MAP_DESCRIPTION = tr_noop("Use map data to estimate the appropriate speed to drive through turns ahead.")
 
 ACC_ENABLED_DESCRIPTION = tr_noop("Enable custom Short & Long press increments for cruise speed increase/decrease.")
 ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot longitudinal control enabled.")
@@ -55,7 +61,7 @@ class CruiseLayout(Widget):
 
     self.scc_m_toggle = toggle_item_sp(
       title=tr("Smart Cruise Control - Map"),
-      description=tr("Use map data to estimate the appropriate speed to drive through turns ahead."),
+      description=tr(SCC_MAP_DESCRIPTION),
       param="SmartCruiseControlMap")
 
     self.custom_acc_toggle = toggle_item_sp(
@@ -166,7 +172,11 @@ class CruiseLayout(Widget):
         self.dec_option.action_item.set_enabled(has_long)
         self.dec_map_max_speed_option.action_item.set_enabled(has_long)
         self.scc_v_toggle.action_item.set_enabled(True)
-        self.scc_m_toggle.action_item.set_enabled(True)
+        is_osm = ui_state.params.get("MapDataSource", return_default=True) == MapSource.osm
+        self.scc_m_toggle.action_item.set_enabled(is_osm)
+        new_scc_m_desc = tr(SCC_MAP_DESCRIPTION if is_osm else SCC_MAP_KOREA_DESCRIPTION)
+        if self.scc_m_toggle.description != new_scc_m_desc:
+          self.scc_m_toggle.set_description(new_scc_m_desc)
       else:
         ui_state.params.remove("CustomAccIncrementsEnabled")
         ui_state.params.remove("DynamicExperimentalControl")

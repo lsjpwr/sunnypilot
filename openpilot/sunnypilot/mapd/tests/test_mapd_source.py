@@ -45,3 +45,19 @@ def test_the_mapd_binary_runs_only_for_osm(tmp_path, monkeypatch, source, dir_ex
   monkeypatch.setattr("openpilot.system.manager.process_config.Paths.mapd_root",
                       staticmethod(lambda: str(root)))
   assert mapd_ready(False, FakeParams(source), None) is expected
+
+
+def test_main_dispatches_on_the_param(monkeypatch):
+  """One read at startup decides the whole process. Getting this backwards means the
+  wrong database feeds every speed limit for the entire drive."""
+  from openpilot.sunnypilot.mapd import mapd_manager
+
+  called = []
+  monkeypatch.setattr(mapd_manager, "osm_main", lambda: called.append("osm"))
+  monkeypatch.setattr(mapd_manager, "korea_main", lambda: called.append("korea"))
+
+  for source, expected in ((MapSource.osm, "osm"), (MapSource.korea, "korea")):
+    called.clear()
+    monkeypatch.setattr(mapd_manager, "Params", lambda s=source: FakeParams(s))
+    mapd_manager.main()
+    assert called == [expected], f"source {source!r} started {called}"
