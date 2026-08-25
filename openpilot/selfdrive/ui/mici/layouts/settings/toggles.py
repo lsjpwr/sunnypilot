@@ -57,6 +57,16 @@ class TogglesLayoutMici(NavScroller):
     korea_nav_toggle = BigParamControl("korean external navigation input", "KoreaExternalNavEnabled")
 
     def api_key_callback(text):
+      # The dialog always seeds empty now (see edit_api_key below), so a bare tap on
+      # confirm submits "". If a key is already stored, treat that as a no-op instead
+      # of wiping it -- otherwise "open to check whether a key is set, then hit the
+      # obvious confirm button" silently destroys a live credential with no undo.
+      # Trade-off: the key can no longer be cleared from mici, only replaced. The big
+      # UI can still clear it (its dialog pre-fills under password_mode, so the user
+      # can delete the characters and confirm) -- losing a rarely-used clear button on
+      # the smaller surface is preferable to silent data loss on a credential.
+      if not text and ui_state.params.get("KoreaMapApiKey"):
+        return
       ui_state.params.put("KoreaMapApiKey", text)
       self._api_key_btn.set_value("Set" if text else "Not set")
 
