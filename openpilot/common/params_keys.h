@@ -247,6 +247,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
 
     // mapd
+    {"MapDataSource", {PERSISTENT | BACKUP, INT, "1"}},
     {"MapAdvisorySpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
