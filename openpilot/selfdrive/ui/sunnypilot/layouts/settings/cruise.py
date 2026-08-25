@@ -53,6 +53,11 @@ class CruiseLayout(Widget):
       description=tr("Use vision path predictions to estimate the appropriate speed to drive through turns ahead."),
       param="SmartCruiseControlVision")
 
+    self.scc_m_toggle = toggle_item_sp(
+      title=tr("Smart Cruise Control - Map"),
+      description=tr("Use map data to estimate the appropriate speed to drive through turns ahead."),
+      param="SmartCruiseControlMap")
+
     self.custom_acc_toggle = toggle_item_sp(
       title=tr("Custom ACC Speed Increments"),
       description="",
@@ -101,6 +106,7 @@ class CruiseLayout(Widget):
       self.dec_option,
       self.dec_map_max_speed_option,
       self.scc_v_toggle,
+      self.scc_m_toggle,
       self.custom_acc_toggle,
       self.custom_acc_short_increment,
       self.custom_acc_long_increment,
@@ -160,15 +166,18 @@ class CruiseLayout(Widget):
         self.dec_option.action_item.set_enabled(has_long)
         self.dec_map_max_speed_option.action_item.set_enabled(has_long)
         self.scc_v_toggle.action_item.set_enabled(True)
+        self.scc_m_toggle.action_item.set_enabled(True)
       else:
         ui_state.params.remove("CustomAccIncrementsEnabled")
         ui_state.params.remove("DynamicExperimentalControl")
         ui_state.params.remove("DynamicExperimentalControlMapMaxSpeed")
         ui_state.params.remove("SmartCruiseControlVision")
+        ui_state.params.remove("SmartCruiseControlMap")
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_option.action_item.set_enabled(False)
         self.dec_map_max_speed_option.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
+        self.scc_m_toggle.action_item.set_enabled(False)
 
     else:
       has_icbm = has_long = False
