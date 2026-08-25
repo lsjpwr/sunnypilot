@@ -10,11 +10,15 @@ from enum import IntEnum
 import pyray as rl
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_policy import SpeedLimitPolicyLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode as SpeedLimitMode
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import OffsetType as SpeedLimitOffsetType
 from openpilot.system.ui.lib.multilang import tr
 from openpilot.system.ui.sunnypilot.widgets import get_highlighted_description
-from openpilot.system.ui.sunnypilot.widgets.list_view import multiple_button_item_sp, option_item_sp, simple_button_item_sp, LineSeparatorSP
+from openpilot.system.ui.sunnypilot.widgets.input_dialog import InputDialogSP
+from openpilot.system.ui.sunnypilot.widgets.list_view import (multiple_button_item_sp, option_item_sp,
+                                                              simple_button_item_sp, toggle_item_sp,
+                                                              LineSeparatorSP, ListItemSP, SimpleButtonActionSP)
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.network import NavButton
 from openpilot.system.ui.widgets.scroller_tici import Scroller
@@ -85,6 +89,22 @@ class SpeedLimitSettingsLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.POLICY)
     )
 
+    self._external_nav = toggle_item_sp(
+      title=lambda: tr("External Navigation Input"),
+      description=tr("Accept speed limit and speed camera data from a companion navigation app on the " +
+                     "local network. Leave this off unless you are running one -- the built-in offline " +
+                     "map database works without it."),
+      param="KoreaExternalNavEnabled")
+
+    self._api_key = ListItemSP(
+      title=lambda: tr("Speed Camera API Key"),
+      description=tr("data.go.kr key used to refresh the speed camera database over Wi-Fi. " +
+                     "Without it the cameras shipped with the database are used as-is."),
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: tr("Change") if ui_state.params.get("KoreaMapApiKey") else tr("Set"),
+        callback=self._edit_api_key,
+      ))
+
     self._speed_limit_offset_type = multiple_button_item_sp(
       title=lambda: tr("Speed Limit Offset"),
       description="",
@@ -109,6 +129,9 @@ class SpeedLimitSettingsLayout(Widget):
       LineSeparatorSP(40),
       self._source_button,
       LineSeparatorSP(40),
+      self._external_nav,
+      self._api_key,
+      LineSeparatorSP(40),
       self._speed_limit_offset_type,
       self._speed_limit_value_offset
     ]
@@ -118,6 +141,16 @@ class SpeedLimitSettingsLayout(Widget):
     self._current_panel = panel
     if panel == PanelType.POLICY:
       self._policy_layout.show_event()
+
+  @staticmethod
+  def _edit_api_key():
+    InputDialogSP(
+      title=tr("Speed Camera API Key"),
+      sub_title=tr("data.go.kr service key"),
+      current_text=ui_state.params.get("KoreaMapApiKey") or "",
+      param="KoreaMapApiKey",
+      password_mode=True,
+    ).show()
 
   @staticmethod
   def _get_map_source_description():
@@ -147,7 +180,12 @@ class SpeedLimitSettingsLayout(Widget):
 
     # Switching sources onroad would leave the running mapd_manager on the old database
     # and the mapd binary in the wrong state until the next restart.
-    self._map_source.action_item.set_enabled(ui_state.is_offroad())
+    is_offroad = ui_state.is_offroad()
+    self._map_source.action_item.set_enabled(is_offroad)
+
+    is_korea = ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea
+    self._external_nav.action_item.set_enabled(is_korea)
+    self._api_key.action_item.set_enabled(is_korea)
 
     speed_limit_mode_param = ui_state.params.get("SpeedLimitMode", return_default=True)
     if ui_state.CP is not None and ui_state.CP_SP is not None:

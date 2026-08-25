@@ -3,8 +3,8 @@ from collections.abc import Callable
 from openpilot.cereal import log
 
 from openpilot.system.ui.widgets.scroller import NavScroller
-from openpilot.selfdrive.ui.mici.widgets.button import BigParamControl, BigMultiParamToggle, BigToggle, GreyBigButton
-from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationCircleButton
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl, BigMultiParamToggle, BigToggle, GreyBigButton
+from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationCircleButton, BigInputDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
@@ -53,6 +53,22 @@ class TogglesLayoutMici(NavScroller):
     record_mic = BigParamControl("record & upload mic audio", "RecordAudio", toggle_callback=restart_needed_callback)
     enable_openpilot = BigParamControl("enable sunnypilot", "OpenpilotEnabledToggle", toggle_callback=restart_needed_callback)
 
+    korea_nav_toggle = BigParamControl("korean external navigation input", "KoreaExternalNavEnabled")
+
+    def api_key_callback(text):
+      ui_state.params.put("KoreaMapApiKey", text)
+      self._api_key_btn.set_value("Set" if text else "Not set")
+
+    def edit_api_key():
+      gui_app.push_widget(BigInputDialog("enter data.go.kr service key...",
+                                         ui_state.params.get("KoreaMapApiKey") or "",
+                                         minimum_length=0,
+                                         confirm_callback=api_key_callback))
+
+    has_key = bool(ui_state.params.get("KoreaMapApiKey"))
+    self._api_key_btn = BigButton("speed camera API key", "Set" if has_key else "Not set")
+    self._api_key_btn.set_click_callback(edit_api_key)
+
     self._scroller.add_widgets([
       self._personality_toggle,
       self._experimental_btn,
@@ -63,6 +79,8 @@ class TogglesLayoutMici(NavScroller):
       record_front,
       record_mic,
       enable_openpilot,
+      korea_nav_toggle,
+      self._api_key_btn,
     ])
 
     # Toggle lists
@@ -74,6 +92,7 @@ class TogglesLayoutMici(NavScroller):
       ("RecordFront", record_front),
       ("RecordAudio", record_mic),
       ("OpenpilotEnabledToggle", enable_openpilot),
+      ("KoreaExternalNavEnabled", korea_nav_toggle),
     )
 
     enable_openpilot.set_enabled(lambda: not ui_state.engaged)

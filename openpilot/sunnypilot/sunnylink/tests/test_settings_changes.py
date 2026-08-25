@@ -260,3 +260,25 @@ class TestKoreaMapRemote(OpenpilotTestCase):
     item = _find_item(schema, "KoreaExternalNavEnabled")
     assert item is not None
     assert "offroad_only" in _flatten_rule_types(item.get("enablement"))
+
+
+class TestKoreaMapSettings(OpenpilotTestCase):
+  """The source selector and the external-nav toggle must exist on the remote surface.
+  A raylib-only setting is invisible to sunnylink users."""
+
+  def test_the_remote_settings_are_in_the_schema(self):
+    schema = generate_schema()
+    for key in ("MapDataSource", "KoreaExternalNavEnabled"):
+      self.assertIsNotNone(_find_item(schema, key), f"{key} missing from the sunnylink schema")
+
+  def test_the_api_key_stays_off_the_remote_surface(self):
+    """The schema has no free-text widget (settings_ui.schema.json enumerates
+    toggle/option/multiple_button/button/info), and an API key does not belong on a
+    remote surface anyway. It is device-only, entered through InputDialogSP."""
+    self.assertIsNone(_find_item(generate_schema(), "KoreaMapApiKey"))
+
+  def test_the_source_selector_offers_exactly_two_sources(self):
+    """The option values are the button indices the raylib widget writes to the param.
+    A third option here without a MapSource member would write a value nothing handles."""
+    item = _find_item(generate_schema(), "MapDataSource")
+    self.assertEqual([o["value"] for o in item["options"]], [0, 1])
