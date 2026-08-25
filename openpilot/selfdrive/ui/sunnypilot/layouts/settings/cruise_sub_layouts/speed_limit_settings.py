@@ -184,7 +184,9 @@ class SpeedLimitSettingsLayout(Widget):
     self._map_source.action_item.set_enabled(is_offroad)
 
     is_korea = ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea
-    self._external_nav.action_item.set_enabled(is_korea)
+    # Remote schema restricts this toggle to offroad (opening a control-plane UDP port
+    # mid-drive from a phone is not allowed) -- match that here so on-device parity holds.
+    self._external_nav.action_item.set_enabled(is_korea and is_offroad)
     self._api_key.action_item.set_enabled(is_korea)
 
     speed_limit_mode_param = ui_state.params.get("SpeedLimitMode", return_default=True)

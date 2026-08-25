@@ -111,7 +111,9 @@ class TogglesLayoutMici(NavScroller):
     enable_openpilot.set_enabled(lambda: not ui_state.engaged)
     record_front.set_enabled(False if ui_state.params.get_bool("RecordFrontLock") else (lambda: not ui_state.engaged))
     record_mic.set_enabled(lambda: not ui_state.engaged)
-    korea_nav_toggle.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
+    # Remote schema restricts KoreaExternalNavEnabled to offroad (opening a control-plane
+    # UDP port mid-drive from a phone is not allowed) -- match that here for parity.
+    korea_nav_toggle.set_enabled(lambda: ui_state.is_offroad() and ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
     self._api_key_btn.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
 
     if ui_state.params.get_bool("ShowDebugInfo"):
