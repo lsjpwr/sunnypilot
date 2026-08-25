@@ -90,6 +90,13 @@ class Paths:
       return "/data/community/crashes"
 
   @staticmethod
+  def mapd_root() -> str:
+    if PC:
+      return str(Path(Paths.comma_home()) / "media" / "0" / "osm")
+    else:
+      return "/data/media/0/osm"
+
+  @staticmethod
   def korea_map_root() -> str:
     if PC:
       return str(Path(Paths.comma_home()) / "media" / "0" / "korea_map")
