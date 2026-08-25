@@ -8,6 +8,7 @@ from openpilot.selfdrive.ui.mici.widgets.dialog import BigConfirmationCircleButt
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
+from openpilot.sunnypilot.mapd import MapSource
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
@@ -60,8 +61,10 @@ class TogglesLayoutMici(NavScroller):
       self._api_key_btn.set_value("Set" if text else "Not set")
 
     def edit_api_key():
+      # Seed empty, not the stored key -- this dialog has no password/masking mode,
+      # so pre-filling it would put the live credential on screen in cleartext.
       gui_app.push_widget(BigInputDialog("enter data.go.kr service key...",
-                                         ui_state.params.get("KoreaMapApiKey") or "",
+                                         "",
                                          minimum_length=0,
                                          confirm_callback=api_key_callback))
 
@@ -98,6 +101,8 @@ class TogglesLayoutMici(NavScroller):
     enable_openpilot.set_enabled(lambda: not ui_state.engaged)
     record_front.set_enabled(False if ui_state.params.get_bool("RecordFrontLock") else (lambda: not ui_state.engaged))
     record_mic.set_enabled(lambda: not ui_state.engaged)
+    korea_nav_toggle.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
+    self._api_key_btn.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
 
     if ui_state.params.get_bool("ShowDebugInfo"):
       gui_app.set_show_touches(True)
