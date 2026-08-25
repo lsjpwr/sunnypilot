@@ -33,6 +33,10 @@
     "text": "sunnypilot detected a change in the device's mounting position. Ensure the device is fully seated in the mount and the mount is firmly secured to the windshield.",
     "severity": 0
   },
+  "Offroad_OSMUpdateRequired": {
+    "text": "OpenStreetMap database is out of date. New maps must be downloaded if you wish to continue using OpenStreetMap data for Enhanced Speed Control and road name display.\n\n%1",
+    "severity": 0
+  },
   "Offroad_KoreaMapMissing": {
     "text": "Korean map database not found. Speed limit assist and road name display are unavailable until it is copied to the device.\n\n%1",
     "severity": 0
