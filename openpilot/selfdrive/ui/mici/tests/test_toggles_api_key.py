@@ -16,7 +16,9 @@ confirm icon does: construct the real layout, tap the real button, type into the
 real keyboard buffer, fire the real confirm/dismiss path. Not a reimplementation
 of its logic.
 """
+import os
 import time
+import unittest
 
 import pyray as rl
 
@@ -43,6 +45,7 @@ def _wait_for_param(ui_state, expected, timeout=2.0):
 
 
 class TestApiKeyCallback(OpenpilotTestCase):
+  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_empty_submit_only_clears_when_nothing_was_stored(self, subtests):
     rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
     from openpilot.system.ui.lib.application import gui_app
