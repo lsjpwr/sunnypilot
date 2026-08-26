@@ -18,7 +18,12 @@ class InputDialogSP:
                min_text_size: int = 0, password_mode: bool = False):
     self.callback = callback
     self.current_text = current_text
-    self.keyboard = Keyboard(max_text_size=255, min_text_size=min_text_size, password_mode=password_mode)
+    # show_password_toggle=password_mode: password_mode alone does not mask anything -- Keyboard
+    # only ever calls InputBox.set_password_mode() when show_password_toggle is set (see
+    # keyboard.py:_render_input_area). Without this, InputBox._get_display_text() renders the
+    # raw seeded text in cleartext regardless of password_mode.
+    self.keyboard = Keyboard(max_text_size=255, min_text_size=min_text_size, password_mode=password_mode,
+                              show_password_toggle=password_mode)
     self.param = param
     self._params = Params()
     self.sub_title = sub_title
