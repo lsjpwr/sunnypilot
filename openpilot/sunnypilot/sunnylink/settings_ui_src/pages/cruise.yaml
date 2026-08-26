@@ -226,6 +226,9 @@ sections:
         this off unless you are running one — the built-in offline map database works without it.
       enablement:
       - $ref: '#/macros/offroad'
+      - type: param
+        key: MapDataSource
+        equals: 1
     - key: SpeedLimitOffsetType
       widget: multiple_button
       title: Speed Limit Offset Type
@@ -307,3 +310,6 @@ sections:
       - type: capability
         field: has_icbm
         equals: true
+    - type: param
+      key: MapDataSource
+      equals: 0

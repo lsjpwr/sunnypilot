@@ -106,6 +106,25 @@ def _references_capability_field(rules: list[dict[str, Any]] | None, field: str)
   return found
 
 
+def _references_param_equals(rules: list[dict[str, Any]] | None, key: str, equals: Any) -> bool:
+  """True if some (possibly nested, under any/all/not) rule is `type: param, key: <key>, equals: <equals>`."""
+  found = False
+
+  def _walk(rule: dict[str, Any]) -> None:
+    nonlocal found
+    if rule.get("type") == "param" and rule.get("key") == key and rule.get("equals") == equals:
+      found = True
+    elif rule.get("type") == "not" and "condition" in rule:
+      _walk(rule["condition"])
+    elif rule.get("type") in ("any", "all"):
+      for c in rule.get("conditions", []):
+        _walk(c)
+
+  for rule in rules or []:
+    _walk(rule)
+  return found
+
+
 def schema():
   return generate_schema()
 
@@ -264,6 +283,14 @@ class TestKoreaMapRemote(OpenpilotTestCase):
     assert item is not None
     assert "offroad_only" in _flatten_rule_types(item.get("enablement"))
 
+  def test_external_nav_toggle_requires_korea_map_source(self, schema):
+    """Both device UIs additionally gate this on MapDataSource == korea (speed_limit_settings.py
+    and mici toggles.py) -- the remote must not allow enabling it while OSM is the active source."""
+    item = _find_item(schema, "KoreaExternalNavEnabled")
+    assert item is not None
+    assert _references_param_equals(item.get("enablement"), "MapDataSource", 1), \
+      "KoreaExternalNavEnabled missing MapDataSource == korea (1) gate"
+
 
 class TestKoreaMapSettings(OpenpilotTestCase):
   """The source selector and the external-nav toggle must exist on the remote surface.
@@ -285,3 +312,27 @@ class TestKoreaMapSettings(OpenpilotTestCase):
     A third option here without a MapSource member would write a value nothing handles."""
     item = _find_item(generate_schema(), "MapDataSource")
     self.assertEqual([o["value"] for o in item["options"]], [0, 1])
+
+
+class TestSmartCruiseControlMapRemote(OpenpilotTestCase):
+  """SmartCruiseControlMap consumes map curve geometry that only the OSM path produces
+  (cruise.py:175-176 additionally disables the tici toggle when not OSM). mici has no
+  SCC-Map surface, so the remote must independently match the tici rule."""
+
+  def test_smart_cruise_control_map_requires_osm_source(self, schema):
+    """MapDataSource == osm must be a top-level enablement item, ANDed with the existing
+    any(has_longitudinal_control, has_icbm) block -- not folded inside that any block's own
+    conditions list, which would let MapDataSource == osm alone satisfy the whole rule with
+    no capability check at all."""
+    item = _find_item(schema, "SmartCruiseControlMap")
+    assert item is not None
+    enablement = item.get("enablement") or []
+    assert any(r.get("type") == "param" and r.get("key") == "MapDataSource" and r.get("equals") == 0
+               for r in enablement), "MapDataSource == osm (0) missing as a top-level (ANDed) enablement item"
+
+  def test_smart_cruise_control_map_still_requires_a_capability(self, schema):
+    """The MapDataSource gate must not have replaced the capability check."""
+    item = _find_item(schema, "SmartCruiseControlMap")
+    assert item is not None
+    assert _references_capability_field(item.get("enablement"), "has_longitudinal_control")
+    assert _references_capability_field(item.get("enablement"), "has_icbm")

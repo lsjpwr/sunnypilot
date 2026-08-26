@@ -905,6 +905,11 @@
                   "enablement": [
                     {
                       "type": "offroad_only"
+                    },
+                    {
+                      "type": "param",
+                      "key": "MapDataSource",
+                      "equals": 1
                     }
                   ]
                 },
@@ -1050,6 +1055,11 @@
                       "equals": true
                     }
                   ]
+                },
+                {
+                  "type": "param",
+                  "key": "MapDataSource",
+                  "equals": 0
                 }
               ]
             }
