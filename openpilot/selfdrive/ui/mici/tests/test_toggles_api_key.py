@@ -52,6 +52,18 @@ def _wait_for_param(ui_state, expected, timeout=2.0):
   return value
 
 
+def _ensure_params_dir(test_case, ui_state):
+  """ui_state.params is a process-wide singleton bound once, at whichever test in this
+  file happens to import ui_state first -- and when that test's OpenpilotPrefix tears
+  down, it deletes the on-disk directory ui_state.params is bound to (down to the leaf
+  prefix dir; the parent survives), so put()/get() on it silently no-op afterwards.
+  Neither TestApiKeyCallback nor TestKoreaModeGating controls which of them (if either)
+  runs first, so both must call this before touching ui_state.params."""
+  params_dir = ui_state.params.get_param_path()
+  os.makedirs(params_dir, exist_ok=True)
+  test_case.addCleanup(shutil.rmtree, params_dir, ignore_errors=True)
+
+
 class TestApiKeyCallback(OpenpilotTestCase):
   @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_empty_submit_only_clears_when_nothing_was_stored(self, subtests):
@@ -62,6 +74,8 @@ class TestApiKeyCallback(OpenpilotTestCase):
 
     from openpilot.selfdrive.ui.mici.layouts.settings.toggles import TogglesLayoutMici
     from openpilot.selfdrive.ui.ui_state import ui_state
+
+    _ensure_params_dir(self, ui_state)
 
     # ui_state.params is a process-wide singleton bound at import time, not isolated
     # per test by OpenpilotTestCase's params prefix -- restore whatever this key held.
@@ -134,14 +148,7 @@ class TestKoreaModeGating(OpenpilotTestCase):
     from openpilot.selfdrive.ui.ui_state import ui_state
     from openpilot.sunnypilot.mapd import MapSource
 
-    # ui_state.params is a process-wide singleton bound once, at whichever test in this
-    # file happens to import ui_state first (see TestApiKeyCallback above) -- and when
-    # that other test's OpenpilotPrefix tears down, it deletes the on-disk directory
-    # ui_state.params is bound to (down to the leaf prefix dir; the parent survives), so
-    # put()/get() on it silently no-op if this test runs after that one. Recreate it.
-    params_dir = ui_state.params.get_param_path()
-    os.makedirs(params_dir, exist_ok=True)
-    self.addCleanup(shutil.rmtree, params_dir, ignore_errors=True)
+    _ensure_params_dir(self, ui_state)
 
     original_source = ui_state.params.get("MapDataSource", return_default=True)
     original_started = ui_state.started
@@ -164,4 +171,13 @@ class TestKoreaModeGating(OpenpilotTestCase):
 
     ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
     self.assertTrue(korea_nav_toggle.enabled)
+    self.assertTrue(layout._api_key_btn.enabled)
+
+    # Onroad dimension: korea_nav_toggle's lambda also ANDs in ui_state.is_offroad()
+    # (KoreaExternalNavEnabled is offroad-only, see toggles.py) -- api_key_btn's does
+    # not, and must stay enabled onroad. Previously untested: this test held started
+    # False for the whole run above, so deleting "ui_state.is_offroad() and" from
+    # toggles.py would not have failed here.
+    ui_state.started = True
+    self.assertFalse(korea_nav_toggle.enabled)
     self.assertTrue(layout._api_key_btn.enabled)

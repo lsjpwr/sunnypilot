@@ -1,0 +1,75 @@
+"""
+Regression test for SpeedLimitSettingsLayout's korea-mode gating -- the big-UI (tici)
+counterpart of the mici gating covered by
+openpilot/selfdrive/ui/mici/tests/test_toggles_api_key.py::TestKoreaModeGating.
+
+speed_limit_settings.py:_update_state() enables three action items on different rules:
+  - _map_source only requires offroad, independent of MapDataSource.
+  - _external_nav requires MapDataSource == korea AND offroad (KoreaExternalNavEnabled
+    is offroad-only, same as the mici korea_nav_toggle).
+  - _api_key requires MapDataSource == korea only -- it stays enabled onroad.
+Previously uncovered by any committed test. Drives the real _update_state() on a real
+constructed layout rather than reimplementing the predicate.
+"""
+import os
+import shutil
+import unittest
+
+import pyray as rl
+
+from openpilot.common.test import OpenpilotTestCase
+
+
+class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
+  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
+  def test_external_nav_api_key_map_source_enabled_state(self, subtests):
+    rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
+    from openpilot.system.ui.lib.application import gui_app
+    gui_app.init_window("test_speed_limit_settings_korea_gating")
+    self.addCleanup(gui_app.close)
+
+    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import SpeedLimitSettingsLayout
+    from openpilot.selfdrive.ui.ui_state import ui_state
+    from openpilot.sunnypilot.mapd import MapSource
+
+    # Same process-wide-singleton hazard documented in mici/tests/test_toggles_api_key.py
+    # (see _ensure_params_dir / TestKoreaModeGating there): ui_state.params may already be
+    # bound to a directory some earlier test's OpenpilotPrefix has since deleted, silently
+    # no-op'ing put()/get(). Recreate it defensively -- which test in the whole run first
+    # imports ui_state is not something this file controls.
+    params_dir = ui_state.params.get_param_path()
+    os.makedirs(params_dir, exist_ok=True)
+    self.addCleanup(shutil.rmtree, params_dir, ignore_errors=True)
+
+    original_source = ui_state.params.get("MapDataSource", return_default=True)
+    original_started = ui_state.started
+
+    def _restore():
+      ui_state.params.put("MapDataSource", int(original_source), block=True)
+      ui_state.started = original_started
+    self.addCleanup(_restore)
+
+    layout = SpeedLimitSettingsLayout(lambda: None)
+
+    with subtests.test(case="korea + offroad -> external_nav, api_key, map_source all enabled"):
+      ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
+      ui_state.started = False
+      layout._update_state()
+      self.assertTrue(layout._external_nav.action_item.enabled)
+      self.assertTrue(layout._api_key.action_item.enabled)
+      self.assertTrue(layout._map_source.action_item.enabled)
+
+    with subtests.test(case="korea + onroad -> external_nav and map_source disabled, api_key stays enabled"):
+      ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
+      ui_state.started = True
+      layout._update_state()
+      self.assertFalse(layout._external_nav.action_item.enabled)
+      self.assertTrue(layout._api_key.action_item.enabled)
+      self.assertFalse(layout._map_source.action_item.enabled)
+
+    with subtests.test(case="osm + offroad -> external_nav and api_key disabled"):
+      ui_state.params.put("MapDataSource", int(MapSource.osm), block=True)
+      ui_state.started = False
+      layout._update_state()
+      self.assertFalse(layout._external_nav.action_item.enabled)
+      self.assertFalse(layout._api_key.action_item.enabled)
