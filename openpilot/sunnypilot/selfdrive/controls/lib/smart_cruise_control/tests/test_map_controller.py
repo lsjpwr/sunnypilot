@@ -13,6 +13,7 @@ from openpilot.cereal import custom
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import R, SmartCruiseControlMap
 from openpilot.common.test import OpenpilotTestCase
 
@@ -29,6 +30,11 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
 
   def reset_params(self):
     self.params.put_bool("SmartCruiseControlMap", True, block=True)
+    # LastGPSPosition/MapTargetVelocities are only ever populated while the OSM path runs --
+    # match that precondition so the rest of this file's assertions exercise the intended
+    # "OSM active" scenario. MapDataSource defaults to korea (see params_keys.h), which would
+    # otherwise leave .enabled False despite the toggle above.
+    self.params.put("MapDataSource", int(MapSource.osm), block=True)
 
     # TODO-SP: mock data from gpsLocation
     self.params.put("LastGPSPosition", "{}", block=True)
@@ -48,6 +54,31 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
       self.scc_m.update(True, False, 0., 0., 0.)
     assert self.scc_m.state == VisionState.disabled
     assert not self.scc_m.is_active
+
+  def test_korea_mode_disables_map_even_with_toggle_on(self):
+    """SmartCruiseControlMap must stay disabled outside OSM mode, even with the toggle itself
+    on: LastGPSPosition/MapTargetVelocities are only written while the OSM path runs, so in
+    korea mode they're a frozen snapshot from whenever OSM last ran (or never, on a device
+    that has only ever used korea mode) -- not a live GPS position. Regression test for
+    computing a slowdown target from a stale, non-advancing position after a source switch."""
+    self.params.put("MapDataSource", int(MapSource.korea), block=True)
+    scc_m = SmartCruiseControlMap()
+    assert not scc_m.enabled
+
+    for _ in range(int(10. / DT_MDL)):
+      scc_m.update(True, False, 0., 0., 0.)
+    assert scc_m.state == VisionState.disabled
+    assert not scc_m.is_active
+
+    # Switching back to osm re-enables it without having to re-toggle -- the controller
+    # preserves the user's SmartCruiseControlMap preference rather than clearing it on a
+    # source switch. update_params() re-reads the source periodically (not just __init__),
+    # so drive enough frames for that periodic refresh to land.
+    self.params.put("MapDataSource", int(MapSource.osm), block=True)
+    for _ in range(int(10. / DT_MDL)):
+      scc_m.update(True, False, 0., 0., 0.)
+    assert scc_m.enabled
+    assert scc_m.state == VisionState.enabled
 
   def test_disabled(self):
     for _ in range(int(10. / DT_MDL)):

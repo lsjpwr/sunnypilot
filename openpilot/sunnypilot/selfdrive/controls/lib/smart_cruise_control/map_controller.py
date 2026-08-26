@@ -7,6 +7,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.navd.helpers import coordinate_from_param, Coordinate
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
@@ -73,7 +74,7 @@ class SmartCruiseControlMap:
   def __init__(self):
     self.params = Params()
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
-    self.enabled = self.params.get_bool("SmartCruiseControlMap")
+    self.enabled = self._get_enabled()
     self.long_enabled = False
     self.long_override = False
     self.is_enabled = False
@@ -96,9 +97,19 @@ class SmartCruiseControlMap:
   def get_a_target_from_control(self) -> float:
     return self.a_ego
 
+  def _get_enabled(self) -> bool:
+    # LastGPSPosition/MapTargetVelocities are only written while the OSM path runs. In korea
+    # mode neither osm_main() nor the native mapd binary runs, so both mem_params freeze at
+    # their last OSM value and nothing sweeps them -- gate on the active source here (not just
+    # the toggle) so a stale, non-advancing snapshot from before a source switch never drives a
+    # slowdown target. This holds regardless of which surface set the toggle (device UI, mici,
+    # or the sunnylink remote) and preserves the toggle's value for when the user switches back.
+    return self.params.get_bool("SmartCruiseControlMap") and \
+      self.params.get("MapDataSource", return_default=True) == MapSource.osm
+
   def update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
-      self.enabled = self.params.get_bool("SmartCruiseControlMap")
+      self.enabled = self._get_enabled()
 
   def update_calculations(self) -> None:
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
