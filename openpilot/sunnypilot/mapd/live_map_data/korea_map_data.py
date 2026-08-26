@@ -60,6 +60,19 @@ class KoreaMapData(BaseMapData):
       self.open_failed = True
       cloudlog.exception("korea_map: giving up on %s + %s", self.cameras_path, self.links_path)
 
+  def close(self) -> None:
+    """Release the sqlite handles and forget the last match.
+
+    open_db() is lazy, so self.db is None for every tick before both files land: a source
+    switch in that window must not take the process down with an AttributeError. Does not
+    touch self.external -- korea_main owns that one and stops it itself.
+    """
+    if self.db is not None:
+      self.db.close()
+    self.db = None
+    self.link = None
+    self.camera = None
+
   def nav(self) -> ExternalNav | None:
     return self.external.latest() if self.external is not None else None
 
@@ -95,10 +108,7 @@ class KoreaMapData(BaseMapData):
       # only crash-loop. Drop the database and keep publishing zeros: no speed limit is a
       # safe answer, a dead mapd is a worse one.
       self.open_failed = True
-      self.db.close()
-      self.db = None
-      self.link = None
-      self.camera = None
+      self.close()
       cloudlog.exception("korea_map: dropping the database after a query error")
 
   def get_current_speed_limit(self) -> float:

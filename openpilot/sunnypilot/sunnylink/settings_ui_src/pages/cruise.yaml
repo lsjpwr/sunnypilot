@@ -208,7 +208,6 @@ sections:
         label: Combined
     - key: MapDataSource
       widget: multiple_button
-      needs_onroad_cycle: true
       title: Map Data Source
       description: Which map database feeds speed limits and road names. OpenStreetMap also
         provides curve geometry for Smart Cruise Control - Map; the Korean public database
@@ -222,7 +221,6 @@ sections:
       - $ref: '#/macros/offroad'
     - key: KoreaExternalNavEnabled
       widget: toggle
-      needs_onroad_cycle: true
       title: External Navigation Input
       description: Accept speed limit and speed camera data from a companion navigation app on the local network. Leave
         this off unless you are running one — the built-in offline map database works without it.

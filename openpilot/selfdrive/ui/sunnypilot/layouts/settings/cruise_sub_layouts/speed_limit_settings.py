@@ -178,8 +178,9 @@ class SpeedLimitSettingsLayout(Widget):
   def _update_state(self):
     super()._update_state()
 
-    # Switching sources onroad would leave the running mapd_manager on the old database
-    # and the mapd binary in the wrong state until the next restart.
+    # mapd_manager swaps sources in place now, so this applies within a tick -- the gate
+    # stays because changing where every speed limit comes from at speed is a bad idea,
+    # not because it would take until a restart.
     is_offroad = ui_state.is_offroad()
     self._map_source.action_item.set_enabled(is_offroad)
 

@@ -117,6 +117,7 @@ def update_osm_db(params, mem_params) -> None:
 def osm_main() -> None:
   params = Params()
   mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else params
+  source = params.get("MapDataSource", return_default=True)
 
   update_installed_version(VERSION, params)
   config_realtime_process([0, 1, 2, 3], 5)
@@ -130,6 +131,9 @@ def osm_main() -> None:
     cloudlog.exception("mapd: failed to make %s", Paths.mapd_root())
 
   while True:
+    if params.get("MapDataSource", return_default=True) != source:
+      return  # main() starts the source the param now names; OsmMapData holds nothing to release
+
     show_alert = bool(get_files_for_cleanup() and params.get_bool("OsmLocal"))
     set_offroad_alert("Offroad_OSMUpdateRequired", show_alert, "This alert will be cleared when new maps are downloaded.")
 
@@ -141,13 +145,17 @@ def osm_main() -> None:
 def korea_main() -> None:
   config_realtime_process([0, 1, 2, 3], 5)
 
+  params = Params()
+  source = params.get("MapDataSource", return_default=True)
+  external_nav = params.get_bool("KoreaExternalNavEnabled")
+
   try:
     os.makedirs(KOREA_MAP_DIR, exist_ok=True)
   except OSError:
     cloudlog.exception("mapd: failed to make %s", KOREA_MAP_DIR)
 
   external = None
-  if Params().get_bool("KoreaExternalNavEnabled"):
+  if external_nav:
     try:
       external = ExternalNavSource()
       external.start()
@@ -171,6 +179,12 @@ def korea_main() -> None:
   db_missing: list[str] | None = None
 
   while True:
+    # KoreaExternalNavEnabled ends the loop too: the socket binds once above, so the only
+    # way to honour a toggle is to come back through here and let main() start us again.
+    if (params.get("MapDataSource", return_default=True) != source or
+        params.get_bool("KoreaExternalNavEnabled") != external_nav):
+      break
+
     absent = [p for p in (KOREA_CAMERAS_PATH, KOREA_LINKS_PATH) if not os.path.exists(p)]
     if absent != db_missing:
       set_offroad_alert("Offroad_KoreaMapMissing", bool(absent), f"Missing {', '.join(absent)}")
@@ -179,16 +193,29 @@ def korea_main() -> None:
     live_map_sp.tick()
     rk.keep_time()
 
+  # Release everything before returning: the next ExternalNavSource cannot bind udp/5555
+  # while this one still holds it, a refresher left running would rewrite the camera file
+  # underneath whatever starts next, and the link database is 220 MB of open sqlite.
+  if external is not None:
+    external.stop()
+  refresher.stop()
+  live_map_sp.close()
+
 
 def main() -> None:
-  # Read once at startup. Switching sources mid-drive is not supported: the link database
-  # opens once when the process starts, and the mapd binary is managed by manager, not by
-  # this loop. The settings UI restricts the change to offroad for the same reason.
-  source = Params().get("MapDataSource", return_default=True)
-  if source == MapSource.osm:
-    osm_main()
-  else:
-    korea_main()
+  # Supervisor. Each source loop returns when MapDataSource changes, and this picks the
+  # source the param now names, so a switch applies on the next tick with no reboot.
+  # Exiting instead would not work: manager registers mapd_manager with always_run, and
+  # ensure_running only calls stop() -- the one thing that clears self.proc -- when
+  # should_run is False, so an mapd_manager that exits stays dead until the next boot.
+  # The settings UI still restricts the change to offroad, now because swapping the speed
+  # limit source at speed is a bad idea, not because it would take until a restart.
+  params = Params()
+  while True:
+    if params.get("MapDataSource", return_default=True) == MapSource.osm:
+      osm_main()
+    else:
+      korea_main()
 
 
 if __name__ == "__main__":

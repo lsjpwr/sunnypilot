@@ -249,11 +249,14 @@ class TestKoreaMapRemote(OpenpilotTestCase):
     assert item is not None, "KoreaExternalNavEnabled missing from settings_ui schema"
     assert item.get("widget") == "toggle"
 
-  def test_external_nav_toggle_needs_onroad_cycle(self, schema):
-    """mapd_manager binds the UDP socket once at startup, so the change needs a cycle."""
-    item = _find_item(schema, "KoreaExternalNavEnabled")
-    assert item is not None
-    assert item.get("needs_onroad_cycle") is True
+  def test_the_korea_map_settings_apply_without_a_cycle(self, schema):
+    """Both are read every tick by mapd_manager's supervisor loop, which tears the running
+    source down and starts the one the params now name. An onroad/offroad cycle would not
+    help anyway: mapd_manager is registered always_run, so it never stops."""
+    for key in ("MapDataSource", "KoreaExternalNavEnabled"):
+      item = _find_item(schema, key)
+      assert item is not None
+      assert not item.get("needs_onroad_cycle"), f"{key} claims it takes an onroad cycle"
 
   def test_external_nav_toggle_is_offroad_only(self, schema):
     """Opening a control-plane UDP port mid-drive from a phone is not allowed."""

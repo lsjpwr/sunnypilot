@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 MAX_DATAGRAM = 8192
 EXTERNAL_PORT = 5555
 EXTERNAL_TTL = 5.  # s, treat anything older as gone
+RECV_TIMEOUT = .25  # s, how long recvfrom holds the socket before letting stop() have it
 
 MAX_SPEED_LIMIT_KPH = 130.
 MAX_DISTANCE_M = 10000.
@@ -75,6 +76,11 @@ class ExternalNavSource:
   def start(self) -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind(("0.0.0.0", self.port))
+    # Not a receive deadline -- it is what makes stop() able to give the port back. A
+    # thread parked in a blocking recvfrom holds the file description open right through
+    # close(), so the next source to enable this gets EADDRINUSE. socket.timeout is an
+    # OSError, so the loop below already treats a wakeup the same as any other.
+    sock.settimeout(RECV_TIMEOUT)
     self.port = sock.getsockname()[1]  # resolves port 0 to what the OS picked
     self._sock = sock
     self._thread = threading.Thread(target=self._recv_loop, args=(sock,), daemon=True)
@@ -84,6 +90,9 @@ class ExternalNavSource:
     sock, self._sock = self._sock, None
     if sock is not None:
       sock.close()
+    thread, self._thread = self._thread, None
+    if thread is not None:
+      thread.join(timeout=2.)  # the port is not free until the recv thread has let go of it
 
   def latest(self) -> ExternalNav | None:
     """Most recent payload, or None when nothing has arrived inside EXTERNAL_TTL."""
@@ -100,7 +109,8 @@ class ExternalNavSource:
       except OSError:
         if self._sock is None:
           return  # socket closed by stop()
-        # A datagram bigger than MAX_DATAGRAM also raises OSError here (WSAEMSGSIZE on
+        # The RECV_TIMEOUT wakeup arrives here a few times a second while nothing is sent,
+        # and a datagram bigger than MAX_DATAGRAM also raises OSError here (WSAEMSGSIZE on
         # Windows) while the socket is still open -- drop it and keep listening rather
         # than let an oversize hostile packet kill the loop the same way.
         # ponytail: no backoff here. Every OSError reachable on an unconnected UDP socket

@@ -133,3 +133,24 @@ def test_oversize_datagram_does_not_kill_loop(source):
   nav = wait_for(source)
   assert nav is not None
   assert nav.speed_limit_kph == 60.
+
+
+def test_stop_releases_the_port_for_the_next_source():
+  """mapd_manager switches map sources in place, so the source that comes up after a
+  switch has to be able to bind the port the previous one used. A close() alone does not
+  free it: a thread blocked in recvfrom holds the file description open, and the bind
+  comes back EADDRINUSE -- which lands in korea_main's "continue without external nav"
+  path and silently disables the feature until the next reboot."""
+  first = ExternalNavSource(port=0)
+  first.start()
+  port, thread = first.port, first._thread
+  first.stop()
+
+  assert not thread.is_alive(), "the recv thread outlived stop() and still holds the socket"
+
+  second = ExternalNavSource(port=port)
+  second.start()          # must not raise OSError: [Errno 98] Address already in use
+  try:
+    assert second.port == port
+  finally:
+    second.stop()
