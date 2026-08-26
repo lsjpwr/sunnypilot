@@ -211,13 +211,62 @@ def test_the_korea_loop_returns_when_external_nav_is_toggled(monkeypatch, tmp_pa
 
 def test_the_korea_loop_still_alerts_on_the_missing_database(monkeypatch, tmp_path):
   """Pre-existing behaviour, pinned here because an exit condition was added to this loop:
-  the alert names the files that are actually absent, and the refresher still starts."""
+  the alert names the files that are actually absent, and the refresher still starts. The
+  second tuple is the exit-path clear -- the outgoing source must not leave a stale banner
+  for a database that OSM (the incoming source) never touches."""
   params = FakeParams(MapSource.korea)
   built = run_source_main(monkeypatch, tmp_path, params, "korea_main",
                           lambda: setattr(params, "source", MapSource.osm))
   missing = f"Missing {tmp_path / 'korea_cameras.sqlite'}, {tmp_path / 'korea_links.sqlite'}"
-  assert built["alerts"] == [("Offroad_KoreaMapMissing", True, missing)]
+  assert built["alerts"] == [
+    ("Offroad_KoreaMapMissing", True, missing),
+    ("Offroad_KoreaMapMissing", False, ""),
+  ]
   assert built["refresher"].started
+
+
+def test_the_osm_loop_clears_its_alert_on_exit(monkeypatch, tmp_path):
+  """Symmetric with the korea case above: Offroad_OSMUpdateRequired is CLEAR_ON_MANAGER_START,
+  so the reboot the old design required used to clear it. Now that a switch does not reboot,
+  the outgoing OSM loop has to clear it itself or the offroad screen keeps warning about an
+  update need for a source that is no longer running."""
+  params = FakeParams(MapSource.osm)
+  built = run_source_main(monkeypatch, tmp_path, params, "osm_main",
+                          lambda: setattr(params, "source", MapSource.korea))
+  assert built["alerts"] == [
+    ("Offroad_OSMUpdateRequired", False, "This alert will be cleared when new maps are downloaded."),
+    ("Offroad_OSMUpdateRequired", False, ""),
+  ]
+
+
+@pytest.mark.parametrize("source_main,other_source", [
+  ("osm_main", MapSource.korea),
+  ("korea_main", MapSource.osm),
+])
+def test_a_source_exits_on_its_first_check_if_the_param_already_names_the_other_source(monkeypatch, tmp_path, source_main, other_source):
+  """Finding 2: main() and the source loop used to each read MapDataSource separately, so a
+  write landing in that window let the loop capture a baseline that already matched the new
+  value -- its exit guard could then never fire, and the wrong source ran forever while
+  mapd_ready flipped the binary out from under it. Comparing against MapSource.osm directly,
+  the same test main() uses to dispatch, closes the window: even if the param already names
+  the other source before this loop's first check, it must exit right there, before ticking
+  even once."""
+  params = FakeParams(other_source)
+  built = run_source_main(monkeypatch, tmp_path, params, source_main, lambda: None)
+  assert built["map_data"].ticks == 0, f"{source_main} ran a tick despite the param already naming the other source"
+
+
+def test_the_korea_loop_does_not_exit_for_an_out_of_range_source_value(monkeypatch, tmp_path):
+  """main() dispatches anything other than MapSource.osm to korea_main -- including a value
+  neither source owns, e.g. a stray int written directly to the param. korea_main's exit
+  guard mirrors main()'s own dispatch test (== MapSource.osm), so an out-of-range value fails
+  it exactly like MapSource.korea does and the loop keeps running, matching what main() would
+  do if it re-read the param: dispatch to korea_main again. Written the other way around, as
+  "!= MapSource.korea", an out-of-range value would incorrectly exit and the supervisor would
+  spin hot re-launching korea_main every tick."""
+  params = FakeParams(7)
+  built = run_source_main(monkeypatch, tmp_path, params, "korea_main", lambda: None)
+  assert built["map_data"].ticks == 2, "korea_main exited instead of continuing to run for an out-of-range source value"
 
 
 def test_main_dispatches_on_the_param(monkeypatch):

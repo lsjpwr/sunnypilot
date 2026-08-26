@@ -117,7 +117,6 @@ def update_osm_db(params, mem_params) -> None:
 def osm_main() -> None:
   params = Params()
   mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else params
-  source = params.get("MapDataSource", return_default=True)
 
   update_installed_version(VERSION, params)
   config_realtime_process([0, 1, 2, 3], 5)
@@ -131,7 +130,10 @@ def osm_main() -> None:
     cloudlog.exception("mapd: failed to make %s", Paths.mapd_root())
 
   while True:
-    if params.get("MapDataSource", return_default=True) != source:
+    if params.get("MapDataSource", return_default=True) != MapSource.osm:
+      # Mirrors main()'s own dispatch test instead of a baseline captured at entry, so the
+      # two can never disagree about who should be running.
+      set_offroad_alert("Offroad_OSMUpdateRequired", False, "")
       return  # main() starts the source the param now names; OsmMapData holds nothing to release
 
     show_alert = bool(get_files_for_cleanup() and params.get_bool("OsmLocal"))
@@ -146,7 +148,6 @@ def korea_main() -> None:
   config_realtime_process([0, 1, 2, 3], 5)
 
   params = Params()
-  source = params.get("MapDataSource", return_default=True)
   external_nav = params.get_bool("KoreaExternalNavEnabled")
 
   try:
@@ -181,7 +182,9 @@ def korea_main() -> None:
   while True:
     # KoreaExternalNavEnabled ends the loop too: the socket binds once above, so the only
     # way to honour a toggle is to come back through here and let main() start us again.
-    if (params.get("MapDataSource", return_default=True) != source or
+    # The source check mirrors main()'s own dispatch test instead of a baseline captured at
+    # entry, so the two can never disagree about who should be running.
+    if (params.get("MapDataSource", return_default=True) == MapSource.osm or
         params.get_bool("KoreaExternalNavEnabled") != external_nav):
       break
 
@@ -196,6 +199,7 @@ def korea_main() -> None:
   # Release everything before returning: the next ExternalNavSource cannot bind udp/5555
   # while this one still holds it, a refresher left running would rewrite the camera file
   # underneath whatever starts next, and the link database is 220 MB of open sqlite.
+  set_offroad_alert("Offroad_KoreaMapMissing", False, "")
   if external is not None:
     external.stop()
   refresher.stop()
