@@ -11,6 +11,7 @@ import logging
 import os
 import platform
 import shutil
+import time
 from datetime import datetime
 
 from openpilot.common.hardware.hw import Paths
@@ -35,6 +36,11 @@ from openpilot.sunnypilot.mapd.mapd_installer import VERSION, update_installed_v
 _korea_log = logging.getLogger("openpilot.sunnypilot.mapd.korea")
 _korea_log.setLevel(logging.INFO)
 _korea_log.addHandler(ForwardingHandler(cloudlog))
+
+# How long main() waits before restarting a source that crashed. Long enough that a source
+# failing on every start cannot spin or flood the log, short enough that a transient fault
+# costs only a few seconds of speed limit data.
+SOURCE_RESTART_DELAY_S = 5.0
 
 
 def get_files_for_cleanup() -> list[str]:
@@ -129,19 +135,24 @@ def osm_main() -> None:
   except OSError:
     cloudlog.exception("mapd: failed to make %s", Paths.mapd_root())
 
-  while True:
-    if params.get("MapDataSource", return_default=True) != MapSource.osm:
-      # Mirrors main()'s own dispatch test instead of a baseline captured at entry, so the
-      # two can never disagree about who should be running.
-      set_offroad_alert("Offroad_OSMUpdateRequired", False, "")
-      return  # main() starts the source the param now names; OsmMapData holds nothing to release
+  try:
+    while True:
+      if params.get("MapDataSource", return_default=True) != MapSource.osm:
+        # Mirrors main()'s own dispatch test instead of a baseline captured at entry, so the
+        # two can never disagree about who should be running.
+        return  # main() starts the source the param now names; OsmMapData holds nothing to release
 
-    show_alert = bool(get_files_for_cleanup() and params.get_bool("OsmLocal"))
-    set_offroad_alert("Offroad_OSMUpdateRequired", show_alert, "This alert will be cleared when new maps are downloaded.")
+      show_alert = bool(get_files_for_cleanup() and params.get_bool("OsmLocal"))
+      set_offroad_alert("Offroad_OSMUpdateRequired", show_alert, "This alert will be cleared when new maps are downloaded.")
 
-    update_osm_db(params, mem_params)
-    live_map_sp.tick()
-    rk.keep_time()
+      update_osm_db(params, mem_params)
+      live_map_sp.tick()
+      rk.keep_time()
+  finally:
+    # In finally, not on the return path alone: main() now catches a crash and starts a
+    # source again, so an alert left set by a source that died would have nothing left to
+    # clear it -- the key is CLEAR_ON_MANAGER_START and this process no longer exits.
+    set_offroad_alert("Offroad_OSMUpdateRequired", False, "")
 
 
 def korea_main() -> None:
@@ -155,55 +166,68 @@ def korea_main() -> None:
   except OSError:
     cloudlog.exception("mapd: failed to make %s", KOREA_MAP_DIR)
 
+  # Bound before the try so the finally can tell what actually got built: an exception on
+  # the way up leaves the later ones None, and stopping something that was never started
+  # would mask the original failure with an AttributeError.
   external = None
-  if external_nav:
-    try:
-      external = ExternalNavSource()
-      external.start()
-      cloudlog.info("mapd: external nav listening on udp/%d", external.port)
-    except OSError:
-      # The port can already be taken. This is an optional input hook, so failing to bind
-      # must not take the process down -- an unhandled raise here reaches manager, and
-      # processNotRunning blocks engagement over a convenience feature.
-      external = None
-      cloudlog.exception("mapd: external nav failed to start, continuing without it")
+  refresher = None
+  live_map_sp = None
 
-  live_map_sp = KoreaMapData(external=external)
+  try:
+    if external_nav:
+      try:
+        external = ExternalNavSource()
+        external.start()
+        cloudlog.info("mapd: external nav listening on udp/%d", external.port)
+      except OSError:
+        # The port can already be taken. This is an optional input hook, so failing to bind
+        # must not take the process down -- an unhandled raise here reaches manager, and
+        # processNotRunning blocks engagement over a convenience feature.
+        external = None
+        cloudlog.exception("mapd: external nav failed to start, continuing without it")
 
-  refresher = CameraRefresher(KOREA_CAMERAS_PATH)
-  refresher.start()
-  rk = Ratekeeper(1, print_delay_threshold=None)
+    live_map_sp = KoreaMapData(external=external)
 
-  # only touch the param when the message would change; this loop runs forever and params
-  # live on flash. Keyed on the file list, not just on "any missing", so copying one of the
-  # two files updates the text instead of leaving it naming both.
-  db_missing: list[str] | None = None
+    refresher = CameraRefresher(KOREA_CAMERAS_PATH)
+    refresher.start()
+    rk = Ratekeeper(1, print_delay_threshold=None)
 
-  while True:
-    # KoreaExternalNavEnabled ends the loop too: the socket binds once above, so the only
-    # way to honour a toggle is to come back through here and let main() start us again.
-    # The source check mirrors main()'s own dispatch test instead of a baseline captured at
-    # entry, so the two can never disagree about who should be running.
-    if (params.get("MapDataSource", return_default=True) == MapSource.osm or
-        params.get_bool("KoreaExternalNavEnabled") != external_nav):
-      break
+    # only touch the param when the message would change; this loop runs forever and params
+    # live on flash. Keyed on the file list, not just on "any missing", so copying one of the
+    # two files updates the text instead of leaving it naming both.
+    db_missing: list[str] | None = None
 
-    absent = [p for p in (KOREA_CAMERAS_PATH, KOREA_LINKS_PATH) if not os.path.exists(p)]
-    if absent != db_missing:
-      set_offroad_alert("Offroad_KoreaMapMissing", bool(absent), f"Missing {', '.join(absent)}")
-      db_missing = absent
+    while True:
+      # KoreaExternalNavEnabled ends the loop too: the socket binds once above, so the only
+      # way to honour a toggle is to come back through here and let main() start us again.
+      # The source check mirrors main()'s own dispatch test instead of a baseline captured at
+      # entry, so the two can never disagree about who should be running.
+      if (params.get("MapDataSource", return_default=True) == MapSource.osm or
+          params.get_bool("KoreaExternalNavEnabled") != external_nav):
+        break
 
-    live_map_sp.tick()
-    rk.keep_time()
+      absent = [p for p in (KOREA_CAMERAS_PATH, KOREA_LINKS_PATH) if not os.path.exists(p)]
+      if absent != db_missing:
+        set_offroad_alert("Offroad_KoreaMapMissing", bool(absent), f"Missing {', '.join(absent)}")
+        db_missing = absent
 
-  # Release everything before returning: the next ExternalNavSource cannot bind udp/5555
-  # while this one still holds it, a refresher left running would rewrite the camera file
-  # underneath whatever starts next, and the link database is 220 MB of open sqlite.
-  set_offroad_alert("Offroad_KoreaMapMissing", False, "")
-  if external is not None:
-    external.stop()
-  refresher.stop()
-  live_map_sp.close()
+      live_map_sp.tick()
+      rk.keep_time()
+  finally:
+    # Release everything on every exit path, the crash one included -- main() catches a crash
+    # and starts a source again, so whatever is left behind here is inherited by the next
+    # start. The socket is the one that fails silently: the next ExternalNavSource gets
+    # EADDRINUSE, which the bind above deliberately swallows, so external nav would be dead
+    # until reboot with nothing to show for it. A refresher left running would rewrite the
+    # camera file underneath whatever starts next, and the link database is 220 MB of open
+    # sqlite.
+    set_offroad_alert("Offroad_KoreaMapMissing", False, "")
+    if external is not None:
+      external.stop()
+    if refresher is not None:
+      refresher.stop()
+    if live_map_sp is not None:
+      live_map_sp.close()
 
 
 def main() -> None:
@@ -216,10 +240,25 @@ def main() -> None:
   # limit source at speed is a bad idea, not because it would take until a restart.
   params = Params()
   while True:
-    if params.get("MapDataSource", return_default=True) == MapSource.osm:
-      osm_main()
-    else:
-      korea_main()
+    try:
+      if params.get("MapDataSource", return_default=True) == MapSource.osm:
+        osm_main()
+      else:
+        korea_main()
+    except Exception:
+      # A crashing map source must not take this process down with it. Dying here is not a
+      # local failure: manager never restarts an always_run process that exits (see above),
+      # and selfdrived's ignored_processes covers the mapd binary but not mapd_manager, so
+      # the missing process raises processNotRunning -- SOFT_DISABLE plus NO_ENTRY. One bad
+      # value out of a map database would then block engagement for the rest of that drive
+      # and every drive after it, until the user reboots, with nothing on screen connecting
+      # the two. Map data is an assist; losing it must not cost the whole system.
+      # Ceiling: a source that fails deterministically is retried, and logged, once every
+      # SOURCE_RESTART_DELAY_S forever. Accepted over carrying backoff state -- the delay is
+      # what keeps a setup-time failure off a hot loop, which is the part that matters.
+      # Exception, not BaseException: KeyboardInterrupt and SystemExit must still get out.
+      cloudlog.exception("mapd: map source crashed, restarting it in %.0fs", SOURCE_RESTART_DELAY_S)
+      time.sleep(SOURCE_RESTART_DELAY_S)
 
 
 if __name__ == "__main__":

@@ -53,12 +53,21 @@ def test_the_mapd_binary_runs_only_for_osm(tmp_path, monkeypatch, source, dir_ex
   assert mapd_ready(False, FakeParams(source), None) is expected
 
 
-class Stop(Exception):
-  """Ends the supervisor loop the way a crashing source loop would."""
+class Stop(BaseException):
+  """Ends a test's supervisor loop. BaseException on purpose: main() catches Exception so a
+  crashing source cannot take the process down, so a test signal that inherits from Exception
+  would be swallowed by the code under test and spin the loop forever instead of ending it."""
 
 
-class Runaway(Exception):
-  """Raised instead of hanging when a source loop ignores the setting it is watching."""
+class Runaway(BaseException):
+  """Raised instead of hanging when a source loop ignores the setting it is watching.
+  BaseException for the same reason as Stop -- it must escape the code under test."""
+
+
+class Boom(Exception):
+  """A source loop crashing mid-tick. Exception, not BaseException, because that is what a
+  real bug raises -- a truncated geometry blob, a malformed value out of the mapd binary --
+  and the whole point is that main() catches exactly this."""
 
 
 class OneShotRatekeeper:
@@ -134,12 +143,16 @@ def _record(built, name, factory):
   return build
 
 
-def run_source_main(monkeypatch, tmp_path, params, source_main, on_tick):
+def run_source_main(monkeypatch, tmp_path, params, source_main, on_tick, expect=Runaway):
   """Runs one source loop to completion with every device-side collaborator faked out.
 
   on_tick fires inside the single loop iteration -- that is where a test changes the
   setting the loop is watching. A loop that never notices raises Runaway instead of
   hanging the suite; the caller sees it as an extra tick rather than a stuck run.
+
+  expect is what the loop is allowed to end with. It defaults to Runaway; a test that makes
+  on_tick crash passes its own exception so it still gets `built` back and can assert on what
+  the crash path released.
   """
   from openpilot.sunnypilot.mapd import mapd_manager
 
@@ -166,7 +179,7 @@ def run_source_main(monkeypatch, tmp_path, params, source_main, on_tick):
 
   try:
     getattr(mapd_manager, source_main)()
-  except Runaway:
+  except expect:
     pass
   return built
 
@@ -307,7 +320,7 @@ def test_the_supervisor_starts_the_other_source_after_a_return(monkeypatch):
     params.source = MapSource.osm
 
   def fake_osm():
-    assert "osm" not in started, "main() swallowed the exception instead of letting it reach manager"
+    assert "osm" not in started, "main() restarted a source that had not returned"
     started.append("osm")
     raise Stop
 
@@ -337,3 +350,80 @@ def test_close_releases_the_database_and_is_safe_before_it_opens():
 
   data.close()  # never opened, or already closed
   assert closed == [True]
+
+
+def _crash():
+  raise Boom("the map database handed back garbage")
+
+
+def test_a_crashing_korea_loop_still_releases_its_resources(monkeypatch, tmp_path):
+  """The cleanup used to sit after the while loop, so an exception skipped all of it. That
+  matters more than the crash: main() now restarts a source, and the next ExternalNavSource
+  gets EADDRINUSE on a socket this one never gave back -- which korea_main deliberately
+  swallows, so external nav would be dead until reboot with no symptom at all. (That stop()
+  actually frees the port is pinned separately, in korea/tests/test_external_source.py.)"""
+  params = FakeParams(MapSource.korea, KoreaExternalNavEnabled=True)
+  built = run_source_main(monkeypatch, tmp_path, params, "korea_main", _crash, expect=Boom)
+
+  assert built["external"].stopped, "a crash leaves the UDP socket bound and external nav silently dead"
+  assert built["refresher"].stopped, "a crash leaves the refresh thread rewriting the camera file"
+  assert built["map_data"].closed, "a crash leaks the sqlite handles on a 220 MB database"
+
+
+@pytest.mark.parametrize("source_main,source,key", [
+  ("korea_main", MapSource.korea, "Offroad_KoreaMapMissing"),
+  ("osm_main", MapSource.osm, "Offroad_OSMUpdateRequired"),
+])
+def test_a_crashing_source_clears_its_offroad_alert(monkeypatch, tmp_path, source_main, source, key):
+  """Both alert keys are CLEAR_ON_MANAGER_START, and this process no longer exits -- main()
+  catches the crash and starts a source again. So a source that dies holding its alert set
+  leaves a banner about a source that is not running, with nothing left to clear it."""
+  built = run_source_main(monkeypatch, tmp_path, FakeParams(source), source_main, _crash, expect=Boom)
+  assert built["alerts"][-1] == (key, False, ""), f"{source_main} died without clearing {key}"
+
+
+def test_the_supervisor_restarts_a_crashed_source_after_a_delay(monkeypatch):
+  """Letting the crash out would be far worse than losing map data. manager never restarts
+  an always_run process that exits, and selfdrived's ignored_processes covers the mapd binary
+  but not mapd_manager -- so the missing process raises processNotRunning, which is
+  SOFT_DISABLE plus NO_ENTRY. One bad value would block engagement for every drive until the
+  user reboots. The delay is what stops a source that fails on every start from spinning."""
+  from openpilot.sunnypilot.mapd import mapd_manager
+
+  events = []
+
+  def fake_korea():
+    events.append("start")
+    if events.count("start") == 1:
+      raise Boom("the map database handed back garbage")
+    raise Stop
+
+  monkeypatch.setattr(mapd_manager, "Params", lambda *a: FakeParams(MapSource.korea))
+  monkeypatch.setattr(mapd_manager, "korea_main", fake_korea)
+  monkeypatch.setattr(mapd_manager.time, "sleep", lambda s: events.append(f"slept {s}"))
+
+  with pytest.raises(Stop):
+    mapd_manager.main()
+
+  # The sleep entry is the assertion that matters: drop the rate limiting and this reads
+  # ["start", "start"], so a source failing at startup would relaunch as fast as the loop
+  # can go -- rebinding a socket and opening a 220 MB database every pass.
+  assert events == ["start", f"slept {mapd_manager.SOURCE_RESTART_DELAY_S}", "start"]
+  assert mapd_manager.SOURCE_RESTART_DELAY_S > 0
+
+
+def test_the_supervisor_still_lets_a_shutdown_signal_out(monkeypatch):
+  """The catch is `except Exception`, so KeyboardInterrupt and SystemExit -- both
+  BaseException -- must still terminate the process. Catching those would leave a
+  mapd_manager that ignores shutdown and has to be killed."""
+  from openpilot.sunnypilot.mapd import mapd_manager
+
+  def fake_korea():
+    raise KeyboardInterrupt
+
+  monkeypatch.setattr(mapd_manager, "Params", lambda *a: FakeParams(MapSource.korea))
+  monkeypatch.setattr(mapd_manager, "korea_main", fake_korea)
+  monkeypatch.setattr(mapd_manager.time, "sleep", lambda s: pytest.fail("a shutdown signal was treated as a crash"))
+
+  with pytest.raises(KeyboardInterrupt):
+    mapd_manager.main()
