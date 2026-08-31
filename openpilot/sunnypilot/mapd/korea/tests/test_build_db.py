@@ -193,7 +193,8 @@ def test_pack_geom_empty():
 
 def test_load_links_reprojects_utm_k_when_no_prj(tmp_path):
   """The ITS default: no .prj file alongside the .shp, coordinates are raw UTM-K (EPSG:5179) metres."""
-  import shapefile
+  shapefile = pytest.importorskip("shapefile")  # pyshp: PC-only, see build_db.py
+  pytest.importorskip("pyproj")
   from pyproj import CRS, Transformer
 
   lat, lon = 37.4979, 127.0276
@@ -222,7 +223,8 @@ def test_load_links_reprojects_utm_k_when_no_prj(tmp_path):
 
 def test_load_links_honors_wgs84_prj(tmp_path):
   """A .prj present and geographic (not projected): coordinates are already degrees, untouched."""
-  import shapefile
+  shapefile = pytest.importorskip("shapefile")  # pyshp: PC-only, see build_db.py
+  pytest.importorskip("pyproj")
   from pyproj import CRS
 
   lat, lon = 37.4979, 127.0276
@@ -249,7 +251,8 @@ def test_load_links_honors_wgs84_prj(tmp_path):
 
 def test_load_links_raises_when_every_point_falls_outside_korea(tmp_path):
   """Fix 2: a wrong CRS assumption (or a wrong-region file) must fail loudly, not go silent."""
-  import shapefile
+  shapefile = pytest.importorskip("shapefile")  # pyshp: PC-only, see build_db.py
+  pytest.importorskip("pyproj")
   from pyproj import CRS, Transformer
 
   # Tokyo, correctly reprojected from UTM-K metres -- still outside in_korea's box either way,

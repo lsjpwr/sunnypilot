@@ -17,16 +17,28 @@ from openpilot.system.manager.process_config import mapd_ready
 class FakeParams:
   """Params stand-in. get() returns an int the way an INT param key does."""
 
+  # The assert below exists to catch a param read nobody meant to add to a loop that
+  # runs forever, so new keys get listed here rather than dropping the check.
+  # Mapd_ClearCache is upstream's sunnylink map-deletion trigger (#1971), read once
+  # per osm_main() tick.
+  GETTABLE = ("MapDataSource", "Mapd_ClearCache")
+
   def __init__(self, source, **bools):
     self.source = source
     self.bools = bools
+    self.removed: list[str] = []
 
   def get(self, key, return_default=False):
-    assert key == "MapDataSource", f"unexpected param read: {key}"
-    return int(self.source)
+    assert key in self.GETTABLE, f"unexpected param read: {key}"
+    if key == "MapDataSource":
+      return int(self.source)
+    return self.bools.get(key, False)
 
   def get_bool(self, key):
     return self.bools.get(key, False)
+
+  def remove(self, key):
+    self.removed.append(key)
 
 
 def test_the_enum_values_match_the_button_indices():
@@ -182,6 +194,24 @@ def run_source_main(monkeypatch, tmp_path, params, source_main, on_tick, expect=
   except expect:
     pass
   return built
+
+
+def test_the_osm_loop_honors_a_sunnylink_map_deletion(monkeypatch, tmp_path):
+  """Upstream drives map deletion by setting Mapd_ClearCache and letting the loop notice
+  (#1971). That check lived in main_thread(), which this branch split into osm_main() and
+  korea_main(), so it has to be carried over by hand -- drop it and the settings button
+  silently does nothing. The param is cleared afterwards so one press deletes once."""
+  from openpilot.sunnypilot.mapd import mapd_manager
+
+  cleared: list = []
+  monkeypatch.setattr(mapd_manager, "clear_downloaded_maps", lambda p: cleared.append(p))
+
+  params = FakeParams(MapSource.osm, Mapd_ClearCache=True)
+  run_source_main(monkeypatch, tmp_path, params, "osm_main",
+                  lambda: setattr(params, "source", MapSource.korea))
+
+  assert cleared == [params], "Mapd_ClearCache did not reach clear_downloaded_maps"
+  assert params.removed == ["Mapd_ClearCache"], "the trigger was not cleared, so it would delete every tick"
 
 
 @pytest.mark.parametrize("source_main,source,switch_to", [
