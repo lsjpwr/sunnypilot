@@ -71,6 +71,19 @@ def cleanup_old_osm_data(files_to_remove: list[str]) -> None:
       shutil.rmtree(file, ignore_errors=False)
 
 
+def clear_downloaded_maps(params) -> None:
+  """Deletes downloaded OSM map data and resets params."""
+  path = f"{Paths.mapd_root()}/offline"
+  if os.path.exists(path):
+    shutil.rmtree(path, ignore_errors=True)
+
+  for param in ("OsmDownloadedDate", "OsmLocal", "OsmLocationName", "OsmLocationTitle",
+                "OsmStateName", "OsmStateTitle"):
+    params.remove(param)
+
+  cloudlog.info("mapd: downloaded maps cleared")
+
+
 def request_refresh_osm_location_data(params, mem_params, nations: list[str], states: list[str] | None = None) -> None:
   params.put("OsmDownloadedDate", str(datetime.now().timestamp()), block=True)
   params.put_bool("OsmDbUpdatesCheck", False, block=True)
@@ -144,6 +157,10 @@ def osm_main() -> None:
 
       show_alert = bool(get_files_for_cleanup() and params.get_bool("OsmLocal"))
       set_offroad_alert("Offroad_OSMUpdateRequired", show_alert, "This alert will be cleared when new maps are downloaded.")
+
+      if params.get("Mapd_ClearCache"):
+        clear_downloaded_maps(params)
+        params.remove("Mapd_ClearCache")
 
       update_osm_db(params, mem_params)
       live_map_sp.tick()
