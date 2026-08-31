@@ -216,35 +216,38 @@ def load_links(path: str) -> Iterator[tuple[int, str, list[tuple[float, float]]]
   """Yield (max_spd, name, [(lat, lon), ...]) for every link with a usable speed limit."""
   import shapefile  # PC-only dependency
 
-  reader = shapefile.Reader(path, encoding=SHP_ENCODING)
-  fields = [f[0] for f in reader.fields[1:]]
-  for key in LINK_COLUMNS.values():
-    if key not in fields:
-      raise KeyError(f"expected field {key!r}, got {fields}")
+  # `with`, not a bare Reader: this holds the .shp/.shx/.dbf trio open, and on the error
+  # path below -- or when the caller abandons the generator early -- nothing else closes
+  # them. Windows then refuses to delete or replace the files while the handles live.
+  with shapefile.Reader(path, encoding=SHP_ENCODING) as reader:
+    fields = [f[0] for f in reader.fields[1:]]
+    for key in LINK_COLUMNS.values():
+      if key not in fields:
+        raise KeyError(f"expected field {key!r}, got {fields}")
 
-  to_wgs84 = make_to_wgs84(path)
+    to_wgs84 = make_to_wgs84(path)
 
-  read = kept = 0
-  for shape_record in reader.iterShapeRecords():
-    read += 1
-    max_spd = to_int(shape_record.record[LINK_COLUMNS["max_spd"]])
-    if not 0 < max_spd <= MAX_SPEED_LIMIT_KPH:
-      continue
+    read = kept = 0
+    for shape_record in reader.iterShapeRecords():
+      read += 1
+      max_spd = to_int(shape_record.record[LINK_COLUMNS["max_spd"]])
+      if not 0 < max_spd <= MAX_SPEED_LIMIT_KPH:
+        continue
 
-    points = [to_wgs84(x, y) for x, y in shape_record.shape.points]
-    points = [p for p in points if in_korea(*p)]
-    if len(points) < 2:
-      continue
+      points = [to_wgs84(x, y) for x, y in shape_record.shape.points]
+      points = [p for p in points if in_korea(*p)]
+      if len(points) < 2:
+        continue
 
-    kept += 1
-    yield max_spd, str(shape_record.record[LINK_COLUMNS["name"]] or ""), points
+      kept += 1
+      yield max_spd, str(shape_record.record[LINK_COLUMNS["name"]] or ""), points
 
-  if read and not kept:
-    raise ValueError(
-      f"{path}: read {read} shapes but kept none -- every coordinate fell outside Korea. " +
-      "This usually means the CRS assumption is wrong (no .prj is treated as UTM-K " +
-      f"EPSG:{FALLBACK_PROJECTED_EPSG}). Inspect the first few points before rebuilding."
-    )
+    if read and not kept:
+      raise ValueError(
+        f"{path}: read {read} shapes but kept none -- every coordinate fell outside Korea. " +
+        "This usually means the CRS assumption is wrong (no .prj is treated as UTM-K " +
+        f"EPSG:{FALLBACK_PROJECTED_EPSG}). Inspect the first few points before rebuilding."
+      )
 
 
 def insert_links(con: sqlite3.Connection, links) -> int:
