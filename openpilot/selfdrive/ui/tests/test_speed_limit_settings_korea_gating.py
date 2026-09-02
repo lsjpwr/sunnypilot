@@ -8,6 +8,8 @@ speed_limit_settings.py:_update_state() enables three action items on different 
   - _external_nav requires MapDataSource == korea AND offroad (KoreaExternalNavEnabled
     is offroad-only, same as the mici korea_nav_toggle).
   - _api_key requires MapDataSource == korea only -- it stays enabled onroad.
+  - _speed_bump requires MapDataSource == korea only; _bump_arch_speed and
+    _bump_trapezoid_speed additionally require KoreaSpeedBumpEnabled.
 Previously uncovered by any committed test. Drives the real _update_state() on a real
 constructed layout rather than reimplementing the predicate.
 """
@@ -73,3 +75,52 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
       layout._update_state()
       self.assertFalse(layout._external_nav.action_item.enabled)
       self.assertFalse(layout._api_key.action_item.enabled)
+
+  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
+  def test_speed_bump_gating(self, subtests):
+    rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
+    from openpilot.system.ui.lib.application import gui_app
+    gui_app.init_window("test_speed_limit_settings_speed_bump_gating")
+    self.addCleanup(gui_app.close)
+
+    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import SpeedLimitSettingsLayout
+    from openpilot.selfdrive.ui.ui_state import ui_state
+    from openpilot.sunnypilot.mapd import MapSource
+
+    # Same process-wide-singleton hazard as the test above: ui_state.params may be bound
+    # to a directory an earlier test's OpenpilotPrefix has since deleted.
+    params_dir = ui_state.params.get_param_path()
+    os.makedirs(params_dir, exist_ok=True)
+    self.addCleanup(shutil.rmtree, params_dir, ignore_errors=True)
+
+    original_source = ui_state.params.get("MapDataSource", return_default=True)
+    original_bump = ui_state.params.get_bool("KoreaSpeedBumpEnabled")
+
+    def _restore():
+      ui_state.params.put("MapDataSource", int(original_source), block=True)
+      ui_state.params.put_bool("KoreaSpeedBumpEnabled", original_bump, block=True)
+    self.addCleanup(_restore)
+
+    layout = SpeedLimitSettingsLayout(lambda: None)
+
+    with subtests.test(case="korea + bump off -> toggle enabled, both speeds disabled"):
+      ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
+      ui_state.params.put_bool("KoreaSpeedBumpEnabled", False, block=True)
+      layout._update_state()
+      self.assertTrue(layout._speed_bump.action_item.enabled)
+      self.assertFalse(layout._bump_arch_speed.action_item.enabled)
+      self.assertFalse(layout._bump_trapezoid_speed.action_item.enabled)
+
+    with subtests.test(case="korea + bump on -> both speeds enabled"):
+      ui_state.params.put_bool("KoreaSpeedBumpEnabled", True, block=True)
+      layout._update_state()
+      self.assertTrue(layout._bump_arch_speed.action_item.enabled)
+      self.assertTrue(layout._bump_trapezoid_speed.action_item.enabled)
+
+    with subtests.test(case="osm -> everything bump-related disabled even with the toggle on"):
+      ui_state.params.put("MapDataSource", int(MapSource.osm), block=True)
+      ui_state.params.put_bool("KoreaSpeedBumpEnabled", True, block=True)
+      layout._update_state()
+      self.assertFalse(layout._speed_bump.action_item.enabled)
+      self.assertFalse(layout._bump_arch_speed.action_item.enabled)
+      self.assertFalse(layout._bump_trapezoid_speed.action_item.enabled)

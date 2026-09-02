@@ -105,6 +105,26 @@ class SpeedLimitSettingsLayout(Widget):
         callback=self._edit_api_key,
       ))
 
+    self._speed_bump = toggle_item_sp(
+      title=lambda: tr("Speed Bump Slowdown"),
+      description=tr("Slow down for speed bumps from the Korean public database. Needs " +
+                     "korea_bumps.sqlite on the device -- without it this does nothing."),
+      param="KoreaSpeedBumpEnabled")
+
+    self._bump_arch_speed = option_item_sp(
+      title=lambda: tr("Arch Bump Target Speed"),
+      param="KoreaSpeedBumpArchSpeed",
+      min_value=20, max_value=40,
+      label_callback=self._get_bump_speed_label,
+      inline=True)
+
+    self._bump_trapezoid_speed = option_item_sp(
+      title=lambda: tr("Flat-Top Bump Target Speed"),
+      param="KoreaSpeedBumpTrapezoidSpeed",
+      min_value=20, max_value=50,
+      label_callback=self._get_bump_speed_label,
+      inline=True)
+
     self._speed_limit_offset_type = multiple_button_item_sp(
       title=lambda: tr("Speed Limit Offset"),
       description="",
@@ -131,6 +151,9 @@ class SpeedLimitSettingsLayout(Widget):
       LineSeparatorSP(40),
       self._external_nav,
       self._api_key,
+      self._speed_bump,
+      self._bump_arch_speed,
+      self._bump_trapezoid_speed,
       LineSeparatorSP(40),
       self._speed_limit_offset_type,
       self._speed_limit_value_offset
@@ -175,6 +198,11 @@ class SpeedLimitSettingsLayout(Widget):
       return f"{value} {unit}"
     return str(value)
 
+  @staticmethod
+  def _get_bump_speed_label(value):
+    # Always km/h: the dataset, the target, and the roads it describes are all Korean.
+    return f"{value} {tr('km/h')}"
+
   def _update_state(self):
     super()._update_state()
 
@@ -189,6 +217,10 @@ class SpeedLimitSettingsLayout(Widget):
     # mid-drive from a phone is not allowed) -- match that here so on-device parity holds.
     self._external_nav.action_item.set_enabled(is_korea and is_offroad)
     self._api_key.action_item.set_enabled(is_korea)
+    self._speed_bump.action_item.set_enabled(is_korea)
+    bump_on = is_korea and ui_state.params.get_bool("KoreaSpeedBumpEnabled")
+    self._bump_arch_speed.action_item.set_enabled(bump_on)
+    self._bump_trapezoid_speed.action_item.set_enabled(bump_on)
 
     speed_limit_mode_param = ui_state.params.get("SpeedLimitMode", return_default=True)
     if ui_state.CP is not None and ui_state.CP_SP is not None:

@@ -55,6 +55,7 @@ class TogglesLayoutMici(NavScroller):
     enable_openpilot = BigParamControl("enable sunnypilot", "OpenpilotEnabledToggle", toggle_callback=restart_needed_callback)
 
     korea_nav_toggle = BigParamControl("korean external navigation input", "KoreaExternalNavEnabled")
+    korea_bump_toggle = BigParamControl("korean speed bump slowdown", "KoreaSpeedBumpEnabled")
 
     def api_key_callback(text):
       # The dialog always seeds empty now (see edit_api_key below), so a bare tap on
@@ -93,6 +94,7 @@ class TogglesLayoutMici(NavScroller):
       record_mic,
       enable_openpilot,
       korea_nav_toggle,
+      korea_bump_toggle,
       self._api_key_btn,
     ])
 
@@ -106,6 +108,7 @@ class TogglesLayoutMici(NavScroller):
       ("RecordAudio", record_mic),
       ("OpenpilotEnabledToggle", enable_openpilot),
       ("KoreaExternalNavEnabled", korea_nav_toggle),
+      ("KoreaSpeedBumpEnabled", korea_bump_toggle),
     )
 
     enable_openpilot.set_enabled(lambda: not ui_state.engaged)
@@ -114,6 +117,9 @@ class TogglesLayoutMici(NavScroller):
     # Remote schema restricts KoreaExternalNavEnabled to offroad (opening a control-plane
     # UDP port mid-drive from a phone is not allowed) -- match that here for parity.
     korea_nav_toggle.set_enabled(lambda: ui_state.is_offroad() and ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
+    # Not offroad-gated, unlike the nav toggle: this opens no port and touches no
+    # credential, it only stops a comfort slowdown.
+    korea_bump_toggle.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
     self._api_key_btn.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
 
     if ui_state.params.get_bool("ShowDebugInfo"):

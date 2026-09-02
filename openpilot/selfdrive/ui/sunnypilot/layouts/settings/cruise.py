@@ -29,7 +29,9 @@ ICMB_UNAVAILABLE_LONG_UNAVAILABLE = tr_noop("sunnypilot Longitudinal Control is 
 
 SCC_MAP_KOREA_DESCRIPTION = tr_noop("Requires the OpenStreetMap data source. " +
                                     "The Korean public database has no curve geometry; " +
-                                    "Smart Cruise Control - Vision covers curves instead.")
+                                    "Smart Cruise Control - Vision covers curves, and " +
+                                    "Speed Bump Slowdown under Speed Limit uses this same " +
+                                    "controller for bumps.")
 SCC_MAP_DESCRIPTION = tr_noop("Use map data to estimate the appropriate speed to drive through turns ahead.")
 
 ACC_ENABLED_DESCRIPTION = tr_noop("Enable custom Short & Long press increments for cruise speed increase/decrease.")
