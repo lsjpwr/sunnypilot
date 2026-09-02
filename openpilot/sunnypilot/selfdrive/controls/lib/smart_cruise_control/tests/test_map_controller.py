@@ -62,6 +62,7 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     that has only ever used korea mode) -- not a live GPS position. Regression test for
     computing a slowdown target from a stale, non-advancing position after a source switch."""
     self.params.put("MapDataSource", int(MapSource.korea), block=True)
+    self.params.put_bool("KoreaSpeedBumpEnabled", False, block=True)
     scc_m = SmartCruiseControlMap()
     assert not scc_m.enabled
 
@@ -79,6 +80,24 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
       scc_m.update(True, False, 0., 0., 0.)
     assert scc_m.enabled
     assert scc_m.state == VisionState.enabled
+
+  def test_korea_source_is_gated_on_the_bump_toggle_not_the_osm_toggle(self):
+    self.params.put("MapDataSource", int(MapSource.korea), block=True)
+    self.params.put_bool("SmartCruiseControlMap", True, block=True)
+    self.params.put_bool("KoreaSpeedBumpEnabled", False, block=True)
+    controller = SmartCruiseControlMap()
+    self.assertFalse(controller._get_enabled())
+
+    self.params.put_bool("KoreaSpeedBumpEnabled", True, block=True)
+    controller = SmartCruiseControlMap()
+    self.assertTrue(controller._get_enabled())
+
+  def test_korea_bump_toggle_does_not_leak_into_the_osm_source(self):
+    self.params.put("MapDataSource", int(MapSource.osm), block=True)
+    self.params.put_bool("SmartCruiseControlMap", False, block=True)
+    self.params.put_bool("KoreaSpeedBumpEnabled", True, block=True)
+    controller = SmartCruiseControlMap()
+    self.assertFalse(controller._get_enabled())
 
   def test_disabled(self):
     for _ in range(int(10. / DT_MDL)):

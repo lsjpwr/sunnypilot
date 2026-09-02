@@ -98,14 +98,18 @@ class SmartCruiseControlMap:
     return self.a_ego
 
   def _get_enabled(self) -> bool:
-    # LastGPSPosition/MapTargetVelocities are only written while the OSM path runs. In korea
-    # mode neither osm_main() nor the native mapd binary runs, so both mem_params freeze at
-    # their last OSM value and nothing sweeps them -- gate on the active source here (not just
-    # the toggle) so a stale, non-advancing snapshot from before a source switch never drives a
-    # slowdown target. This holds regardless of which surface set the toggle (device UI, mici,
-    # or the sunnylink remote) and preserves the toggle's value for when the user switches back.
-    return self.params.get_bool("SmartCruiseControlMap") and \
-      self.params.get("MapDataSource", return_default=True) == MapSource.osm
+    """One toggle per source, because the two sources fill this controller differently.
+
+    OSM: the native mapd binary streams curve target velocities, gated by
+    SmartCruiseControlMap. Korea: korea_map_data writes a single speed bump point, gated
+    by KoreaSpeedBumpEnabled. Neither toggle may enable the other source -- the danger is
+    a snapshot that stops advancing after a source switch, and each writer is only
+    trusted to keep its own param fresh.
+    """
+    source = self.params.get("MapDataSource", return_default=True)
+    if source == MapSource.osm:
+      return self.params.get_bool("SmartCruiseControlMap")
+    return self.params.get_bool("KoreaSpeedBumpEnabled")
 
   def update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:

@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import json
 import pathlib
 import sqlite3
 import struct
@@ -16,7 +17,7 @@ from openpilot.common.constants import CV
 from openpilot.common.parameterized import parameterized
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras,
                                                       insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import Camera, Link
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, Bump, Camera, Link
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import KoreaMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -35,11 +36,35 @@ def make_data(link=None, camera=None, external=None):
   data = KoreaMapData.__new__(KoreaMapData)
   data.cameras_path = ""
   data.links_path = ""
+  data.bumps_path = ""
   data.db = None
   data.open_failed = False
   data.external = external
   data.link = link
   data.camera = camera
+  data.bump = None
+  data.mem_params = StubMemParams()
+  data.bump_enabled = False
+  data.bump_targets = {}
+  return data
+
+
+class StubMemParams:
+  def __init__(self):
+    self.values: dict[str, str] = {}
+
+  def put(self, key, value, block=False):
+    self.values[key] = value
+
+
+def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, position=None):
+  """A KoreaMapData wired only far enough to exercise publish_bump_target."""
+  data = KoreaMapData.__new__(KoreaMapData)
+  data.mem_params = StubMemParams()
+  data.bump = bump
+  data.bump_enabled = enabled
+  data.bump_targets = {BUMP_ARCH: arch_kph * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid_kph * CV.KPH_TO_MS}
+  data.last_position = position if position is not None else Coordinate(37.5, 127.0)
   return data
 
 
@@ -167,6 +192,9 @@ class StubDB:
   def next_camera(self, lat, lon, heading_deg):
     return None
 
+  def next_bump(self, lat, lon, heading_deg):
+    return None
+
 
 class ExplodingDB:
   """Raises the way a corrupt database does, and records that it was closed."""
@@ -240,3 +268,46 @@ class TestUpdateLocation(unittest.TestCase):
 
     data.update_location()          # and must not reopen it
     self.assertIsNone(data.db)
+
+
+class BumpTargetTestCase(unittest.TestCase):
+  def test_publishes_the_bump_as_a_map_target_velocity(self):
+    data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.))
+    data.publish_bump_target()
+
+    points = json.loads(data.mem_params.values["MapTargetVelocities"])
+    self.assertEqual(len(points), 1)
+    self.assertAlmostEqual(points[0]["latitude"], 37.5010)
+    self.assertAlmostEqual(points[0]["longitude"], 127.0010)
+    self.assertAlmostEqual(points[0]["velocity"], 25 * CV.KPH_TO_MS)
+
+    position = json.loads(data.mem_params.values["LastGPSPosition"])
+    self.assertAlmostEqual(position["latitude"], 37.5)
+    self.assertAlmostEqual(position["longitude"], 127.0)
+
+  def test_trapezoid_bumps_use_the_gentler_target(self):
+    data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_TRAPEZOID, distance_m=150.))
+    data.publish_bump_target()
+    points = json.loads(data.mem_params.values["MapTargetVelocities"])
+    self.assertAlmostEqual(points[0]["velocity"], 35 * CV.KPH_TO_MS)
+
+  def test_no_bump_ahead_clears_the_param(self):
+    """Not merely 'writes nothing' -- SCC-Map reads this every frame, so a stale point
+    left behind would keep braking for a bump we already passed."""
+    data = make_bump_data(bump=None)
+    data.publish_bump_target()
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+
+  def test_the_toggle_being_off_clears_the_param(self):
+    data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.),
+                          enabled=False)
+    data.publish_bump_target()
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+
+  def test_no_position_publishes_nothing_rather_than_a_zero_coordinate(self):
+    data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.),
+                          position=None)
+    data.last_position = None
+    data.publish_bump_target()
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+    self.assertNotIn("LastGPSPosition", data.mem_params.values)

@@ -463,11 +463,12 @@ class TestKoreaMapDataClose(unittest.TestCase):
     closed = []
     data = KoreaMapData.__new__(KoreaMapData)
     data.db = SimpleNamespace(close=lambda: closed.append(True))
-    data.link = data.camera = object()
+    data.link = data.camera = data.bump = object()
+    data.mem_params = SimpleNamespace(put=lambda *a, **k: None)
 
     data.close()
     self.assertEqual(closed, [True], "the sqlite handles on a 220 MB database are never released")
-    self.assertEqual((data.db, data.link, data.camera), (None, None, None))
+    self.assertEqual((data.db, data.link, data.camera, data.bump), (None, None, None, None))
 
     data.close()  # never opened, or already closed
     self.assertEqual(closed, [True])

@@ -273,6 +273,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // korea map
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"KoreaMapApiKey", {PERSISTENT | BACKUP, STRING, ""}},
+    {"KoreaSpeedBumpArchSpeed", {PERSISTENT | BACKUP, INT, "25"}},        // km/h, 원호형
+    {"KoreaSpeedBumpEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"KoreaSpeedBumpTrapezoidSpeed", {PERSISTENT | BACKUP, INT, "35"}},   // km/h, 사다리꼴형
     {"Offroad_KoreaMapMissing", {CLEAR_ON_MANAGER_START, JSON}},
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
 

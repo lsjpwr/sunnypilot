@@ -12,14 +12,18 @@ Current speed limits come from ITS 표준노드링크 MAX_SPD. The "next" speed 
 the next speed camera ahead: SpeedLimitAssist already slows for speedLimitAhead at
 speedLimitAheadDistance, which is exactly what a camera calls for.
 """
+import json
 import math
 import os
+import platform
 
 from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.hardware.hw import Paths
+from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
-from openpilot.sunnypilot.mapd.korea.db import Camera, KoreaMapDB, Link
+from openpilot.sunnypilot import get_sanitize_int_param
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, Bump, Camera, KoreaMapDB, Link
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -27,19 +31,32 @@ from openpilot.sunnypilot.navd.helpers import Coordinate
 KOREA_MAP_DIR = Paths.korea_map_root()
 KOREA_CAMERAS_PATH = os.path.join(KOREA_MAP_DIR, "korea_cameras.sqlite")
 KOREA_LINKS_PATH = os.path.join(KOREA_MAP_DIR, "korea_links.sqlite")
+KOREA_BUMPS_PATH = os.path.join(KOREA_MAP_DIR, "korea_bumps.sqlite")
+
+# km/h. Bounds, not defaults -- the defaults live in params_keys.h. The floor is
+# SmartCruiseControl's MIN_V (20 km/h): the controller discards anything lower, so
+# offering it in the UI would be a setting that silently does nothing.
+BUMP_ARCH_SPEED_RANGE = (20, 40)
+BUMP_TRAPEZOID_SPEED_RANGE = (20, 50)
 
 
 class KoreaMapData(BaseMapData):
   def __init__(self, cameras_path: str = KOREA_CAMERAS_PATH, links_path: str = KOREA_LINKS_PATH,
-               external: ExternalNavSource | None = None):
+               bumps_path: str = KOREA_BUMPS_PATH, external: ExternalNavSource | None = None):
     super().__init__()
     self.cameras_path = cameras_path
     self.links_path = links_path
+    self.bumps_path = bumps_path
     self.db: KoreaMapDB | None = None
     self.open_failed = False
     self.external = external
     self.link: Link | None = None
     self.camera: Camera | None = None
+    self.bump: Bump | None = None
+    # SmartCruiseControlMap reads its input from /dev/shm, not from the message bus.
+    self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
+    self.bump_enabled = False
+    self.bump_targets: dict[int, float] = {}
 
   def open_db(self) -> None:
     """Opened lazily: the process still runs, publishing nothing, until both files land.
@@ -54,8 +71,9 @@ class KoreaMapData(BaseMapData):
     if not (os.path.exists(self.cameras_path) and os.path.exists(self.links_path)):
       return
     try:
-      self.db = KoreaMapDB(self.cameras_path, self.links_path)
-      cloudlog.info("korea_map: opened %s + %s", self.cameras_path, self.links_path)
+      self.db = KoreaMapDB(self.cameras_path, self.links_path, self.bumps_path)
+      cloudlog.info("korea_map: opened %s + %s (bumps: %s)", self.cameras_path, self.links_path,
+                    "yes" if self.db.bmp is not None else "no")
     except Exception:
       self.open_failed = True
       cloudlog.exception("korea_map: giving up on %s + %s", self.cameras_path, self.links_path)
@@ -72,6 +90,10 @@ class KoreaMapData(BaseMapData):
     self.db = None
     self.link = None
     self.camera = None
+    self.bump = None
+    # The source is going away. SCC-Map polls this param every frame and has no idea who
+    # last wrote it, so a point left here would be acted on by whatever runs next.
+    self.mem_params.put("MapTargetVelocities", "[]")
 
   def nav(self) -> ExternalNav | None:
     return self.external.latest() if self.external is not None else None
@@ -86,6 +108,7 @@ class KoreaMapData(BaseMapData):
 
     self.link = None
     self.camera = None
+    self.bump = None
 
     self.open_db()
     if self.db is None or self.last_position is None:
@@ -99,6 +122,7 @@ class KoreaMapData(BaseMapData):
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing)
       self.camera = self.db.next_camera(lat, lon, self.last_bearing)
+      self.bump = self.db.next_bump(lat, lon, self.last_bearing)
     except Exception:
       # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
       # geometry blob raises struct.error from _unpack_geom -- not a sqlite exception at
@@ -132,3 +156,37 @@ class KoreaMapData(BaseMapData):
     if nav is not None and nav.road_name:
       return nav.road_name
     return self.link.name if self.link is not None else ""
+
+  def read_bump_params(self) -> None:
+    """Read at the 1 Hz tick rate rather than on a frame counter: this process ticks once
+    a second, so a counter would only add state to save nothing."""
+    self.bump_enabled = self.params.get_bool("KoreaSpeedBumpEnabled")
+    arch = get_sanitize_int_param("KoreaSpeedBumpArchSpeed", *BUMP_ARCH_SPEED_RANGE, self.params)
+    trapezoid = get_sanitize_int_param("KoreaSpeedBumpTrapezoidSpeed", *BUMP_TRAPEZOID_SPEED_RANGE, self.params)
+    # BUMP_VIRTUAL is deliberately absent: next_bump never returns one, and a missing key
+    # here means publish_bump_target would fall through to "no target" if one ever arrived.
+    self.bump_targets = {BUMP_ARCH: arch * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid * CV.KPH_TO_MS}
+
+  def publish_bump_target(self) -> None:
+    """Hand the next bump to SmartCruiseControlMap through the two mem_params it reads.
+
+    Written on every tick, cleared when there is nothing ahead. SCC-Map has no staleness
+    check of its own -- it trusts whatever is in the param -- so 'stop writing' is not a
+    way to turn this off; only an empty list is.
+    """
+    points: list[dict[str, float]] = []
+    if self.bump_enabled and self.bump is not None and self.last_position is not None:
+      target = self.bump_targets.get(self.bump.kind, 0.)
+      if target > 0.:
+        points = [{"latitude": self.bump.lat, "longitude": self.bump.lon, "velocity": target}]
+
+    self.mem_params.put("MapTargetVelocities", json.dumps(points))
+    if self.last_position is not None:
+      self.mem_params.put("LastGPSPosition", json.dumps(self.last_position.as_dict()))
+
+  def tick(self) -> None:
+    """Override rather than calling from update_location: update_location returns early on
+    every tick before the database opens, and the clearing write has to happen anyway."""
+    self.read_bump_params()
+    super().tick()
+    self.publish_bump_target()
