@@ -8,6 +8,7 @@ from collections.abc import Callable
 from enum import IntEnum
 
 import pyray as rl
+from openpilot.common.constants import CV
 from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_policy import SpeedLimitPolicyLayout
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.mapd import MapSource
@@ -200,8 +201,13 @@ class SpeedLimitSettingsLayout(Widget):
 
   @staticmethod
   def _get_bump_speed_label(value):
-    # Always km/h: the dataset, the target, and the roads it describes are all Korean.
-    return f"{value} {tr('km/h')}"
+    # This names the speed the car will actually decelerate to at a bump, so unlike a
+    # label-only swap it must convert, not just relabel -- the stored/backend-clamped
+    # value is always km/h (BUMP_ARCH_SPEED_RANGE / BUMP_TRAPEZOID_SPEED_RANGE in
+    # korea_map_data.py), but the displayed number follows the user's unit preference.
+    if ui_state.is_metric:
+      return f"{value} {tr('km/h')}"
+    return f"{value * CV.KPH_TO_MPH:.1f} {tr('mph')}"
 
   def _update_state(self):
     super()._update_state()

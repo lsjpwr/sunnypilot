@@ -124,3 +124,38 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
       self.assertFalse(layout._speed_bump.action_item.enabled)
       self.assertFalse(layout._bump_arch_speed.action_item.enabled)
       self.assertFalse(layout._bump_trapezoid_speed.action_item.enabled)
+
+  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
+  def test_bump_speed_label_converts_for_is_metric(self, subtests):
+    rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
+    from openpilot.system.ui.lib.application import gui_app
+    gui_app.init_window("test_speed_limit_settings_bump_speed_label")
+    self.addCleanup(gui_app.close)
+
+    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import SpeedLimitSettingsLayout
+    from openpilot.selfdrive.ui.ui_state import ui_state
+
+    # Same process-wide-singleton hazard as the tests above: ui_state.params may be bound
+    # to a directory an earlier test's OpenpilotPrefix has since deleted.
+    params_dir = ui_state.params.get_param_path()
+    os.makedirs(params_dir, exist_ok=True)
+    self.addCleanup(shutil.rmtree, params_dir, ignore_errors=True)
+
+    # is_metric is a cached ui_state attribute (refreshed from the IsMetric param only by
+    # update_params(), not read fresh per call) -- set it directly, same as ui_state.started
+    # in test_external_nav_api_key_map_source_enabled_state above, rather than through params.
+    original_is_metric = ui_state.is_metric
+
+    def _restore():
+      ui_state.is_metric = original_is_metric
+    self.addCleanup(_restore)
+
+    layout = SpeedLimitSettingsLayout(lambda: None)
+
+    with subtests.test(case="metric -> km/h, value unconverted"):
+      ui_state.is_metric = True
+      self.assertEqual(layout._get_bump_speed_label(25), "25 km/h")
+
+    with subtests.test(case="imperial -> mph, value converted (not a label-only unit swap)"):
+      ui_state.is_metric = False
+      self.assertEqual(layout._get_bump_speed_label(25), "15.5 mph")
