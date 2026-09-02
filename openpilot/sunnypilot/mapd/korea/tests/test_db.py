@@ -11,8 +11,9 @@ import sys
 import tempfile
 import unittest
 
-from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras, insert_links, write_db
-from openpilot.sunnypilot.mapd.korea.db import KoreaMapDB
+from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS, SCHEMA_LINKS,
+                                                      insert_bumps, insert_cameras, insert_links, write_db)
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, KoreaMapDB
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
 ROAD_60 = (60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])
@@ -22,6 +23,13 @@ ROAD_100 = (100, "고속화도로", [(37.5027, 127.0200), (37.5027, 127.0320)])
 CAM_AHEAD = (37.5000, 127.0257, 50, 0)
 CAM_BEHIND = (37.5000, 127.0143, 30, 0)
 CAM_SECTION = (37.5000, 127.0280, 80, 4200)
+
+# bumps along ROAD_60, which runs east from (37.5000, 127.0200)
+BUMP_AHEAD_150 = (37.5000, 127.0217, 0)   # ~150 m east, 원호형
+BUMP_AHEAD_300 = (37.5000, 127.0234, 1)   # ~300 m east, 사다리꼴형
+BUMP_BEHIND = (37.5000, 127.0183, 0)      # ~150 m west
+BUMP_FAR = (37.5000, 127.0290, 0)         # ~800 m east, past BUMP_MAX_DISTANCE_M
+BUMP_VIRTUAL_AHEAD = (37.5000, 127.0217, 2)
 
 # A 50 km/h road running east for ~1 km, coincident with a short 80 km/h overpass link
 # for its first ~790 m -- an overpass and the road under it, or two links meeting at a
@@ -75,6 +83,21 @@ class KoreaMapDBTestCase(unittest.TestCase):
   def open_db(self, cams, links):
     """KoreaMapDB closed at teardown, so the tests do not each need a try/finally."""
     database = KoreaMapDB(cams, links)
+    self.addCleanup(database.close)
+    return database
+
+  def _make_bumps_db(self, bumps):
+    path = str(self.tmp_path / "korea_bumps.sqlite")
+    write_db(path, SCHEMA_BUMPS, lambda con: insert_bumps(con, bumps))
+    return path
+
+  def open_db_with_bumps(self, bumps, links=(ROAD_60,)):
+    """KoreaMapDB over a caller-chosen bump set, closed at teardown."""
+    cams = str(self.tmp_path / "korea_cameras.sqlite")
+    links_path = str(self.tmp_path / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_AHEAD]))
+    write_db(links_path, SCHEMA_LINKS, lambda con: insert_links(con, list(links)))
+    database = KoreaMapDB(cams, links_path, self._make_bumps_db(bumps))
     self.addCleanup(database.close)
     return database
 
@@ -198,6 +221,54 @@ class TestLookups(KoreaMapDBTestCase):
 
   def test_next_camera_none_when_far_away(self):
     self.assertIsNone(self.db.next_camera(37.6000, 127.2000, heading_deg=90.))
+
+
+class TestNextBump(KoreaMapDBTestCase):
+  def test_returns_the_nearest_bump_ahead(self):
+    database = self.open_db_with_bumps([BUMP_AHEAD_300, BUMP_AHEAD_150, BUMP_BEHIND])
+    bump = database.next_bump(37.5000, 127.0200, 90.)   # heading east
+    self.assertIsNotNone(bump)
+    self.assertAlmostEqual(bump.lon, BUMP_AHEAD_150[1], places=6)
+    self.assertEqual(bump.kind, BUMP_ARCH)
+    self.assertLess(bump.distance_m, 200.)
+
+  def test_carries_the_shape_through(self):
+    database = self.open_db_with_bumps([BUMP_AHEAD_300])
+    bump = database.next_bump(37.5000, 127.0200, 90.)
+    self.assertIsNotNone(bump)
+    self.assertEqual(bump.kind, BUMP_TRAPEZOID)
+
+  def test_ignores_bumps_behind_us(self):
+    database = self.open_db_with_bumps([BUMP_BEHIND])
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
+
+  def test_ignores_bumps_past_the_horizon(self):
+    database = self.open_db_with_bumps([BUMP_FAR])
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
+
+  def test_ignores_virtual_bumps(self):
+    """Paint on the road. Stored so including it later is a query change, never returned."""
+    database = self.open_db_with_bumps([BUMP_VIRTUAL_AHEAD])
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
+
+  def test_needs_a_heading(self):
+    database = self.open_db_with_bumps([BUMP_AHEAD_150])
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, None))
+
+  def test_a_missing_bump_database_is_not_a_failure(self):
+    """Devices deployed before this feature have no korea_bumps.sqlite. Cameras and links
+    must keep working, and next_bump must answer None rather than raise."""
+    cams, links = self._make_pair()
+    database = KoreaMapDB(cams, links, str(self.tmp_path / "does_not_exist.sqlite"))
+    self.addCleanup(database.close)
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
+    self.assertIsNotNone(database.next_camera(37.5000, 127.0200, 90.))
+    self.assertIsNotNone(database.current_link(37.5000, 127.0200))
+
+  def test_no_bumps_path_at_all_is_not_a_failure(self):
+    cams, links = self._make_pair()
+    database = self.open_db(cams, links)
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
 
 
 class TestTieBreakAndHysteresis(KoreaMapDBTestCase):

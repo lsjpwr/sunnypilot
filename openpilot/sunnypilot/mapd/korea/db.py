@@ -42,6 +42,17 @@ CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.
 CAMERA_AHEAD_TOLERANCE = 60.
 
+# ~660 m box, then filtered down to BUMP_MAX_DISTANCE_M. Much tighter than the camera
+# horizon on purpose: a bump 2 km out is noise, and SCC-Map only needs the point once it
+# is inside braking range.
+BUMP_SEARCH_DEG = 0.006
+BUMP_MAX_DISTANCE_M = 400.
+# Tighter than CAMERA_AHEAD_TOLERANCE because the same lateral offset subtends a much
+# larger angle at 400 m than at 2000 m -- 60 degrees here would pull in bumps on a side
+# street. The cost is that a bump just past a sharp bend is picked up later, which is
+# where the driver already is without this feature.
+BUMP_AHEAD_TOLERANCE = 45.
+
 _RTREE_OVERLAP = "WHERE i.maxlat >= ? AND i.minlat <= ? AND i.maxlon >= ? AND i.minlon <= ?"
 
 
@@ -65,6 +76,23 @@ class Camera:
   section_m: int  # 0 for a point camera, >0 for 구간단속 -- see docstring, not metres
 
 
+@dataclass(frozen=True)
+class Bump:
+  """A speed bump ahead of us.
+
+  Carries the coordinate, not just the distance: SmartCruiseControlMap consumes a
+  (latitude, longitude, velocity) point and measures the distance itself.
+
+  kind is 과속방지턱형태구분 as build_db.classify_kind mapped it -- 0 arch, 1 trapezoid,
+  2 virtual. Virtual bumps are stored but never returned by next_bump; they are paint on
+  the road, so there is nothing to slow down for.
+  """
+  lat: float
+  lon: float
+  kind: int
+  distance_m: float
+
+
 def _unpack_geom(blob: bytes) -> list[tuple[float, float]]:
   count = len(blob) // 8
   flat = struct.unpack(f"<{2 * count}f", blob)
@@ -80,7 +108,7 @@ class KoreaMapDB:
   this object, not to license calling into it concurrently from multiple threads.
   """
 
-  def __init__(self, cameras_path: str, links_path: str):
+  def __init__(self, cameras_path: str, links_path: str, bumps_path: str | None = None):
     self.cameras_path = cameras_path
     self._cameras_mtime = 0.
     self._last_link_id: int | None = None
@@ -94,6 +122,10 @@ class KoreaMapDB:
     self._cameras_mtime = os.path.getmtime(cameras_path)
     self.cam = self._open(cameras_path)
     self.lnk = self._open(links_path)
+    # Optional third file. A device deployed before speed bumps shipped has cameras and
+    # links but no korea_bumps.sqlite, and losing speed limits over a missing comfort
+    # feature would be the wrong trade -- so an absent file means "no bumps", not an error.
+    self.bmp = self._open(bumps_path) if bumps_path and os.path.exists(bumps_path) else None
 
   @staticmethod
   def _open(path: str) -> sqlite3.Connection:
@@ -133,10 +165,16 @@ class KoreaMapDB:
     return True
 
   def close(self) -> None:
-    try:
-      self.cam.close()
-    finally:
-      self.lnk.close()
+    # Every connection gets its close() attempted even if an earlier one raises: the link
+    # database is 220 MB of mapped sqlite, and leaking it because the camera handle
+    # objected would be the expensive half of the failure.
+    for con in (self.cam, self.lnk, self.bmp):
+      if con is None:
+        continue
+      try:
+        con.close()
+      except sqlite3.Error:
+        logging.getLogger(__name__).exception("korea db: a connection failed to close")
 
   def current_link(self, lat: float, lon: float, heading_deg: float | None = None) -> Link | None:
     """Nearest road segment we are plausibly driving on, or None when off the network.
@@ -211,6 +249,31 @@ class KoreaMapDB:
       if bearing_delta(heading_deg, bearing(lat, lon, clat, clon)) > CAMERA_AHEAD_TOLERANCE:
         continue
       best = Camera(limit_kph=limit_kph, distance_m=distance, section_m=section_m)
+
+    return best
+
+  def next_bump(self, lat: float, lon: float, heading_deg: float | None) -> Bump | None:
+    """Nearest physical speed bump ahead of us, or None. Needs a heading to know what
+    'ahead' means, same as next_camera."""
+    if self.bmp is None or heading_deg is None:
+      return None
+
+    rows = self.bmp.execute(
+      "SELECT b.lat, b.lon, b.kind FROM bumps_idx i JOIN bumps b ON b.id = i.id " + _RTREE_OVERLAP,
+      (lat - BUMP_SEARCH_DEG, lat + BUMP_SEARCH_DEG, lon - BUMP_SEARCH_DEG, lon + BUMP_SEARCH_DEG),
+    ).fetchall()
+
+    best: Bump | None = None
+
+    for blat, blon, kind in rows:
+      if kind == BUMP_VIRTUAL:
+        continue
+      distance = haversine(lat, lon, blat, blon)
+      if distance > BUMP_MAX_DISTANCE_M or (best is not None and distance >= best.distance_m):
+        continue
+      if bearing_delta(heading_deg, bearing(lat, lon, blat, blon)) > BUMP_AHEAD_TOLERANCE:
+        continue
+      best = Bump(lat=blat, lon=blon, kind=kind, distance_m=distance)
 
     return best
 
