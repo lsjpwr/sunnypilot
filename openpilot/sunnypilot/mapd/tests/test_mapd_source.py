@@ -461,14 +461,17 @@ class TestKoreaMapDataClose(unittest.TestCase):
     None for every tick before both files land -- a switch in that window must not take the
     process down with an AttributeError."""
     closed = []
+    puts = []
     data = KoreaMapData.__new__(KoreaMapData)
     data.db = SimpleNamespace(close=lambda: closed.append(True))
     data.link = data.camera = data.bump = object()
-    data.mem_params = SimpleNamespace(put=lambda *a, **k: None)
+    data.mem_params = SimpleNamespace(put=lambda k, v, **kw: puts.append((k, v)))
 
     data.close()
     self.assertEqual(closed, [True], "the sqlite handles on a 220 MB database are never released")
     self.assertEqual((data.db, data.link, data.camera, data.bump), (None, None, None, None))
+    self.assertIn(("MapTargetVelocities", "[]"), puts,
+                 "close() must clear MapTargetVelocities, or a departing source leaves a live deceleration target for whatever runs next")
 
     data.close()  # never opened, or already closed
     self.assertEqual(closed, [True])

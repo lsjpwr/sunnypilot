@@ -11,10 +11,13 @@ import struct
 import tempfile
 import time
 import unittest
+from types import SimpleNamespace
 
 import openpilot.cereal.messaging as messaging
 from openpilot.common.constants import CV
 from openpilot.common.parameterized import parameterized
+from openpilot.common.params import Params
+from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras,
                                                       insert_links, write_db)
 from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, Bump, Camera, Link
@@ -311,3 +314,74 @@ class BumpTargetTestCase(unittest.TestCase):
     data.publish_bump_target()
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
     self.assertNotIn("LastGPSPosition", data.mem_params.values)
+
+
+class TestReadBumpParams(OpenpilotTestCase):
+  """make_bump_data builds bump_targets with the same arch_kph * CV.KPH_TO_MS expression
+  read_bump_params uses, so BumpTargetTestCase above cannot catch a wrong param key name or a
+  dropped unit conversion -- only a round-trip through the real Params keys can."""
+
+  def test_reads_the_three_params_into_bump_targets(self):
+    data = KoreaMapData.__new__(KoreaMapData)
+    data.params = Params()
+    data.params.put_bool("KoreaSpeedBumpEnabled", True, block=True)
+    data.params.put("KoreaSpeedBumpArchSpeed", 25, block=True)
+    data.params.put("KoreaSpeedBumpTrapezoidSpeed", 35, block=True)
+
+    data.read_bump_params()
+
+    self.assertTrue(data.bump_enabled)
+    self.assertEqual(data.bump_targets, {BUMP_ARCH: 25 * CV.KPH_TO_MS, BUMP_TRAPEZOID: 35 * CV.KPH_TO_MS})
+
+  def test_a_too_low_arch_speed_clamps_to_the_floor(self):
+    data = KoreaMapData.__new__(KoreaMapData)
+    data.params = Params()
+    data.params.put_bool("KoreaSpeedBumpEnabled", True, block=True)
+    data.params.put("KoreaSpeedBumpArchSpeed", 10, block=True)
+    data.params.put("KoreaSpeedBumpTrapezoidSpeed", 35, block=True)
+
+    data.read_bump_params()
+
+    self.assertEqual(data.bump_targets[BUMP_ARCH], 20 * CV.KPH_TO_MS)
+
+
+class StubSM(dict):
+  """A dict that also tolerates SubMaster.update(rate): tick() needs both the subscript
+  access update_location uses and the update() call tick() makes before it."""
+
+  def update(self, rate):
+    pass
+
+
+class TestTickOrdering(unittest.TestCase):
+  def test_tick_runs_publish_bump_target_after_the_base_tick(self):
+    """Pins the ordering the whole safety story depends on: publish_bump_target must run
+    after super().tick() (sm.update, update_location, publish), on every tick -- not from
+    inside update_location, whose early return is covered separately below."""
+    calls = []
+    data = KoreaMapData.__new__(KoreaMapData)
+    data.read_bump_params = lambda: calls.append("read_bump_params")
+    data.sm = SimpleNamespace(update=lambda rate: calls.append("sm.update"))
+    data.update_location = lambda: calls.append("update_location")
+    data.publish = lambda: calls.append("publish")
+    data.publish_bump_target = lambda: calls.append("publish_bump_target")
+
+    data.tick()
+
+    self.assertEqual(calls, ["read_bump_params", "sm.update", "update_location", "publish", "publish_bump_target"])
+
+  def test_an_early_return_in_update_location_still_clears_the_target(self):
+    """update_location returns early every tick before the database opens, or before the
+    localizer has a fix. publish_bump_target has to run anyway -- moving its call inside
+    update_location, after the early return, would leave MapTargetVelocities unwritten (and
+    so stale) for that entire window instead of the empty list SCC-Map is safe to read."""
+    data = make_data()
+    data.sm = StubSM({'liveLocationKalman': messaging.new_message('liveLocationKalman').liveLocationKalman})
+    data.pm = SimpleNamespace(send=lambda *a, **k: None)
+    data.read_bump_params = lambda: None  # covered by TestReadBumpParams; irrelevant here
+    data.last_bearing = None
+    data.last_position = None  # db is also None -- either alone forces the early return
+
+    data.tick()
+
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
