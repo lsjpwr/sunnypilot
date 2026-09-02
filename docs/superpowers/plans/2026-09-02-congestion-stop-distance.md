@@ -50,7 +50,7 @@ docker exec sp-build bash -lc 'cd /work && source .venv/bin/activate && \
 - 종방향 회귀 (`openpilot/sunnypilot/selfdrive/controls/lib/` + `test_following_distance.py`): `210 passed`
 - Task 5 스키마 경로 (`params_keys.h` + `cruise.yaml` + 재컴파일): `92 passed, 1 skipped`
 
-Task 4(디바이스 UI)만 실측하지 않았다. raylib 위젯 구성은 `openpilot/selfdrive/ui/tests/`가 커버한다.
+Task 4(디바이스 UI)만 실측하지 않았다. 실행 중 확인한 결과 기존 `openpilot/selfdrive/ui/tests/`는 `CruiseLayout`을 구성하지 않아 이 페이지를 전혀 커버하지 못한다. Task 4에 전용 테스트(Step 4b)를 추가했다.
 
 ## File Structure
 
@@ -883,7 +883,9 @@ docker exec sp-build bash -lc 'cd /work && source .venv/bin/activate && \
   python tools/test_runner.py openpilot/selfdrive/ui/tests/'
 ```
 
-Expected: PASS. 이 스위트는 설정 화면을 구성해 위젯 트리를 돌기 때문에 잘못된 `option_item_sp` 인자나 등록되지 않은 파라미터 키가 여기서 잡힌다.
+Expected: PASS.
+
+**정정:** 이 스위트는 `CruiseLayout`을 구성하지 않는다. 실측으로 확인했다 — `option_item_sp` 호출에 치명적 인자를 주입해도 53건이 전부 통과한다. 따라서 이 스텝만으로는 Task 4에 대한 검증 근거가 없고, Step 4b가 그 공백을 메운다.
 
 - [ ] **Step 5: 라벨 계산 수동 확인**
 
