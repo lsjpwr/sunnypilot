@@ -771,7 +771,7 @@ docker exec sp-build bash -lc 'cd /work && source .venv/bin/activate && \
     openpilot/selfdrive/controls/tests/test_following_distance.py'
 ```
 
-Expected: PASS. `test_following_distance.py` 36건이 전부 통과해야 한다. 이것이 "기본값에서 순정과 동일"의 최종 증거다.
+Expected: PASS. `test_following_distance.py` 18건(e2e 2 x personality 3 x speed 3)이 전부 통과해야 한다. 이것이 "기본값에서 순정과 동일"의 최종 증거다.
 
 - [ ] **Step 6: 커밋**
 
@@ -1067,7 +1067,7 @@ docker exec sp-build bash -lc 'cd /work && source .venv/bin/activate && \
 
 Expected: 전부 PASS.
 
-`test_following_distance.py`가 이 계획의 핵심 안전 확인이다. 기본값 6.0에서 36가지 (e2e x personality x speed) 조합의 정상 상태 추종 간격이 순정과 같아야 한다.
+`test_following_distance.py`가 이 계획의 핵심 안전 확인이다. 기본값 6.0에서 18가지 (e2e 2 x personality 3 x speed 3) 조합의 정상 상태 추종 간격이 순정과 같아야 한다.
 
 ## 롤백
 
