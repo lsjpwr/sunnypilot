@@ -217,6 +217,7 @@ class LongitudinalMpc:
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
     self.reset()
     self.source = LongitudinalPlanSource.cruise
+    self.stop_distance = STOP_DISTANCE
 
   def reset(self):
     self.solver.reset()
@@ -329,7 +330,7 @@ class LongitudinalMpc:
 
     self.params[:,0] = ACCEL_MIN
     self.params[:,1] = ACCEL_MAX
-    self.params[:,2] = np.min(x_obstacles, axis=1)
+    self.params[:,2] = np.min(x_obstacles, axis=1) + (STOP_DISTANCE - self.stop_distance)
     self.params[:,3] = np.copy(self.a_prev)
     self.params[:,4] = t_follow
     self.params[:,5] = LEAD_DANGER_FACTOR
