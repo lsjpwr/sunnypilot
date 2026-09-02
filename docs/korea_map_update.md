@@ -1,13 +1,14 @@
 # 한국 지도 DB 갱신
 
-지도 데이터는 **두 파일로 나뉘어** 있고, 갱신 방식이 서로 다르다.
+지도 데이터는 **세 파일로 나뉘어** 있고, 갱신 방식이 서로 다르다.
 
 | 파일 | 크기 | 출처 | 갱신 |
 |---|---|---|---|
 | `korea_cameras.sqlite` | ~3 MB | data.go.kr 무인교통단속카메라 API | **디바이스가 자동으로** (주 1회) |
 | `korea_links.sqlite` | ~220 MB | ITS 전국표준노드링크 | **수동** (분기마다, 아래 절차) |
+| `korea_bumps.sqlite` | ~11 MB | data.go.kr 전국과속방지턱표준데이터 | **수동, 선택 사항** (필요할 때, 아래 절차) |
 
-카메라가 자주 바뀌고 크기가 작아서 자동 갱신 대상이고, 링크는 크고 거의 안 바뀌어서 수동이다. 이 분리가 두 파일로 나눈 이유 자체다.
+카메라가 자주 바뀌고 크기가 작아서 자동 갱신 대상이고, 링크는 크고 거의 안 바뀌어서 수동이다. 방지턱은 링크보다도 더 안 바뀌는 데다 있어도 그만 없어도 그만인 선택 사항이라, 파일 하나를 통째로 더 나누게 됐다.
 
 ---
 
@@ -102,6 +103,44 @@ python -m openpilot.sunnypilot.mapd.korea.deploy \
 ### 2-5. 재부팅
 
 링크 DB는 프로세스 시작 시 한 번만 열리므로 **재부팅이 필요하다.** (카메라 DB만 무중단 교체를 지원한다.)
+
+---
+
+## 3. 방지턱 DB — 선택 사항, 수동
+
+카메라·링크와 같은 파이프라인(`build_db.py` → `deploy.py`)을 타지만, 셋 중 유일하게 없어도 그만인 파일이다. 기기에 `korea_bumps.sqlite`가 없어도 카메라 갱신과 속도제한은 그대로 동작하고, 방지턱 감속만 아무 일도 하지 않는다.
+
+### 3-1. 원본 받기
+
+- 전국과속방지턱표준데이터: https://www.data.go.kr/data/15028195/standard.do
+- 직접 내려받기: https://file.localdata.go.kr/file/speed_bump_info/info
+
+### 3-2. 빌드
+
+```bash
+python -m openpilot.sunnypilot.mapd.korea.build_db \
+    --bumps 전국과속방지턱표준데이터.csv --out-bumps korea_bumps.sqlite
+```
+
+### 3-3. 배포
+
+카메라·링크와 같은 명령이 존재하는 파일만 골라 검증하고 올린다. 방지턱 파일이 있으면 자동으로 같이 올라간다 — 파일명이 기본값(`korea_bumps.sqlite`)과 같다면 별도 플래그가 필요 없다:
+
+```bash
+python -m openpilot.sunnypilot.mapd.korea.deploy --host comma@<device-ip>
+```
+
+파일은 `/data/media/0/korea_map/korea_bumps.sqlite`에 놓인다. 링크 DB와 마찬가지로 프로세스 시작 시 한 번만 열리므로 **재부팅이 필요하다.**
+
+방지턱 파일이 없으면 `deploy.py`는 건너뛰고 카메라·링크만 검증·배포한다 — 방지턱 파일 하나가 없다고 나머지 갱신까지 실패하지는 않는다.
+
+**갱신 주기**: 카메라와 달리 자동 갱신 경로가 없다. 방지턱은 거의 변하지 않으므로 필요할 때 수동으로 다시 빌드한다.
+
+### 3-4. 설정
+
+크루즈 → 속도 제한 → **Speed Bump Slowdown** (원격 sunnylink에도 같은 항목이 있다). 목표 속도는 원호형 기본 25 km/h, 사다리꼴형 기본 35 km/h. 하한 20 km/h는 `SmartCruiseControl.MIN_V` 때문이다.
+
+가상방지턱(노면표시)은 DB에 저장되지만 조회에서 제외된다 — 물리 충격이 없는 노면 표시라 감속할 이유가 없다.
 
 ---
 

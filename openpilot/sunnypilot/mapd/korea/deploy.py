@@ -25,6 +25,9 @@ from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_VERSION
 # 1557364; a build that lands an order of magnitude short went wrong somewhere upstream.
 MIN_CAMERAS = 20000
 MIN_LINKS = 1000000
+# The 2026-09 bump dataset holds 107181 rows before the Korea bounds filter. Half of that
+# is a floor no healthy build lands under.
+MIN_BUMPS = 50000
 
 DEVICE_DIR = "/data/media/0/korea_map"
 CHUNK = 1 << 20
@@ -74,14 +77,30 @@ def push(path: str, host: str) -> None:
   print(f"{name}: verified on device")
 
 
+def build_targets(cameras: str, links: str, bumps: str) -> list[tuple[str, str, int]]:
+  """(path, table, min_rows) for every database that is actually present.
+
+  Cameras and links are required -- a build without them is a mistake worth failing on.
+  Bumps are optional: the feature shipped later than the other two, and a device that
+  never got a bump database still wants its speed limits refreshed.
+  """
+  targets = [(cameras, "cameras", MIN_CAMERAS), (links, "links", MIN_LINKS)]
+  if os.path.exists(bumps):
+    targets.append((bumps, "bumps", MIN_BUMPS))
+  else:
+    print(f"{os.path.basename(bumps)}: not present, skipping")
+  return targets
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description="Verify and deploy the Korean map databases.")
   parser.add_argument("--cameras", default="korea_cameras.sqlite")
   parser.add_argument("--links", default="korea_links.sqlite")
+  parser.add_argument("--bumps", default="korea_bumps.sqlite")
   parser.add_argument("--host", help="ssh target, e.g. comma@192.168.1.50. Omit to verify only.")
   args = parser.parse_args()
 
-  targets = [(args.cameras, "cameras", MIN_CAMERAS), (args.links, "links", MIN_LINKS)]
+  targets = build_targets(args.cameras, args.links, args.bumps)
   for path, table, minimum in targets:
     print(f"{os.path.basename(path)}: {verify(path, table, minimum)} rows in {table}")
 

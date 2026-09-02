@@ -9,8 +9,10 @@ import sqlite3
 import tempfile
 import unittest
 
-from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_CAMERAS, insert_cameras, write_db
-from openpilot.sunnypilot.mapd.korea.deploy import sha256_of, verify
+from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS,
+                                                      insert_bumps, insert_cameras, write_db)
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH
+from openpilot.sunnypilot.mapd.korea.deploy import build_targets, sha256_of, verify
 
 
 class TestDeploy(unittest.TestCase):
@@ -22,6 +24,12 @@ class TestDeploy(unittest.TestCase):
     path = str(self.tmp_path / "korea_cameras.sqlite")
     write_db(path, SCHEMA_CAMERAS,
              lambda con: insert_cameras(con, [(37.5 + i * 1e-4, 127.0, 60, 0) for i in range(n)]))
+    return path
+
+  def good_bumps_db(self, n=5):
+    path = str(self.tmp_path / "korea_bumps.sqlite")
+    write_db(path, SCHEMA_BUMPS,
+             lambda con: insert_bumps(con, [(37.5, 127.0 + i * 1e-4, BUMP_ARCH) for i in range(n)]))
     return path
 
   def test_verify_returns_the_row_count(self):
@@ -53,3 +61,22 @@ class TestDeploy(unittest.TestCase):
     self.assertEqual(len(digest), 64)
     self.assertEqual(digest, digest.lower())
     self.assertTrue(all(c in "0123456789abcdef" for c in digest))
+
+  def test_verify_accepts_a_bump_database(self):
+    self.assertEqual(verify(self.good_bumps_db(5), "bumps", 1), 5)
+
+  def test_verify_rejects_a_short_bump_database(self):
+    with self.assertRaisesRegex(ValueError, "5 rows"):
+      verify(self.good_bumps_db(5), "bumps", 1000)
+
+  def test_build_targets_includes_bumps_when_the_file_exists(self):
+    targets = build_targets(self.good_db(), str(self.tmp_path / "korea_links.sqlite"),
+                            self.good_bumps_db())
+    self.assertEqual([table for _, table, _ in targets], ["cameras", "links", "bumps"])
+
+  def test_build_targets_skips_a_missing_bump_file(self):
+    """Speed bumps are optional. Refreshing speed limits on a device that never got a
+    bump database must not fail on the file that was never built."""
+    targets = build_targets(self.good_db(), str(self.tmp_path / "korea_links.sqlite"),
+                            str(self.tmp_path / "never_built.sqlite"))
+    self.assertEqual([table for _, table, _ in targets], ["cameras", "links"])
