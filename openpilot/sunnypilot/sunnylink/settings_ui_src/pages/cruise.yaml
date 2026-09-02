@@ -63,6 +63,21 @@ sections:
       label: Relaxed
     enablement:
     - $ref: '#/macros/longitudinal'
+  - key: StopDistance
+    widget: option
+    title: Stop Distance in Traffic
+    description: Gap held from the lead car when stopping behind slow traffic. Applies while
+      the lead is under 30 km/h and returns to the stock 6.0 m once it passes 50 km/h. Driving
+      Personality sets the gap at speed; this sets it at a standstill, where Personality has
+      no effect. Your car's own AEB is unaffected.
+    min: 4.0
+    max: 6.0
+    step: 0.5
+    unit: m
+    visibility:
+    - $ref: '#/macros/longitudinal'
+    enablement:
+    - $ref: '#/macros/longitudinal'
   - key: IntelligentCruiseButtonManagement
     widget: toggle
     title: Intelligent Cruise Button Management (ICBM) (Alpha)

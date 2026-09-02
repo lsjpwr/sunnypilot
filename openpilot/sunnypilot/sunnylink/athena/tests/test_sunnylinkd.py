@@ -92,6 +92,7 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
       "DisableUpdates": "1",
       "LongitudinalManeuverMode": "1",
       "JoystickDebugMode": "1",
+      "StopDistance": "4.0",
       "RecordFront": "1",
       "RecordAudio": "1",
       "RecordAudioFeedback": "1",

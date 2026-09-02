@@ -73,6 +73,7 @@ SENSITIVE_PARAMS = {
   # Require physical presence
   "LongitudinalManeuverMode",
   "JoystickDebugMode",
+  "StopDistance",
 
   # Privacy
   "RecordFront",
