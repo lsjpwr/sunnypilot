@@ -219,6 +219,16 @@ class TestSlew(OpenpilotTestCase):
     drive(ctrl, 200, v_ego=0., v_lead=0.)
     self.assertEqual(mpc.stop_distance, STOP_DISTANCE_MIN)
 
+  def test_the_offset_collapses_at_a_standstill_when_the_gate_closes(self):
+    # The freeze covers growth only. Shrinking has to keep working while stopped, or a car
+    # sitting 4 m back would hold the offset after the lead disappeared instead of
+    # collapsing it. Hoisting the vEgo guard to wrap the whole branch passes every other
+    # test in this file and reintroduces exactly that bug.
+    ctrl, mpc, _ = build_controller()
+    drive(ctrl, 200, v_ego=5., v_lead=0.)
+    drive(ctrl, 1, v_ego=0., lead_present=False)
+    self.assertEqual(mpc.stop_distance, STOP_DISTANCE)
+
 
 class TestDangerZoneFloor(OpenpilotTestCase):
   def test_the_hard_floor_at_the_minimum_setting_stays_above_2_5_m(self):

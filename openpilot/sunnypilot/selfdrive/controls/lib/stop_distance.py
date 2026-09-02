@@ -46,6 +46,8 @@ class StopDistanceController:
     # Clamp and write back, the same shape as get_sanitize_int_param. Only one caller
     # needs the float version, so it stays here until a second one shows up.
     value = float(self._params.get("StopDistance", return_default=True))
+    # Argument order matters: a NaN param must fall through to MAX (the stock, longest gap).
+    # min(value, STOP_DISTANCE_MAX) or np.clip would yield MIN -- the shortest gap -- instead.
     clipped = max(STOP_DISTANCE_MIN, min(STOP_DISTANCE_MAX, value))
     if clipped != value:
       self._params.put("StopDistance", clipped, block=True)
