@@ -7,11 +7,15 @@ See the LICENSE.md file in the root directory for more details.
 import numpy as np
 
 import openpilot.cereal.messaging as messaging
+from openpilot.cereal import custom
+from opendbc.car import structs
+from openpilot.common.params import Params
 from openpilot.common.parameterized import parameterized
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LEAD_DANGER_FACTOR, LongitudinalMpc,
                                                                             STOP_DISTANCE)
+from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
 from openpilot.sunnypilot.selfdrive.controls.lib.stop_distance import (CONGESTION_LEAD_V_ENTER, CONGESTION_LEAD_V_EXIT,
                                                                        OFFSET_SLEW, STANDSTILL_V, STOP_DISTANCE_MAX,
                                                                        STOP_DISTANCE_MIN, StopDistanceController)
@@ -240,3 +244,82 @@ class TestDangerZoneFloor(OpenpilotTestCase):
     offset = STOP_DISTANCE - STOP_DISTANCE_MIN
     floor = LEAD_DANGER_FACTOR * STOP_DISTANCE - offset
     self.assertGreaterEqual(floor, 2.5)
+
+
+class MockSubMaster(dict):
+  def __init__(self, services: dict):
+    super().__init__(services)
+    self.valid = dict.fromkeys(services, True)
+    self.logMonoTime = dict.fromkeys(services, 0)
+    self.updated = dict.fromkeys(services, True)
+    self.recv_frame = dict.fromkeys(services, 1)
+
+  def all_checks(self, service_list=None) -> bool:
+    return True
+
+
+def planner_sm(v_ego: float, v_lead: float) -> MockSubMaster:
+  services = {}
+  for service in ("controlsState", "vehicleParameters", "carStateSP",
+                  "liveMapDataSP", "gpsLocationExternal", "gpsLocation"):
+    services[service] = getattr(messaging.new_message(service), service)
+
+  radar = messaging.new_message('radarState')
+  radar.radarState.leadOne.present = True
+  radar.radarState.leadOne.dRel = 20.
+  radar.radarState.leadOne.vLead = v_lead
+  services['radarState'] = radar.radarState.as_reader()
+
+  car_state = messaging.new_message('carState')
+  car_state.carState.vEgo = v_ego
+  car_state.carState.vCruise = 100.
+  car_state.carState.vCruiseCluster = 100.
+  services['carState'] = car_state.carState.as_reader()
+
+  selfdrive_state = messaging.new_message('selfdriveState')
+  selfdrive_state.selfdriveState.enabled = True
+  services['selfdriveState'] = selfdrive_state.selfdriveState.as_reader()
+
+  car_control = messaging.new_message('carControl')
+  car_control.carControl.enabled = True
+  services['carControl'] = car_control.carControl.as_reader()
+
+  model = messaging.new_message('modelV2')
+  model.modelV2.orientationRate.z = [0.01] * 33   # a straight path divides by zero in SCC vision
+  model.modelV2.velocity.x = [v_ego] * 33
+  model.modelV2.position.x = [float(i) for i in range(33)]
+  services['modelV2'] = model.modelV2.as_reader()
+
+  return MockSubMaster(services)
+
+
+def build_planner(v_ego: float) -> LongitudinalPlanner:
+  CP = structs.CarParams()
+  CP.steerRatio = 15.0
+  CP.wheelbase = 2.7
+  CP.longitudinalActuatorDelay = 0.2
+  CP_SP = custom.CarParamsSP.new_message().as_reader()
+  return LongitudinalPlanner(CP, CP_SP, init_v=v_ego)
+
+
+class TestPlannerWiring(OpenpilotTestCase):
+  """The controller has to reach the MPC in the tick it runs, or the offset is always one
+  frame stale. LongitudinalPlannerSP.update() runs first inside
+  LongitudinalPlanner.update(), before self.mpc.update()."""
+
+  def test_a_congested_tick_reaches_the_mpc_before_it_solves(self):
+    Params().put("StopDistance", STOP_DISTANCE_MIN)
+    planner = build_planner(v_ego=20.)
+    self.assertEqual(planner.mpc.stop_distance, STOP_DISTANCE)
+
+    planner.update(planner_sm(v_ego=20., v_lead=0.))
+
+    self.assertEqual(planner.mpc.stop_distance, STOP_DISTANCE - OFFSET_SLEW * DT_MDL)
+
+  def test_a_free_flowing_tick_leaves_the_mpc_at_stock(self):
+    Params().put("StopDistance", STOP_DISTANCE_MIN)
+    planner = build_planner(v_ego=20.)
+
+    planner.update(planner_sm(v_ego=20., v_lead=25.))
+
+    self.assertEqual(planner.mpc.stop_distance, STOP_DISTANCE)
