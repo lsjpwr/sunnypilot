@@ -244,6 +244,49 @@ sections:
       - type: param
         key: MapDataSource
         equals: 1
+    - key: KoreaSpeedBumpEnabled
+      widget: toggle
+      title: Speed Bump Slowdown
+      description: Slow down for speed bumps from the Korean public database. Needs korea_bumps.sqlite on the
+        device — without it this does nothing.
+      enablement:
+      - type: param
+        key: MapDataSource
+        equals: 1
+    - key: KoreaSpeedBumpArchSpeed
+      widget: option
+      title: Arch Bump Target Speed
+      min: 20
+      max: 40
+      step: 1
+      unit:
+        metric: km/h
+        imperial: mph
+      visibility:
+      - type: param
+        key: KoreaSpeedBumpEnabled
+        equals: true
+      enablement:
+      - type: param
+        key: MapDataSource
+        equals: 1
+    - key: KoreaSpeedBumpTrapezoidSpeed
+      widget: option
+      title: Flat-Top Bump Target Speed
+      min: 20
+      max: 50
+      step: 1
+      unit:
+        metric: km/h
+        imperial: mph
+      visibility:
+      - type: param
+        key: KoreaSpeedBumpEnabled
+        equals: true
+      enablement:
+      - type: param
+        key: MapDataSource
+        equals: 1
     - key: SpeedLimitOffsetType
       widget: multiple_button
       title: Speed Limit Offset Type

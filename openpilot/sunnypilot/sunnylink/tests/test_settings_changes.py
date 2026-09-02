@@ -292,6 +292,53 @@ class TestKoreaMapRemote(OpenpilotTestCase):
       "KoreaExternalNavEnabled missing MapDataSource == korea (1) gate"
 
 
+class TestKoreaSpeedBumpRemote(OpenpilotTestCase):
+  def test_speed_bump_toggle_present(self, schema):
+    item = _find_item(schema, "KoreaSpeedBumpEnabled")
+    assert item is not None, "KoreaSpeedBumpEnabled missing from settings_ui schema"
+    assert item.get("widget") == "toggle"
+
+  def test_speed_bump_toggle_requires_korea_map_source(self, schema):
+    """The bump database only exists on the Korea source; offering the toggle under OSM
+    would be a switch that silently does nothing."""
+    item = _find_item(schema, "KoreaSpeedBumpEnabled")
+    assert item is not None
+    assert _references_param_equals(item.get("enablement"), "MapDataSource", 1), \
+      "KoreaSpeedBumpEnabled missing MapDataSource == korea (1) gate"
+
+  def test_speed_bump_toggle_is_not_offroad_only(self, schema):
+    """Unlike KoreaExternalNavEnabled this opens no port and touches no credential --
+    it only stops a comfort slowdown, so it stays writable onroad."""
+    item = _find_item(schema, "KoreaSpeedBumpEnabled")
+    assert item is not None
+    assert "offroad_only" not in _flatten_rule_types(item.get("enablement"))
+
+  def test_bump_speed_options_are_present_and_bounded(self, schema):
+    for key, low, high in (("KoreaSpeedBumpArchSpeed", 20, 40),
+                           ("KoreaSpeedBumpTrapezoidSpeed", 20, 50)):
+      item = _find_item(schema, key)
+      assert item is not None, f"{key} missing from settings_ui schema"
+      assert item.get("widget") == "option"
+      # The floor is SmartCruiseControl.MIN_V (20 km/h): the controller discards anything
+      # lower, so a remote surface offering it would be lying about what it does.
+      assert item.get("min") == low, f"{key} min is {item.get('min')}, expected {low}"
+      assert item.get("max") == high, f"{key} max is {item.get('max')}, expected {high}"
+
+  def test_bump_speed_options_hide_when_the_feature_is_off(self, schema):
+    for key in ("KoreaSpeedBumpArchSpeed", "KoreaSpeedBumpTrapezoidSpeed"):
+      item = _find_item(schema, key)
+      assert item is not None
+      assert _references_param_equals(item.get("visibility"), "KoreaSpeedBumpEnabled", True), \
+        f"{key} must be hidden while KoreaSpeedBumpEnabled is off"
+
+  def test_bump_settings_apply_without_a_cycle(self, schema):
+    """korea_map_data reads all three every tick, so none of them needs a restart."""
+    for key in ("KoreaSpeedBumpEnabled", "KoreaSpeedBumpArchSpeed", "KoreaSpeedBumpTrapezoidSpeed"):
+      item = _find_item(schema, key)
+      assert item is not None
+      assert not item.get("needs_onroad_cycle"), f"{key} claims it takes an onroad cycle"
+
+
 class TestKoreaMapSettings(OpenpilotTestCase):
   """The source selector and the external-nav toggle must exist on the remote surface.
   A raylib-only setting is invisible to sunnylink users."""
