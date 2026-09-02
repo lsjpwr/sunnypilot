@@ -793,9 +793,10 @@ tici 설정 화면의 Cruise 패널에 항목을 추가한다. mici는 대상이
 
 **Files:**
 - Modify: `openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py`
+- Create: `openpilot/selfdrive/ui/tests/test_cruise_stop_distance.py`
 
 **Interfaces:**
-- Consumes: `StopDistance` 파라미터 키 (Task 2)
+- Consumes: `StopDistance` 파라미터 키 (Task 2), `STOP_DISTANCE_MIN`/`STOP_DISTANCE_MAX` (Task 2, 테스트에서만)
 - Produces: 없음 (UI 말단)
 
 - [ ] **Step 1: 항목 생성**
@@ -887,6 +888,29 @@ Expected: PASS.
 
 **정정:** 이 스위트는 `CruiseLayout`을 구성하지 않는다. 실측으로 확인했다 — `option_item_sp` 호출에 치명적 인자를 주입해도 53건이 전부 통과한다. 따라서 이 스텝만으로는 Task 4에 대한 검증 근거가 없고, Step 4b가 그 공백을 메운다.
 
+- [ ] **Step 4b: 전용 테스트 추가**
+
+Step 4의 스위트가 이 페이지를 커버하지 못하므로 `openpilot/selfdrive/ui/tests/test_cruise_stop_distance.py`를 새로 만든다. 레포에 이미 있는 설정 레이아웃 테스트(`test_speed_limit_settings_korea_gating.py`)의 패턴을 그대로 따른다 — `rl.set_config_flags(FLAG_WINDOW_HIDDEN)` + `gui_app.init_window()` 후 실제 레이아웃을 구성한다.
+
+검증 항목 세 가지:
+1. `option.param_key == "StopDistance"` — 컨트롤러가 읽는 키와 결속
+2. 위젯이 `layout._scroller._items`에 실제로 들어가 있음 (객체에만 붙어 있는 게 아니라)
+3. `min_value`/`max_value`/`value_change_step`으로 도달 가능한 값이 정확히 `[4.0, 4.5, 5.0, 5.5, 6.0]`이고 전부 `[STOP_DISTANCE_MIN, STOP_DISTANCE_MAX]` 안에 있음
+
+두 버그 클래스를 실제로 잡는지 주입으로 확인했다.
+
+| 주입 | 이 테스트 추가 전 | 추가 후 |
+|---|---|---|
+| `option_item_sp`에 잘못된 인자 | 53 passed (무증상) | 53 passed, **1 error** |
+| `min_value` 400 → 300 (안전 하한 위반) | 53 passed (무증상) | 53 passed, **1 failed** |
+
+```bash
+docker cp openpilot/selfdrive/ui/tests/test_cruise_stop_distance.py   sp-build:/work/openpilot/selfdrive/ui/tests/test_cruise_stop_distance.py
+docker exec sp-build bash -lc 'cd /work && source .venv/bin/activate &&   xvfb-run -a --server-args="-screen 0 2160x1080x24"   python tools/test_runner.py openpilot/selfdrive/ui/tests/'
+```
+
+Expected: PASS, `54 passed`.
+
 - [ ] **Step 5: 라벨 계산 수동 확인**
 
 ```bash
@@ -908,7 +932,7 @@ Expected:
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py
+git add openpilot/selfdrive/ui/sunnypilot/layouts/settings/cruise.py         openpilot/selfdrive/ui/tests/test_cruise_stop_distance.py
 git commit -m "feat: expose the stop distance on the cruise settings page
 
 FLOAT storage with use_float_scaling rather than an integer decimetre
