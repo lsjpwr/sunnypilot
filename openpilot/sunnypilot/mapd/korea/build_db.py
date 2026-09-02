@@ -12,6 +12,7 @@ inside the link loader so the device never needs them.
 
   cameras: 전국무인교통단속카메라표준데이터  https://www.data.go.kr/data/15028200/standard.do
   links:   전국표준노드링크                  https://www.its.go.kr/nodelink/
+  bumps:   전국과속방지턱표준데이터    https://www.data.go.kr/data/15028195/standard.do
 
 Usage:
   pip install pyshp pyproj
@@ -19,6 +20,8 @@ Usage:
       --cameras 전국무인교통단속카메라표준데이터.csv --out-cameras korea_cameras.sqlite
   python -m openpilot.sunnypilot.mapd.korea.build_db \
       --links MOCT_LINK.shp --out-links korea_links.sqlite
+  python -m openpilot.sunnypilot.mapd.korea.build_db \
+      --bumps 전국과속방지턱표준데이터.csv --out-bumps korea_bumps.sqlite
 """
 import argparse
 import csv
@@ -26,6 +29,8 @@ import os
 import sqlite3
 import struct
 from collections.abc import Iterator
+
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL
 
 SCHEMA_VERSION = "1"
 
@@ -53,6 +58,17 @@ POINT_BOX_DEG = 1e-6
 LINK_COLUMNS = {
   "max_spd": "MAX_SPD",
   "name": "ROAD_NAME",
+}
+
+# Column names of the 전국과속방지턱표준데이터 CSV distribution
+# (https://file.localdata.go.kr/file/download/speed_bump_info/info -- 141140 rows in the
+# 2026-05-15 release, cp949). Note the WGS84 prefix on the coordinate columns: this
+# dataset does not use the bare 위도/경도 the camera dataset does.
+# Verified against that release; re-check with the header dump in the plan if a load raises.
+BUMP_COLUMNS = {
+  "lat": "WGS84위도",
+  "lon": "WGS84경도",
+  "kind": "과속방지턱형태구분",
 }
 
 SHP_ENCODING = "cp949"
@@ -91,6 +107,18 @@ CREATE TABLE links(
   geom    BLOB    NOT NULL
 );
 CREATE VIRTUAL TABLE links_idx USING rtree(id, minlat, maxlat, minlon, maxlon);
+"""
+
+SCHEMA_BUMPS = _META + """
+CREATE TABLE bumps(
+  id   INTEGER PRIMARY KEY,
+  lat  REAL    NOT NULL,
+  lon  REAL    NOT NULL,
+  -- 과속방지턱형태구분. Virtual bumps (road markings, no physical rise) are stored, not
+  -- dropped, so including them later is a query change rather than a 141k-row rebuild.
+  kind INTEGER NOT NULL
+);
+CREATE VIRTUAL TABLE bumps_idx USING rtree(id, minlat, maxlat, minlon, maxlon);
 """
 
 
@@ -164,6 +192,50 @@ def load_cameras_api(items) -> Iterator[tuple[float, float, int, int]]:
     lon = to_float(item.get("longitude"))
     if keep_camera(lat, lon, limit_kph):
       yield lat, lon, limit_kph, to_int(item.get("ovrspdRegltSctnLt"))
+
+
+def classify_kind(text: str) -> int:
+  """과속방지턱형태구분 -> BUMP_*.
+
+  Substring matching, not equality: agencies spell the same shape several ways
+  (사다리꼴형 / 사다리꼴 / 사다리꼴식) and the standard has been revised. Anything
+  unrecognised falls through to BUMP_ARCH, which carries the lowest target speed --
+  guessing harsh only costs comfort, guessing gentle costs the suspension.
+  """
+  t = (text or "").strip()
+  if "가상" in t:
+    return BUMP_VIRTUAL
+  if "사다리" in t:
+    return BUMP_TRAPEZOID
+  return BUMP_ARCH
+
+
+def load_bumps(path: str) -> Iterator[tuple[float, float, int]]:
+  """Yield (lat, lon, kind) for every bump with a usable coordinate.
+
+  There is no speed limit column in this dataset -- a bump carries no legal target speed,
+  so the target comes from a user parameter and only the shape is stored here.
+  """
+  rows = read_csv_rows(path)
+  if rows and BUMP_COLUMNS["lat"] not in rows[0]:
+    raise KeyError(f"expected column {BUMP_COLUMNS['lat']!r}, got {list(rows[0])}")
+
+  for row in rows:
+    lat = to_float(row.get(BUMP_COLUMNS["lat"]))
+    lon = to_float(row.get(BUMP_COLUMNS["lon"]))
+    if in_korea(lat, lon):
+      yield lat, lon, classify_kind(row.get(BUMP_COLUMNS["kind"], ""))
+
+
+def insert_bumps(con: sqlite3.Connection, bumps) -> int:
+  count = 0
+  for lat, lon, kind in bumps:
+    cur = con.execute("INSERT INTO bumps(lat, lon, kind) VALUES (?, ?, ?)", (lat, lon, kind))
+    con.execute("INSERT INTO bumps_idx VALUES (?, ?, ?, ?, ?)",
+                (cur.lastrowid, lat - POINT_BOX_DEG, lat + POINT_BOX_DEG,
+                 lon - POINT_BOX_DEG, lon + POINT_BOX_DEG))
+    count += 1
+  return count
 
 
 def insert_cameras(con: sqlite3.Connection, cameras) -> int:
@@ -303,16 +375,23 @@ def build_links(out_path: str, links_shp: str) -> int:
   return write_db(out_path, SCHEMA_LINKS, lambda con: insert_links(con, load_links(links_shp)))
 
 
+def build_bumps(out_path: str, bumps_csv: str) -> int:
+  """Rebuild the speed bump database. Returns the row count."""
+  return write_db(out_path, SCHEMA_BUMPS, lambda con: insert_bumps(con, load_bumps(bumps_csv)))
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description="Build the Korean map databases.")
   parser.add_argument("--cameras", help="전국무인교통단속카메라표준데이터 CSV")
   parser.add_argument("--links", help="전국표준노드링크 LINK shapefile (.shp)")
+  parser.add_argument("--bumps", help="전국과속방지턱표준데이터 CSV")
   parser.add_argument("--out-cameras", default="korea_cameras.sqlite")
   parser.add_argument("--out-links", default="korea_links.sqlite")
+  parser.add_argument("--out-bumps", default="korea_bumps.sqlite")
   args = parser.parse_args()
 
-  if not args.cameras and not args.links:
-    parser.error("at least one of --cameras / --links is required")
+  if not args.cameras and not args.links and not args.bumps:
+    parser.error("at least one of --cameras / --links / --bumps is required")
 
   if args.cameras:
     n = build_cameras(args.out_cameras, args.cameras)
@@ -320,6 +399,9 @@ def main() -> None:
   if args.links:
     n = build_links(args.out_links, args.links)
     print(f"{args.out_links}: {n} links, {os.path.getsize(args.out_links) / 1e6:.1f} MB")
+  if args.bumps:
+    n = build_bumps(args.out_bumps, args.bumps)
+    print(f"{args.out_bumps}: {n} bumps, {os.path.getsize(args.out_bumps) / 1e6:.1f} MB")
 
 
 if __name__ == "__main__":

@@ -14,9 +14,11 @@ import unittest
 
 from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, SCHEMA_CAMERAS, SCHEMA_LINKS, \
                                                      FALLBACK_PROJECTED_EPSG, WGS84_EPSG, \
-                                                     build_cameras, write_db, in_korea, insert_cameras, \
-                                                     insert_links, load_cameras, load_links, \
+                                                     build_bumps, build_cameras, write_db, in_korea, \
+                                                     classify_kind, insert_cameras, \
+                                                     insert_links, load_bumps, load_cameras, load_links, \
                                                      pack_geom, to_float, to_int
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL
 
 # pyshp and pyproj are PC-only build tooling: build_db.py imports them lazily and documents
 # them as a manual `pip install`, deliberately keeping them off the device and out of every
@@ -35,6 +37,16 @@ CSV_ROWS = (
   "A-6,,,과속,,\n"                            # dropped: empty row
 )
 
+BUMP_CSV_HEADER = "과속방지턱관리번호,WGS84위도,WGS84경도,과속방지턱형태구분\n"
+BUMP_CSV_ROWS = (
+  "B-1,37.5000,127.0000,원호형\n" +        # kept, arch
+  "B-2,37.5010,127.0010,가상방지턱\n" +     # kept, virtual (stored, filtered at query time)
+  "B-3,37.5020,127.0020,사다리꼴형\n" +     # kept, trapezoid
+  "B-4,0,0,원호형\n" +                      # dropped: outside Korea
+  "B-5,48.8566,2.3522,원호형\n" +           # dropped: Paris
+  "B-6,,,사다리꼴형\n"                      # dropped: empty row
+)
+
 
 class BuildDBTestCase(unittest.TestCase):
   def setUp(self):
@@ -44,6 +56,11 @@ class BuildDBTestCase(unittest.TestCase):
   def write_csv(self, encoding="cp949"):
     path = self.tmp_path / "cameras.csv"
     path.write_text(CSV_HEADER + CSV_ROWS, encoding=encoding)
+    return str(path)
+
+  def write_bump_csv(self, encoding="cp949"):
+    path = self.tmp_path / "bumps.csv"
+    path.write_text(BUMP_CSV_HEADER + BUMP_CSV_ROWS, encoding=encoding)
     return str(path)
 
 
@@ -278,3 +295,61 @@ class TestLoadLinks(BuildDBTestCase):
 
     with self.assertRaisesRegex(ValueError, "CRS"):
       list(load_links(shp_path))
+
+
+class TestClassifyKind(unittest.TestCase):
+  def test_maps_the_three_shapes(self):
+    # the four values the 2026-05-15 release ships: 원호형 117823, 가상형 19532,
+    # 기타 2299, 사다리꼴 1486
+    self.assertEqual(classify_kind("원호형"), BUMP_ARCH)
+    self.assertEqual(classify_kind("사다리꼴"), BUMP_TRAPEZOID)
+    self.assertEqual(classify_kind("가상형"), BUMP_VIRTUAL)
+
+  def test_matches_on_substrings_not_equality(self):
+    """Agencies spell the same shape several ways across submissions."""
+    self.assertEqual(classify_kind("사다리꼴형"), BUMP_TRAPEZOID)
+    self.assertEqual(classify_kind(" 사다리꼴식 "), BUMP_TRAPEZOID)
+    self.assertEqual(classify_kind("가상방지턱"), BUMP_VIRTUAL)
+    self.assertEqual(classify_kind("가상(노면표시)"), BUMP_VIRTUAL)
+
+  def test_unknown_shape_is_treated_as_arch(self):
+    """Arch carries the lowest target speed: guessing harsh costs comfort, guessing
+    gentle costs the suspension."""
+    self.assertEqual(classify_kind(""), BUMP_ARCH)
+    self.assertEqual(classify_kind(None), BUMP_ARCH)
+    self.assertEqual(classify_kind("기타"), BUMP_ARCH)
+
+
+class TestLoadBumps(BuildDBTestCase):
+  def test_load_bumps_keeps_korean_rows_only(self):
+    rows = list(load_bumps(self.write_bump_csv()))
+    self.assertEqual(len(rows), 3, rows)
+    self.assertEqual(rows[0], (37.5000, 127.0000, BUMP_ARCH))
+    self.assertEqual(rows[1], (37.5010, 127.0010, BUMP_VIRTUAL))
+    self.assertEqual(rows[2], (37.5020, 127.0020, BUMP_TRAPEZOID))
+
+  def test_load_bumps_reads_utf8_too(self):
+    self.assertEqual(len(list(load_bumps(self.write_bump_csv(encoding="utf-8-sig")))), 3)
+
+  def test_load_bumps_raises_on_a_renamed_column(self):
+    """A silent zero-row load would ship an empty database that looks like a working one."""
+    path = self.tmp_path / "renamed.csv"
+    path.write_text("id,lat,lon,shape\nB-1,37.5,127.0,원호형\n", encoding="cp949")
+    with self.assertRaises(KeyError):
+      list(load_bumps(str(path)))
+
+  def test_build_bumps_writes_a_queryable_database(self):
+    out = str(self.tmp_path / "korea_bumps.sqlite")
+    self.assertEqual(build_bumps(out, self.write_bump_csv()), 3)
+
+    con = sqlite3.connect(f"file:{out}?mode=ro", uri=True)
+    try:
+      self.assertEqual(con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0],
+                       SCHEMA_VERSION)
+      self.assertEqual(con.execute("SELECT COUNT(*) FROM bumps").fetchone()[0], 3)
+      # every bump row needs a matching r-tree entry, or next_bump would never see it
+      self.assertEqual(con.execute("SELECT COUNT(*) FROM bumps_idx").fetchone()[0], 3)
+      kinds = [r[0] for r in con.execute("SELECT kind FROM bumps ORDER BY id")]
+      self.assertEqual(kinds, [BUMP_ARCH, BUMP_VIRTUAL, BUMP_TRAPEZOID])
+    finally:
+      con.close()

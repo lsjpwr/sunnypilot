@@ -29,6 +29,14 @@ LINK_BEARING_TOLERANCE = 60.
 # actually a few metres apart.
 TIE_DISTANCE_M = 0.1
 
+# 과속방지턱형태구분, as build_db.classify_kind maps it. Defined here rather than in
+# build_db because the dependency has to run builder -> runtime: db.py and
+# korea_map_data.py read these at runtime, and importing build_db to get them would drag
+# PC-only build tooling onto the device.
+BUMP_ARCH = 0       # 원호형 -- a rounded hump, the harshest of the three
+BUMP_TRAPEZOID = 1  # 사다리꼴형 -- flat-topped, gentler at the same speed
+BUMP_VIRTUAL = 2    # 가상방지턱 -- road markings only, no physical rise
+
 # ~3.3 km box, then filtered down to CAMERA_MAX_DISTANCE_M
 CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.
