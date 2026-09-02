@@ -107,10 +107,26 @@ class CruiseLayout(Widget):
       label_callback=lambda speed: f'{speed} {"km/h" if ui_state.is_metric else "mph"}',
     )
 
+    self.stop_distance_option = option_item_sp(
+      param="StopDistance",
+      title=lambda: tr("Stop Distance in Traffic"),
+      min_value=400,
+      max_value=600,
+      value_change_step=50,
+      use_float_scaling=True,
+      description=lambda: tr("Gap held from the lead car when stopping behind slow traffic. "
+                             "Applies while the lead is under 30 km/h and returns to the stock "
+                             "6.0 m once it passes 50 km/h. Driving Personality sets the gap at "
+                             "speed; this sets it at a standstill, where Personality has no "
+                             "effect. Your car's own AEB is unaffected."),
+      label_callback=lambda x: f'{x / 100:.1f} m' if ui_state.is_metric else f'{x / 100 * 3.28084:.1f} ft',
+    )
+
     items = [
       self.icbm_toggle,
       self.dec_option,
       self.dec_map_max_speed_option,
+      self.stop_distance_option,
       self.scc_v_toggle,
       self.scc_m_toggle,
       self.custom_acc_toggle,
@@ -171,6 +187,7 @@ class CruiseLayout(Widget):
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
         self.dec_option.action_item.set_enabled(has_long)
         self.dec_map_max_speed_option.action_item.set_enabled(has_long)
+        self.stop_distance_option.action_item.set_enabled(has_long)
         self.scc_v_toggle.action_item.set_enabled(True)
         is_osm = ui_state.params.get("MapDataSource", return_default=True) == MapSource.osm
         self.scc_m_toggle.action_item.set_enabled(is_osm)
@@ -183,9 +200,11 @@ class CruiseLayout(Widget):
         ui_state.params.remove("DynamicExperimentalControlMapMaxSpeed")
         ui_state.params.remove("SmartCruiseControlVision")
         ui_state.params.remove("SmartCruiseControlMap")
+        ui_state.params.remove("StopDistance")
         self.custom_acc_toggle.action_item.set_enabled(False)
         self.dec_option.action_item.set_enabled(False)
         self.dec_map_max_speed_option.action_item.set_enabled(False)
+        self.stop_distance_option.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)
 
