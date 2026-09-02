@@ -37,6 +37,12 @@ ACC_NOLONG_DESCRIPTION = tr_noop("This feature can only be used with sunnypilot 
 ACC_PCMCRUISE_DISABLED_DESCRIPTION = tr_noop("This feature is not supported on this platform due to vehicle limitations.")
 ONROAD_ONLY_DESCRIPTION = tr_noop("Start the vehicle to check vehicle compatibility.")
 
+STOP_DISTANCE_DESCRIPTION = tr_noop("Gap held from the lead car when stopping behind slow traffic. " +
+                                    "Applies while the lead is under 30 km/h and returns to the stock " +
+                                    "6.0 m once it passes 50 km/h. Driving Personality sets the gap at " +
+                                    "speed; this sets it at a standstill, where Personality has no " +
+                                    "effect. Your car's own AEB is unaffected.")
+
 
 class CruiseLayout(Widget):
   def __init__(self):
@@ -114,11 +120,7 @@ class CruiseLayout(Widget):
       max_value=600,
       value_change_step=50,
       use_float_scaling=True,
-      description=lambda: tr("Gap held from the lead car when stopping behind slow traffic. "
-                             "Applies while the lead is under 30 km/h and returns to the stock "
-                             "6.0 m once it passes 50 km/h. Driving Personality sets the gap at "
-                             "speed; this sets it at a standstill, where Personality has no "
-                             "effect. Your car's own AEB is unaffected."),
+      description=lambda: tr(STOP_DISTANCE_DESCRIPTION),
       label_callback=lambda x: f'{x / 100:.1f} m' if ui_state.is_metric else f'{x / 100 * 3.28084:.1f} ft',
     )
 

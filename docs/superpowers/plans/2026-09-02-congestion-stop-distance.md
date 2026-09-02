@@ -811,13 +811,19 @@ tici 설정 화면의 Cruise 패널에 항목을 추가한다. mici는 대상이
       max_value=600,
       value_change_step=50,
       use_float_scaling=True,
-      description=lambda: tr("Gap held from the lead car when stopping behind slow traffic. "
-                             "Applies while the lead is under 30 km/h and returns to the stock "
-                             "6.0 m once it passes 50 km/h. Driving Personality sets the gap at "
-                             "speed; this sets it at a standstill, where Personality has no "
-                             "effect. Your car's own AEB is unaffected."),
+      description=lambda: tr(STOP_DISTANCE_DESCRIPTION),
       label_callback=lambda x: f'{x / 100:.1f} m' if ui_state.is_metric else f'{x / 100 * 3.28084:.1f} ft',
     )
+```
+
+설명 문자열은 파일 상단의 `ONROAD_ONLY_DESCRIPTION` 뒤에 `tr_noop` 상수로 선언한다. 줄바꿈은 암묵적 연결이 아니라 명시적 `+`로 잇는다 — 암묵적 연결은 `ruff`의 `ISC002`에 걸리고, 같은 파일의 `ICBM_DESC`·`SCC_MAP_KOREA_DESCRIPTION`이 이미 `+` 방식이다.
+
+```python
+STOP_DISTANCE_DESCRIPTION = tr_noop("Gap held from the lead car when stopping behind slow traffic. " +
+                                    "Applies while the lead is under 30 km/h and returns to the stock " +
+                                    "6.0 m once it passes 50 km/h. Driving Personality sets the gap at " +
+                                    "speed; this sets it at a standstill, where Personality has no " +
+                                    "effect. Your car's own AEB is unaffected.")
 ```
 
 `use_float_scaling=True`면 위젯이 내부적으로 값을 x100 정수로 다루고 파라미터에는 `value / 100.0`을 float으로 쓴다 (`option_control.py:48`, `:70`). 그래서 `min_value`/`max_value`/`value_change_step`이 400/600/50이고 `label_callback`도 400~600을 받는다.
