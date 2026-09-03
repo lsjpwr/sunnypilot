@@ -11,6 +11,7 @@ import os
 import pathlib
 import tempfile
 import unittest
+from unittest import mock
 
 from openpilot.sunnypilot.mapd.korea import map_download
 from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_BUMPS, insert_bumps, write_db
@@ -195,6 +196,80 @@ class TestDownload(MapDownloadTestCase):
       raise RuntimeError("something nobody predicted")
 
     self.assertFalse(map_download.download(entry(sha="0" * 64), self.map_dir, opener=boom))
+
+
+class TestRunOnce(MapDownloadTestCase):
+  """The thread body is one call per wake-up. Testing that call directly keeps these tests
+  fast and deterministic; the thread itself is start/stop plumbing."""
+
+  def setUp(self):
+    super().setUp()
+    self.downloader = map_download.MapDownloader(self.map_dir)
+    self.source = str(self.tmp_path / "source.sqlite")
+    make_bumps_file(self.source, rows=5)
+    self.manifest = str(self.tmp_path / "manifest.json")
+
+  def write_manifest(self, sha=None, size=None, min_rows=5):
+    pathlib.Path(self.manifest).write_text(json.dumps({"manifest_version": 1, "databases": [{
+      "name": "korea_bumps.sqlite", "url": "https://example.invalid/bumps",
+      "sha256": sha if sha is not None else sha256_of(self.source),
+      "bytes": size if size is not None else os.path.getsize(self.source),
+      "table": "bumps", "min_rows": min_rows,
+    }]}), encoding="utf-8")
+    return self.manifest
+
+  def test_it_installs_a_new_database(self):
+    self.downloader._run_once(self.write_manifest(), opener=opener_for(self.source))
+    self.assertTrue(os.path.exists(os.path.join(self.map_dir, "korea_bumps.sqlite")))
+
+  def test_it_does_not_refetch_what_is_already_installed(self):
+    target = os.path.join(self.map_dir, "korea_bumps.sqlite")
+    make_bumps_file(target, rows=5)
+    manifest = self.write_manifest(sha=sha256_of(target))
+
+    def must_not_be_called(url, timeout=None):
+      raise AssertionError("re-downloaded a database that was already current")
+
+    self.downloader._run_once(manifest, opener=must_not_be_called)
+
+  def test_a_disk_too_small_skips_without_touching_anything(self):
+    manifest = self.write_manifest(size=1 << 60)
+
+    def must_not_be_called(url, timeout=None):
+      raise AssertionError("started a download that cannot fit")
+
+    self.downloader._run_once(manifest, opener=must_not_be_called)
+    self.assertFalse(os.path.exists(os.path.join(self.map_dir, "korea_bumps.sqlite")))
+
+  def test_one_failing_entry_does_not_stop_the_others(self):
+    """A 220 MB link download that fails must not cost the 11 MB bump download its turn."""
+    second = str(self.tmp_path / "second.sqlite")
+    make_bumps_file(second, rows=5)
+    pathlib.Path(self.manifest).write_text(json.dumps({"manifest_version": 1, "databases": [
+      {"name": "a.sqlite", "url": "https://example.invalid/a", "sha256": "0" * 64,
+       "bytes": 1, "table": "bumps", "min_rows": 1},
+      {"name": "korea_bumps.sqlite", "url": "https://example.invalid/b",
+       "sha256": sha256_of(second), "bytes": os.path.getsize(second),
+       "table": "bumps", "min_rows": 5},
+    ]}), encoding="utf-8")
+
+    self.downloader._run_once(self.manifest, opener=opener_for(second))
+
+    self.assertTrue(os.path.exists(os.path.join(self.map_dir, "korea_bumps.sqlite")))
+
+
+class TestThreadLifecycle(MapDownloadTestCase):
+  def test_start_is_idempotent_and_stop_joins(self):
+    """mapd_manager's korea_main can be re-entered on a source switch; a second start()
+    that spawned a second thread would double every download."""
+    downloader = map_download.MapDownloader(self.map_dir)
+    with mock.patch.object(map_download.MapDownloader, "_loop", lambda self: None):
+      downloader.start()
+      first = downloader._thread
+      downloader.start()
+      self.assertIs(downloader._thread, first)
+      downloader.stop()
+      self.assertIsNone(downloader._thread)
 
 
 if __name__ == "__main__":

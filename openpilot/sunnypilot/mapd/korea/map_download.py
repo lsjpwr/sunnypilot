@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import urllib.request
 from dataclasses import dataclass
 
@@ -162,3 +163,77 @@ def download(entry: Entry, map_dir: str, opener=urllib.request.urlopen) -> bool:
         os.remove(tmp)
       except OSError:
         LOG.warning("map download: could not remove %s", tmp, exc_info=True)
+
+
+class MapDownloader:
+  """Background thread that keeps the manifest's databases current.
+
+  Owns no database handle. It only replaces files; KoreaMapDB notices on its own.
+  """
+
+  def __init__(self, map_dir: str):
+    self.map_dir = map_dir
+    self._stop = threading.Event()
+    self._thread: threading.Thread | None = None
+
+  def start(self) -> None:
+    if self._thread is not None:
+      return
+    self._thread = threading.Thread(target=self._loop, daemon=True)
+    self._thread.start()
+
+  def stop(self) -> None:
+    self._stop.set()
+    if self._thread is not None:
+      self._thread.join(timeout=2.)
+      self._thread = None
+
+  def _run_once(self, manifest_path: str = MANIFEST_PATH, opener=urllib.request.urlopen) -> bool:
+    """One pass over the manifest. True if everything it wanted is now installed.
+
+    Returns False when anything was skipped or failed, so the caller retries sooner.
+    """
+    complete = True
+    for entry in read_manifest(manifest_path):
+      if self._stop.is_set():
+        return False
+      if not needs_download(entry, self.map_dir):
+        continue
+      if not enough_disk(entry, self.map_dir):
+        complete = False
+        continue
+      if not download(entry, self.map_dir, opener=opener):
+        complete = False
+    return complete
+
+  def _loop(self) -> None:
+    # imported here so the module stays importable without the device stack, which is what
+    # lets the tests run under a bare interpreter. Same pattern as CameraRefresher._loop.
+    import cereal.messaging as messaging
+    from openpilot.common.params import Params
+
+    params = Params()
+    sm = messaging.SubMaster(['deviceState'])
+
+    while not self._stop.is_set():
+      wait = RETRY_INTERVAL_S
+      try:
+        sm.update(0)
+        if not params.get_bool("KoreaMapAutoDownload"):
+          LOG.info("map download: KoreaMapAutoDownload is off")
+          wait = CHECK_INTERVAL_S
+        elif not sm.recv_frame['deviceState']:
+          # A SubMaster that has received nothing reports networkMetered False, which is the
+          # capnp default, not an answer. On the first tick after boot that would start a
+          # 220 MB download over a metered link.
+          LOG.info("map download: no deviceState yet, waiting")
+        elif sm['deviceState'].networkMetered:
+          LOG.info("map download: network is metered, waiting")
+        elif self._run_once():
+          wait = CHECK_INTERVAL_S
+      except Exception:
+        # This thread has no supervisor. Anything that escapes here ends map downloads for
+        # the life of the process, silently -- so the guard goes around the whole body
+        # rather than around whichever call raised today.
+        LOG.exception("map download: unexpected error, retrying later")
+      self._stop.wait(wait)

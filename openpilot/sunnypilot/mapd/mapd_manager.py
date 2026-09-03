@@ -21,6 +21,7 @@ from openpilot.common.swaglog import cloudlog, ForwardingHandler
 from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 from openpilot.sunnypilot.mapd import MAPD_PATH, MapSource
 from openpilot.sunnypilot.mapd.korea.camera_refresh import CameraRefresher
+from openpilot.sunnypilot.mapd.korea.map_download import MapDownloader
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNavSource
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KOREA_CAMERAS_PATH, KOREA_LINKS_PATH,
                                                                     KOREA_MAP_DIR, KoreaMapData)
@@ -188,6 +189,7 @@ def korea_main() -> None:
   # would mask the original failure with an AttributeError.
   external = None
   refresher = None
+  downloader = None
   live_map_sp = None
 
   try:
@@ -207,6 +209,8 @@ def korea_main() -> None:
 
     refresher = CameraRefresher(KOREA_CAMERAS_PATH)
     refresher.start()
+    downloader = MapDownloader(KOREA_MAP_DIR)
+    downloader.start()
     rk = Ratekeeper(1, print_delay_threshold=None)
 
     # only touch the param when the message would change; this loop runs forever and params
@@ -243,6 +247,8 @@ def korea_main() -> None:
       external.stop()
     if refresher is not None:
       refresher.stop()
+    if downloader is not None:
+      downloader.stop()
     if live_map_sp is not None:
       live_map_sp.close()
 
