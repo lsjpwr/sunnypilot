@@ -110,7 +110,7 @@ def _unpack_geom(blob: bytes) -> list[tuple[float, float]]:
 
 
 class KoreaMapDB:
-  """Read-only lookups against the camera and link databases.
+  """Read-only lookups against the camera, link and (optional) bump databases.
 
   Not thread-safe: reload_if_changed() swaps self.cam, so the caller must call it from
   the same thread as the queries. check_same_thread=False below is there so the

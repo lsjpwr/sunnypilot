@@ -34,8 +34,8 @@ KOREA_LINKS_PATH = os.path.join(KOREA_MAP_DIR, "korea_links.sqlite")
 KOREA_BUMPS_PATH = os.path.join(KOREA_MAP_DIR, "korea_bumps.sqlite")
 
 # km/h. Bounds, not defaults -- the defaults live in params_keys.h. The floor is
-# SmartCruiseControl's MIN_V (20 km/h): the controller discards anything lower, so
-# offering it in the UI would be a setting that silently does nothing.
+# SmartCruiseControl's MIN_V (20 km/h): the controller clamps anything lower up to 20, so
+# the setting would silently do nothing.
 BUMP_ARCH_SPEED_RANGE = (20, 40)
 BUMP_TRAPEZOID_SPEED_RANGE = (20, 50)
 

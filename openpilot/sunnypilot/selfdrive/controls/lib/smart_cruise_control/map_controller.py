@@ -109,7 +109,9 @@ class SmartCruiseControlMap:
     source = self.params.get("MapDataSource", return_default=True)
     if source == MapSource.osm:
       return self.params.get_bool("SmartCruiseControlMap")
-    return self.params.get_bool("KoreaSpeedBumpEnabled")
+    if source == MapSource.korea:
+      return self.params.get_bool("KoreaSpeedBumpEnabled")
+    return False
 
   def update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:

@@ -28,8 +28,13 @@ CAM_SECTION = (37.5000, 127.0280, 80, 4200)
 BUMP_AHEAD_150 = (37.5000, 127.0217, 0)   # ~150 m east, 원호형
 BUMP_AHEAD_300 = (37.5000, 127.0234, 1)   # ~300 m east, 사다리꼴형
 BUMP_BEHIND = (37.5000, 127.0183, 0)      # ~150 m west
-BUMP_FAR = (37.5000, 127.0290, 0)         # ~800 m east, past BUMP_MAX_DISTANCE_M
+BUMP_FAR = (37.5000, 127.0290, 0)         # ~800 m east, past BUMP_MAX_DISTANCE_M and the r-tree box
 BUMP_VIRTUAL_AHEAD = (37.5000, 127.0217, 2)
+
+# ~450 m east: inside the ~660 m r-tree search box (BUMP_SEARCH_DEG), but past
+# BUMP_MAX_DISTANCE_M (400 m) -- unlike BUMP_FAR above, the r-tree itself will return this
+# row, so only the Python-level `distance > BUMP_MAX_DISTANCE_M` check can reject it.
+BUMP_WITHIN_BOX_BUT_FAR = (37.5000, 127.0251, 0)
 
 # Same ~150 m ahead-distance as BUMP_AHEAD_150, offset north -- lateral to the eastbound
 # heading (90 deg) every test in this file drives with. bearing_delta stays well inside
@@ -252,6 +257,13 @@ class TestNextBump(KoreaMapDBTestCase):
 
   def test_ignores_bumps_past_the_horizon(self):
     database = self.open_db_with_bumps([BUMP_FAR])
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
+
+  def test_ignores_a_bump_inside_the_rtree_box_but_past_bump_max_distance(self):
+    """BUMP_FAR above sits outside the r-tree search box, so it never independently
+    exercises the Python-level `distance > BUMP_MAX_DISTANCE_M` check -- the r-tree already
+    dropped it. This one is inside the box (~450 m < ~660 m) so only that check can reject it."""
+    database = self.open_db_with_bumps([BUMP_WITHIN_BOX_BUT_FAR])
     self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
 
   def test_ignores_virtual_bumps(self):

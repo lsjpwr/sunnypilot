@@ -217,8 +217,11 @@ def load_bumps(path: str) -> Iterator[tuple[float, float, int]]:
   so the target comes from a user parameter and only the shape is stored here.
   """
   rows = read_csv_rows(path)
-  if rows and BUMP_COLUMNS["lat"] not in rows[0]:
-    raise KeyError(f"expected column {BUMP_COLUMNS['lat']!r}, got {list(rows[0])}")
+  if rows and not set(BUMP_COLUMNS.values()) <= set(rows[0]):
+    # All three columns, not just lat: this dataset has already renamed its coordinate
+    # columns once, and a renamed kind column alone would silently classify every row as
+    # BUMP_ARCH (classify_kind's own unknown-shape fallback) instead of failing loudly.
+    raise KeyError(f"expected columns {list(BUMP_COLUMNS.values())!r}, got {list(rows[0])}")
 
   for row in rows:
     lat = to_float(row.get(BUMP_COLUMNS["lat"]))

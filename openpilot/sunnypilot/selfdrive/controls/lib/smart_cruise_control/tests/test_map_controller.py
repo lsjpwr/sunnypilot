@@ -30,10 +30,11 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
 
   def reset_params(self):
     self.params.put_bool("SmartCruiseControlMap", True, block=True)
-    # LastGPSPosition/MapTargetVelocities are only ever populated while the OSM path runs --
-    # match that precondition so the rest of this file's assertions exercise the intended
-    # "OSM active" scenario. MapDataSource defaults to korea (see params_keys.h), which would
-    # otherwise leave .enabled False despite the toggle above.
+    # korea_map_data also populates LastGPSPosition/MapTargetVelocities now (for the speed
+    # bump path), so this is no longer the only writer -- but it's still the one this file's
+    # assertions are written against, so pin MapDataSource to osm to exercise that scenario.
+    # MapDataSource defaults to korea (see params_keys.h), which would otherwise leave
+    # .enabled False despite the toggle above.
     self.params.put("MapDataSource", int(MapSource.osm), block=True)
 
     # TODO-SP: mock data from gpsLocation
@@ -57,10 +58,11 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
 
   def test_korea_mode_disables_map_even_with_toggle_on(self):
     """SmartCruiseControlMap must stay disabled outside OSM mode, even with the toggle itself
-    on: LastGPSPosition/MapTargetVelocities are only written while the OSM path runs, so in
-    korea mode they're a frozen snapshot from whenever OSM last ran (or never, on a device
-    that has only ever used korea mode) -- not a live GPS position. Regression test for
-    computing a slowdown target from a stale, non-advancing position after a source switch."""
+    on: this test's reset_params() only writes LastGPSPosition/MapTargetVelocities for the
+    OSM scenario it sets up, so in korea mode (as switched to below) they're a frozen
+    snapshot from whenever OSM last ran (or never, on a device that has only ever used korea
+    mode) -- not a live GPS position. Regression test for computing a slowdown target from a
+    stale, non-advancing position after a source switch."""
     self.params.put("MapDataSource", int(MapSource.korea), block=True)
     self.params.put_bool("KoreaSpeedBumpEnabled", False, block=True)
     scc_m = SmartCruiseControlMap()

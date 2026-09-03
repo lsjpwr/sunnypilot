@@ -20,7 +20,7 @@ from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras,
                                                       insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, Bump, Camera, Link
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, Bump, Camera, Link
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import KoreaMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -270,6 +270,9 @@ class TestUpdateLocation(unittest.TestCase):
     self.assertTrue(data.open_failed)
     self.assertTrue(db.closed)
     self.assertEqual(data.get_current_speed_limit(), 0.)
+    # update_location's except path calls close(), which must clear MapTargetVelocities --
+    # otherwise a bump resolved just before the corruption hit stays published forever.
+    self.assertEqual(data.mem_params.values["MapTargetVelocities"], "[]")
 
     data.update_location()          # and must not reopen it
     self.assertIsNone(data.db)
@@ -324,6 +327,14 @@ class BumpTargetTestCase(unittest.TestCase):
     release the slowdown, even though the car keeps moving."""
     data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.),
                           localizer_valid=False)
+    data.publish_bump_target()
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+
+  def test_a_virtual_bump_is_never_published_even_if_one_reaches_here(self):
+    """next_bump never returns a virtual bump and bump_targets has no key for one either --
+    belt and suspenders: publish_bump_target's own `target > 0.` guard must independently
+    refuse to publish one if it ever did reach this far."""
+    data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_VIRTUAL, distance_m=150.))
     data.publish_bump_target()
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
 

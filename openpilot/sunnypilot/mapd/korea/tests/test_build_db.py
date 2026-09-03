@@ -338,6 +338,15 @@ class TestLoadBumps(BuildDBTestCase):
     with self.assertRaises(KeyError):
       list(load_bumps(str(path)))
 
+  def test_load_bumps_raises_on_a_renamed_kind_column(self):
+    """The lat/lon columns are unchanged here -- only 과속방지턱형태구분 is renamed. Checking
+    just the lat column (the old guard) would miss this and silently classify every row as
+    BUMP_ARCH instead of failing loudly."""
+    path = self.tmp_path / "renamed_kind.csv"
+    path.write_text("과속방지턱관리번호,WGS84위도,WGS84경도,shape\nB-1,37.5,127.0,원호형\n", encoding="cp949")
+    with self.assertRaises(KeyError):
+      list(load_bumps(str(path)))
+
   def test_build_bumps_writes_a_queryable_database(self):
     out = str(self.tmp_path / "korea_bumps.sqlite")
     self.assertEqual(build_bumps(out, self.write_bump_csv()), 3)

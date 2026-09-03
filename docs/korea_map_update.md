@@ -113,7 +113,16 @@ python -m openpilot.sunnypilot.mapd.korea.deploy \
 ### 3-1. 원본 받기
 
 - 전국과속방지턱표준데이터: https://www.data.go.kr/data/15028195/standard.do
-- 직접 내려받기: https://file.localdata.go.kr/file/speed_bump_info/info
+- 직접 내려받기: 위 페이지는 HTML 랜딩 페이지라 그대로 열면 CSV가 나오지 않는다. 실제 파일은
+  `/file/speed_bump_info/info`가 아니라 `/file/download/`가 붙은 경로에 있고, User-Agent 없이는
+  403이 난다. 랜딩 페이지를 먼저 방문해 쿠키를 받은 뒤 그 쿠키로 다운로드 경로를 호출한다:
+
+  ```bash
+  UA="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36"
+  curl -sL -c jar.txt -A "$UA" -o /dev/null "https://file.localdata.go.kr/file/speed_bump_info/info"
+  curl -sL -b jar.txt -A "$UA" -H "Referer: https://file.localdata.go.kr/file/speed_bump_info/info" \
+      -o 전국과속방지턱표준데이터.csv "https://file.localdata.go.kr/file/download/speed_bump_info/info"
+  ```
 
 ### 3-2. 빌드
 
@@ -156,4 +165,4 @@ python -m openpilot.sunnypilot.mapd.korea.deploy --host comma@<device-ip>
 ssh comma@<device-ip> "ls -la /data/media/0/korea_map/"
 ```
 
-두 파일이 다 있어야 한다. 하나만 있으면 `mapd_manager`는 DB를 열지 않고 계속 대기한다 — 반쪽짜리 DB는 쓸 수 없기 때문이다.
+카메라·링크 두 파일이 다 있어야 한다 (방지턱 파일은 선택 사항이라 없어도 된다). 카메라·링크 중 하나만 있으면 `mapd_manager`는 DB를 열지 않고 계속 대기한다 — 반쪽짜리 DB는 쓸 수 없기 때문이다.
