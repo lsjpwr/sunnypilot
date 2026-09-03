@@ -12,7 +12,7 @@ import unittest
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS,
                                                       insert_bumps, insert_cameras, write_db)
 from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH
-from openpilot.sunnypilot.mapd.korea.deploy import build_targets, sha256_of, verify
+from openpilot.sunnypilot.mapd.korea.deploy import MIN_BUMPS, build_targets, sha256_of, verify
 
 
 class TestDeploy(unittest.TestCase):
@@ -80,3 +80,10 @@ class TestDeploy(unittest.TestCase):
     targets = build_targets(self.good_db(), str(self.tmp_path / "korea_links.sqlite"),
                             str(self.tmp_path / "never_built.sqlite"))
     self.assertEqual([table for _, table, _ in targets], ["cameras", "links"])
+
+  def test_verify_rejects_a_bump_database_just_under_min_bumps(self):
+    with self.assertRaisesRegex(ValueError, f"{MIN_BUMPS - 1} rows"):
+      verify(self.good_bumps_db(MIN_BUMPS - 1), "bumps", MIN_BUMPS)
+
+  def test_verify_accepts_a_bump_database_at_min_bumps(self):
+    self.assertEqual(verify(self.good_bumps_db(MIN_BUMPS), "bumps", MIN_BUMPS), MIN_BUMPS)

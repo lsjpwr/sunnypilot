@@ -25,9 +25,9 @@ from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_VERSION
 # 1557364; a build that lands an order of magnitude short went wrong somewhere upstream.
 MIN_CAMERAS = 20000
 MIN_LINKS = 1000000
-# The 2026-09 bump dataset holds 107181 rows before the Korea bounds filter. Half of that
-# is a floor no healthy build lands under.
-MIN_BUMPS = 50000
+# The 2026-05-15 bump dataset holds 141140 rows; 138024 survive the Korea bounds filter.
+# Same ~60% floor as the camera and link thresholds above.
+MIN_BUMPS = 83000
 
 DEVICE_DIR = "/data/media/0/korea_map"
 CHUNK = 1 << 20
