@@ -13,7 +13,7 @@ import unittest
 
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS, SCHEMA_LINKS,
                                                       insert_bumps, insert_cameras, insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, KoreaMapDB
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, KoreaMapDB, verify
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
 ROAD_60 = (60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])
@@ -412,3 +412,84 @@ class TestTieBreakAndHysteresis(KoreaMapDBTestCase):
         second = database.current_link(37.5300, 127.0500)
         self.assertIsNotNone(second)
         self.assertEqual(second.max_spd, 30)
+
+
+class TestVerify(KoreaMapDBTestCase):
+  """verify() moved here from deploy.py so the on-device downloader can use it without
+  importing PC-only build tooling. Same contract, same failure modes."""
+
+  def test_verify_returns_the_row_count(self):
+    cameras, links = self._make_pair()
+    # _make_pair's cameras file always holds CAM_AHEAD, CAM_BEHIND, CAM_SECTION -- 3 rows
+    self.assertEqual(verify(cameras, "cameras", 1), 3)
+
+  def test_verify_rejects_a_file_that_is_not_a_database(self):
+    path = self.tmp_path / "garbage.sqlite"
+    path.write_bytes(b"not a database")
+    with self.assertRaises(sqlite3.DatabaseError):
+      verify(str(path), "cameras", 1)
+
+  def test_verify_rejects_a_short_table(self):
+    cameras, links = self._make_pair()
+    with self.assertRaisesRegex(ValueError, "expected at least"):
+      verify(cameras, "cameras", 999999)
+
+
+class TestReloadAllThree(KoreaMapDBTestCase):
+  """reload_if_changed used to watch only the camera file. The downloader replaces the
+  link and bump files too, and a process that keeps reading the old inode never sees
+  them."""
+
+  @staticmethod
+  def _touch_forward(path):
+    """Push mtime a second into the future so the change is unambiguous on any filesystem."""
+    stamp = os.path.getmtime(path) + 1
+    os.utime(path, (stamp, stamp))
+
+  @unittest.skipIf(sys.platform == "win32", _REPLACE_WHILE_OPEN_SKIP_REASON)
+  def test_a_replaced_link_database_is_picked_up(self):
+    cams, links = self._make_pair()
+    database = self.open_db(cams, links)
+    self.assertEqual(database.current_link(37.5000, 127.0260).max_spd, 60)
+
+    # same path, same geometry, different speed limit
+    write_db(links, SCHEMA_LINKS,
+             lambda con: insert_links(con, [(30, "테헤란로", ROAD_60[2])]))
+    self._touch_forward(links)
+
+    self.assertTrue(database.reload_if_changed())
+    self.assertEqual(database.current_link(37.5000, 127.0260).max_spd, 30)
+
+  def test_a_link_swap_clears_the_sticky_link(self):
+    """The builder assigns ids by insertion order, so the same id names a different road
+    after a rebuild. A surviving _last_link_id would pick that road inside the tie band."""
+    cams, links = self._make_pair()
+    database = self.open_db(cams, links)
+    database.current_link(37.5000, 127.0260)
+    self.assertIsNotNone(database._last_link_id)
+
+    self._touch_forward(links)
+    database.reload_if_changed()
+
+    self.assertIsNone(database._last_link_id, "a stale link id survived the swap")
+
+  def test_a_bump_database_that_appears_later_is_picked_up(self):
+    """A device with auto-download on starts with no bump file at all. Waiting for a
+    reboot to use the one it just downloaded would be a poor trade."""
+    cams, links = self._make_pair()
+    # _make_bumps_db always writes this exact path, so name it before the file exists
+    bumps = str(self.tmp_path / "korea_bumps.sqlite")
+    database = KoreaMapDB(cams, links, bumps)
+    self.addCleanup(database.close)
+    self.assertIsNone(database.bmp)
+
+    self._make_bumps_db([BUMP_AHEAD_150])
+
+    self.assertTrue(database.reload_if_changed())
+    self.assertIsNotNone(database.bmp)
+
+  def test_an_unchanged_set_of_files_reports_no_reload(self):
+    cams, links = self._make_pair()
+    database = self.open_db(cams, links)
+    database.reload_if_changed()
+    self.assertFalse(database.reload_if_changed())

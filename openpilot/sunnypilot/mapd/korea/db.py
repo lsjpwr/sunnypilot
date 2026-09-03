@@ -109,27 +109,54 @@ def _unpack_geom(blob: bytes) -> list[tuple[float, float]]:
   return [(flat[i], flat[i + 1]) for i in range(0, 2 * count, 2)]
 
 
+def verify(path: str, table: str, min_rows: int) -> int:
+  """Open the database the way the device will and confirm it is worth using.
+
+  Raises sqlite3.DatabaseError if the file is not a database, ValueError if the schema
+  version is wrong or the table is too short.
+
+  Lives here rather than in deploy.py because both the PC-side deploy check and the
+  on-device downloader need it, and the dependency has to run builder -> runtime: a
+  runtime module importing deploy.py would drag PC-only tooling onto the device.
+  """
+  con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+  try:
+    row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    if row is None or row[0] != SCHEMA_VERSION:
+      raise ValueError(f"{path}: schema {row and row[0]!r} != {SCHEMA_VERSION!r}")
+    count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    if count < min_rows:
+      raise ValueError(f"{path}: {count} rows in {table}, expected at least {min_rows}")
+    return count
+  finally:
+    con.close()
+
+
 class KoreaMapDB:
   """Read-only lookups against the camera, link and (optional) bump databases.
 
-  Not thread-safe: reload_if_changed() swaps self.cam, so the caller must call it from
-  the same thread as the queries. check_same_thread=False below is there so the
-  connection can be opened in one place and used from whichever thread ends up owning
-  this object, not to license calling into it concurrently from multiple threads.
+  Not thread-safe: reload_if_changed() swaps self.cam, self.lnk or self.bmp, so the caller
+  must call it from the same thread as the queries. check_same_thread=False below is there
+  so the connection can be opened in one place and used from whichever thread ends up
+  owning this object, not to license calling into it concurrently from multiple threads.
   """
 
   def __init__(self, cameras_path: str, links_path: str, bumps_path: str | None = None):
     self.cameras_path = cameras_path
-    self._cameras_mtime = 0.
+    self.links_path = links_path
+    self.bumps_path = bumps_path
     self._last_link_id: int | None = None
     # Two connections, not one attached database: Task 13 replaces the camera file
     # underneath us with os.replace while this process keeps running, and reopening one
     # connection must not disturb the 220 MB link database that never changes.
-    # Sample the mtime BEFORE opening, not after: opening the 220 MB link database takes
-    # long enough that a swap can land in between, and recording the new mtime against the
-    # old inode would leave reload_if_changed permanently satisfied -- stale cameras for
-    # the life of the process. Sampling early can only cause one redundant reload.
-    self._cameras_mtime = os.path.getmtime(cameras_path)
+    # Sample every mtime BEFORE opening anything, not after: opening the 220 MB link
+    # database takes long enough that a swap can land in between, and recording a mtime
+    # against the old inode afterwards would leave reload_if_changed permanently satisfied
+    # -- stale reads for the life of the process. Sampling early can only cause one
+    # redundant reload.
+    self._cameras_mtime = self._mtime_or_none(cameras_path)
+    self._links_mtime = self._mtime_or_none(links_path)
+    self._bumps_mtime = self._mtime_or_none(bumps_path)
     self.cam = self._open(cameras_path)
     self.lnk = self._open(links_path)
     # Optional third file. A device deployed before speed bumps shipped has cameras and
@@ -154,32 +181,61 @@ class KoreaMapDB:
       raise ValueError(f"{path}: schema {row and row[0]!r} != {SCHEMA_VERSION!r}")
     return con
 
-  def reload_if_changed(self) -> bool:
-    """Reopen the camera database if it was replaced on disk. Returns True if it was.
-
-    Task 13 refreshes cameras with os.replace, which leaves this process reading the old
-    inode forever unless we notice. One stat per call is cheap at 1 Hz; a failed reopen
-    keeps the old connection rather than leaving the caller with nothing.
-    """
+  @staticmethod
+  def _mtime_or_none(path: str | None) -> float | None:
+    """None means 'no file yet' -- distinct from any real mtime, so a file that appears
+    later reads as changed."""
     try:
-      mtime = os.path.getmtime(self.cameras_path)
+      return os.path.getmtime(path) if path else None
+    except OSError:
+      return None
+
+  def reload_if_changed(self) -> bool:
+    """Reopen any of the three databases that was replaced on disk. True if any was.
+
+    camera_refresh rewrites the camera file weekly and map_download rewrites the link and
+    bump files, both with os.replace -- which leaves this process reading the old inode
+    forever unless we notice. Three stats per call is cheap at 1 Hz; a failed reopen keeps
+    the old connection rather than leaving the caller with nothing.
+    """
+    reloaded = False
+    for path, mtime_attr, con_attr in (
+      (self.cameras_path, "_cameras_mtime", "cam"),
+      (self.links_path, "_links_mtime", "lnk"),
+      (self.bumps_path, "_bumps_mtime", "bmp"),
+    ):
+      if self._reload_one(path, mtime_attr, con_attr):
+        reloaded = True
+    return reloaded
+
+  def _reload_one(self, path: str, mtime_attr: str, con_attr: str) -> bool:
+    if not path:
+      return False
+    try:
+      mtime = os.path.getmtime(path)
     except OSError:
       return False
-    if mtime == self._cameras_mtime:
+    if mtime == getattr(self, mtime_attr):
       return False
 
     try:
-      con = self._open(self.cameras_path)
+      con = self._open(path)
     except (sqlite3.Error, ValueError):
       # stdlib logging on purpose: openpilot's cloudlog pulls in zmq, and this module has
       # to stay importable under a bare interpreter so its tests run without the device stack.
-      logging.getLogger(__name__).exception("korea db: keeping the old camera database")
-      self._cameras_mtime = mtime  # don't retry the same bad file every tick
+      logging.getLogger(__name__).exception("korea db: keeping the old %s database", con_attr)
+      setattr(self, mtime_attr, mtime)  # don't retry the same bad file every tick
       return False
 
-    self.cam.close()
-    self.cam = con
-    self._cameras_mtime = mtime
+    old = getattr(self, con_attr)
+    if old is not None:
+      old.close()
+    setattr(self, con_attr, con)
+    setattr(self, mtime_attr, mtime)
+    if con_attr == "lnk":
+      # The builder assigns link ids by insertion order, so the same id names a different
+      # road after a rebuild. Inside the tie band a surviving id would pick that road.
+      self._last_link_id = None
     return True
 
   def close(self) -> None:

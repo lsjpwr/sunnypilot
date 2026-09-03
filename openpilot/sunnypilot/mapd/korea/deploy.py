@@ -15,11 +15,10 @@ is uploading 220 MB and finding out on the device that it will not open.
 import argparse
 import hashlib
 import os
-import sqlite3
 import subprocess
 import sys
 
-from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_VERSION
+from openpilot.sunnypilot.mapd.korea.db import verify
 
 # Below these the file is not worth shipping. The 2026-08 datasets hold 33415 and
 # 1557364; a build that lands an order of magnitude short went wrong somewhere upstream.
@@ -39,25 +38,6 @@ def sha256_of(path: str) -> str:
     while chunk := f.read(CHUNK):
       digest.update(chunk)
   return digest.hexdigest()
-
-
-def verify(path: str, table: str, min_rows: int) -> int:
-  """Open the database the way the device will and confirm it is worth shipping.
-
-  Raises sqlite3.DatabaseError if the file is not a database, ValueError if the schema
-  version is wrong or the table is too short.
-  """
-  con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-  try:
-    row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    if row is None or row[0] != SCHEMA_VERSION:
-      raise ValueError(f"{path}: schema {row and row[0]!r} != {SCHEMA_VERSION!r}")
-    count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
-    if count < min_rows:
-      raise ValueError(f"{path}: {count} rows in {table}, expected at least {min_rows}")
-    return count
-  finally:
-    con.close()
 
 
 def push(path: str, host: str) -> None:
