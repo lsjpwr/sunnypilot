@@ -8,6 +8,7 @@ db: read-only lookups against the sqlite file build_db.py produces. Deliberately
 free of openpilot imports so it runs under a bare Python interpreter.
 """
 import logging
+import math
 import os
 import sqlite3
 import struct
@@ -52,6 +53,12 @@ BUMP_MAX_DISTANCE_M = 400.
 # street. The cost is that a bump just past a sharp bend is picked up later, which is
 # where the driver already is without this feature.
 BUMP_AHEAD_TOLERANCE = 45.
+# A +-45 deg cone spans +-71 m at 100 m -- wider than a city block, so the cone alone
+# returns bumps on parallel side streets. The corridor is what keeps the lookup on the
+# road the car is actually on. Measured on 강남대로: 13 of 31 sample points would brake
+# without it, 6 with it. 20 m rather than 10 m because a 10 m corridor rejects every bump
+# once the localizer's lateral error passes 10 m, which is ordinary in an urban canyon.
+BUMP_CORRIDOR_M = 20.
 
 _RTREE_OVERLAP = "WHERE i.maxlat >= ? AND i.minlat <= ? AND i.maxlon >= ? AND i.minlon <= ?"
 
@@ -271,7 +278,8 @@ class KoreaMapDB:
       distance = haversine(lat, lon, blat, blon)
       if distance > BUMP_MAX_DISTANCE_M or (best is not None and distance >= best.distance_m):
         continue
-      if bearing_delta(heading_deg, bearing(lat, lon, blat, blon)) > BUMP_AHEAD_TOLERANCE:
+      delta = bearing_delta(heading_deg, bearing(lat, lon, blat, blon))
+      if delta > BUMP_AHEAD_TOLERANCE or distance * math.sin(math.radians(delta)) > BUMP_CORRIDOR_M:
         continue
       best = Bump(lat=blat, lon=blon, kind=kind, distance_m=distance)
 

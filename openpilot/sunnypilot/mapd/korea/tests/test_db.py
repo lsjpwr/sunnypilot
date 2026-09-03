@@ -31,6 +31,14 @@ BUMP_BEHIND = (37.5000, 127.0183, 0)      # ~150 m west
 BUMP_FAR = (37.5000, 127.0290, 0)         # ~800 m east, past BUMP_MAX_DISTANCE_M
 BUMP_VIRTUAL_AHEAD = (37.5000, 127.0217, 2)
 
+# Same ~150 m ahead-distance as BUMP_AHEAD_150, offset north -- lateral to the eastbound
+# heading (90 deg) every test in this file drives with. bearing_delta stays well inside
+# BUMP_AHEAD_TOLERANCE (45 deg) for both: ~3.8 deg at 10 m north, ~11.3 deg at 30 m north.
+# So these two isolate BUMP_CORRIDOR_M from BUMP_AHEAD_TOLERANCE -- the cone alone would
+# admit both.
+BUMP_LATERAL_10M = (37.500090, 127.021700, 0)   # ~150 m ahead, ~10 m north: inside the corridor
+BUMP_LATERAL_30M = (37.500270, 127.021700, 0)   # ~150 m ahead, ~30 m north: outside the corridor
+
 # A 50 km/h road running east for ~1 km, coincident with a short 80 km/h overpass link
 # for its first ~790 m -- an overpass and the road under it, or two links meeting at a
 # shared node, both digitised with the same start point. current_link's tie-break and
@@ -268,6 +276,22 @@ class TestNextBump(KoreaMapDBTestCase):
   def test_no_bumps_path_at_all_is_not_a_failure(self):
     cams, links = self._make_pair()
     database = self.open_db(cams, links)
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
+
+  def test_bump_directly_ahead_is_not_rejected_by_the_corridor(self):
+    database = self.open_db_with_bumps([BUMP_AHEAD_150])
+    self.assertIsNotNone(database.next_bump(37.5000, 127.0200, 90.))
+
+  def test_bump_inside_the_corridor_is_returned(self):
+    database = self.open_db_with_bumps([BUMP_LATERAL_10M])
+    self.assertIsNotNone(database.next_bump(37.5000, 127.0200, 90.))
+
+  def test_bump_outside_the_corridor_is_rejected_even_though_the_cone_would_admit_it(self):
+    """~30 m north at ~150 m ahead is bearing_delta ~11 deg -- well inside
+    BUMP_AHEAD_TOLERANCE (45 deg) -- so only BUMP_CORRIDOR_M can reject this one. This is
+    the regression the whole-branch review found: without the corridor, a cone this wide
+    also returns bumps on a parallel side street."""
+    database = self.open_db_with_bumps([BUMP_LATERAL_30M])
     self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
 
 
