@@ -79,6 +79,24 @@ class TestReadManifest(MapDownloadTestCase):
     path.write_text("{not json", encoding="utf-8")
     self.assertEqual(map_download.read_manifest(str(path)), [])
 
+  def test_a_wrong_shaped_root_is_not_an_error(self):
+    """Syntactically valid JSON that is not an object escapes the OSError/ValueError
+    guard entirely -- payload.get() assumes a dict and raises AttributeError instead."""
+    path = self.tmp_path / "wrong_root.json"
+    for root in ("null", "[]", "42", '"x"', "true"):
+      with self.subTest(root=root):
+        path.write_text(root, encoding="utf-8")
+        self.assertEqual(map_download.read_manifest(str(path)), [])
+
+  def test_a_non_list_databases_value_is_not_an_error(self):
+    """"databases" present but not a list must not escape via a TypeError when the code
+    iterates it."""
+    path = self.tmp_path / "wrong_databases.json"
+    for databases in ("null", "42", "true", '"x"', '{"a": 1}'):
+      with self.subTest(databases=databases):
+        path.write_text(f'{{"databases": {databases}}}', encoding="utf-8")
+        self.assertEqual(map_download.read_manifest(str(path)), [])
+
   def test_an_entry_missing_a_field_is_dropped_not_fatal(self):
     """One malformed entry must not cost the other database its update."""
     path = self.tmp_path / "partial.json"
@@ -139,6 +157,18 @@ class TestDownload(MapDownloadTestCase):
     e = entry(sha=sha256_of(self.source), size=os.path.getsize(self.source), min_rows=999999)
     self.assertFalse(map_download.download(e, self.map_dir, opener=opener_for(self.source)))
     self.assertFalse(os.path.exists(self.target))
+
+  def test_a_non_database_stream_is_discarded(self):
+    """A server returning an HTML error page instead of a database still has to pass the
+    sha256 check to reach this -- the failure this covers is sqlite3.DatabaseError out of
+    db.verify(), not a hash mismatch."""
+    path = self.tmp_path / "not_a_database.bin"
+    path.write_bytes(b"<html>502 Bad Gateway</html>")
+    e = entry(sha=sha256_of(str(path)), size=path.stat().st_size, min_rows=5)
+    self.assertFalse(map_download.download(e, self.map_dir, opener=opener_for(str(path))))
+    self.assertFalse(os.path.exists(self.target))
+    leftovers = [n for n in os.listdir(self.map_dir) if n.endswith(".tmp")]
+    self.assertEqual(leftovers, [], f"a partial download was left behind: {leftovers}")
 
   def test_a_failed_download_leaves_the_existing_file_alone(self):
     """links is a required file. Replacing a working one with a bad one costs speed limits."""

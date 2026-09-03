@@ -70,8 +70,16 @@ def read_manifest(path: str = MANIFEST_PATH) -> list[Entry]:
     LOG.warning("map download: no usable manifest at %s", path, exc_info=True)
     return []
 
+  # Syntactically valid JSON can still be the wrong shape (a bare list, a number, a string
+  # of digits...) -- that is not an OSError or a ValueError, so it must be ruled out here
+  # rather than left to crash payload.get() or the loop below.
+  databases = payload.get("databases", []) if isinstance(payload, dict) else None
+  if not isinstance(databases, list):
+    LOG.warning("map download: manifest at %s is not the expected shape", path)
+    return []
+
   entries = []
-  for item in payload.get("databases", []):
+  for item in databases:
     try:
       entries.append(Entry(name=item["name"], url=item["url"], sha256=item["sha256"],
                            bytes=int(item["bytes"]), table=item["table"],
