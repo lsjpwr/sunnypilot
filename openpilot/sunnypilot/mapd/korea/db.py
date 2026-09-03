@@ -109,6 +109,12 @@ def _unpack_geom(blob: bytes) -> list[tuple[float, float]]:
   return [(flat[i], flat[i + 1]) for i in range(0, 2 * count, 2)]
 
 
+def _check_schema_version(con: sqlite3.Connection, path: str) -> None:
+  row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+  if row is None or row[0] != SCHEMA_VERSION:
+    raise ValueError(f"{path}: schema {row and row[0]!r} != {SCHEMA_VERSION!r}")
+
+
 def verify(path: str, table: str, min_rows: int) -> int:
   """Open the database the way the device will and confirm it is worth using.
 
@@ -121,9 +127,7 @@ def verify(path: str, table: str, min_rows: int) -> int:
   """
   con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
   try:
-    row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    if row is None or row[0] != SCHEMA_VERSION:
-      raise ValueError(f"{path}: schema {row and row[0]!r} != {SCHEMA_VERSION!r}")
+    _check_schema_version(con, path)
     count = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
     if count < min_rows:
       raise ValueError(f"{path}: {count} rows in {table}, expected at least {min_rows}")
@@ -175,10 +179,11 @@ class KoreaMapDB:
   @staticmethod
   def _open(path: str) -> sqlite3.Connection:
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True, check_same_thread=False)
-    row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
-    if row is None or row[0] != SCHEMA_VERSION:
+    try:
+      _check_schema_version(con, path)
+    except Exception:
       con.close()
-      raise ValueError(f"{path}: schema {row and row[0]!r} != {SCHEMA_VERSION!r}")
+      raise
     return con
 
   @staticmethod
