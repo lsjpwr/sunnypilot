@@ -306,6 +306,25 @@ class TestKoreaSpeedBumpRemote(OpenpilotTestCase):
     assert _references_param_equals(item.get("enablement"), "MapDataSource", 1), \
       "KoreaSpeedBumpEnabled missing MapDataSource == korea (1) gate"
 
+  @parameterized.expand([
+    "KoreaSpeedBumpEnabled",
+    "KoreaSpeedBumpArchSpeed",
+    "KoreaSpeedBumpTrapezoidSpeed",
+  ], names=["key"])
+  def test_bump_settings_require_a_capability(self, schema, key):
+    """KoreaSpeedBumpEnabled ultimately drives SmartCruiseControlMap through the korea
+    branch of map_controller._get_enabled(), which cannot act without longitudinal control
+    or ICBM -- same requirement as SmartCruiseControlMap itself (see
+    TestSmartCruiseControlMapRemote below), and the tici/mici device gates
+    (speed_limit_settings.py, mici toggles.py). Without this, a stock-ACC car could turn
+    the toggle on, set both target speeds, and nothing would ever happen."""
+    item = _find_item(schema, key)
+    assert item is not None, f"{key} not found"
+    assert _references_capability_field(item.get("enablement"), "has_longitudinal_control")
+    assert _references_capability_field(item.get("enablement"), "has_icbm")
+    # The capability gate must not have replaced the existing MapDataSource == korea gate.
+    assert _references_param_equals(item.get("enablement"), "MapDataSource", 1)
+
   def test_speed_bump_toggle_is_not_offroad_only(self, schema):
     """Unlike KoreaExternalNavEnabled this opens no port and touches no credential --
     it only stops a comfort slowdown, so it stays writable onroad."""

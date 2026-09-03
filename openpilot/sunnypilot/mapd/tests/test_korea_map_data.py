@@ -49,6 +49,7 @@ def make_data(link=None, camera=None, external=None):
   data.mem_params = StubMemParams()
   data.bump_enabled = False
   data.bump_targets = {}
+  data.localizer_valid = True
   return data
 
 
@@ -60,7 +61,7 @@ class StubMemParams:
     self.values[key] = value
 
 
-def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, position=None):
+def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, position=None, localizer_valid=True):
   """A KoreaMapData wired only far enough to exercise publish_bump_target."""
   data = KoreaMapData.__new__(KoreaMapData)
   data.mem_params = StubMemParams()
@@ -68,6 +69,7 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
   data.bump_enabled = enabled
   data.bump_targets = {BUMP_ARCH: arch_kph * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid_kph * CV.KPH_TO_MS}
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
+  data.localizer_valid = localizer_valid
   return data
 
 
@@ -314,6 +316,16 @@ class BumpTargetTestCase(unittest.TestCase):
     data.publish_bump_target()
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
     self.assertNotIn("LastGPSPosition", data.mem_params.values)
+
+  def test_an_invalid_localizer_clears_the_param_instead_of_republishing_a_stale_bump(self):
+    """last_position/last_bearing only update while the localizer is valid (see
+    update_location), so a frozen localizer would otherwise leave self.bump resolving to
+    the same point every tick forever -- SCC-Map would see a constant distance and never
+    release the slowdown, even though the car keeps moving."""
+    data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.),
+                          localizer_valid=False)
+    data.publish_bump_target()
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
 
 
 class TestReadBumpParams(OpenpilotTestCase):

@@ -118,8 +118,12 @@ class TogglesLayoutMici(NavScroller):
     # UDP port mid-drive from a phone is not allowed) -- match that here for parity.
     korea_nav_toggle.set_enabled(lambda: ui_state.is_offroad() and ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
     # Not offroad-gated, unlike the nav toggle: this opens no port and touches no
-    # credential, it only stops a comfort slowdown.
-    korea_bump_toggle.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
+    # credential, it only stops a comfort slowdown. Also requires longitudinal control or
+    # ICBM -- SmartCruiseControlMap (which this toggle ultimately drives) cannot act without
+    # one of them, so without this gate the toggle would do nothing on a stock-ACC car.
+    korea_bump_toggle.set_enabled(
+      lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea and
+      ui_state.CP is not None and (ui_state.has_longitudinal_control or ui_state.has_icbm))
     self._api_key_btn.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
 
     if ui_state.params.get_bool("ShowDebugInfo"):

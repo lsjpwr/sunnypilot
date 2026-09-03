@@ -278,6 +278,22 @@ class TestNextBump(KoreaMapDBTestCase):
     database = self.open_db(cams, links)
     self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
 
+  def test_a_corrupt_bump_database_is_ignored_not_fatal(self):
+    """Cameras and links must keep working even if the bump file exists but will not open
+    (an scp interrupted mid-copy, or built against a future SCHEMA_VERSION) -- losing speed
+    limits over a database this feature calls optional would be the wrong trade."""
+    cams, links = self._make_pair()
+    bumps = str(self.tmp_path / "korea_bumps.sqlite")
+    with open(bumps, "wb") as f:
+      f.write(b"not a database")
+
+    database = KoreaMapDB(cams, links, bumps)
+    self.addCleanup(database.close)
+    self.assertIsNone(database.bmp)
+    self.assertIsNone(database.next_bump(37.5000, 127.0200, 90.))
+    self.assertIsNotNone(database.next_camera(37.5000, 127.0200, 90.))
+    self.assertIsNotNone(database.current_link(37.5000, 127.0200))
+
   def test_bump_directly_ahead_is_not_rejected_by_the_corridor(self):
     database = self.open_db_with_bumps([BUMP_AHEAD_150])
     self.assertIsNotNone(database.next_bump(37.5000, 127.0200, 90.))

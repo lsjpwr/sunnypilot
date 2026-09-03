@@ -173,9 +173,15 @@ class KoreaMapData(BaseMapData):
     Written on every tick, cleared when there is nothing ahead. SCC-Map has no staleness
     check of its own -- it trusts whatever is in the param -- so 'stop writing' is not a
     way to turn this off; only an empty list is.
+
+    Also requires localizer_valid: last_position/last_bearing only update while the
+    localizer is valid (see update_location), so a localizer that stops updating would
+    otherwise freeze self.bump at whatever it last resolved to and republish that same
+    point forever -- the car keeps moving, SCC-Map keeps seeing a constant distance, and
+    the slowdown never releases.
     """
     points: list[dict[str, float]] = []
-    if self.bump_enabled and self.bump is not None and self.last_position is not None:
+    if self.bump_enabled and self.bump is not None and self.last_position is not None and self.localizer_valid:
       target = self.bump_targets.get(self.bump.kind, 0.)
       if target > 0.:
         points = [{"latitude": self.bump.lat, "longitude": self.bump.lon, "velocity": target}]

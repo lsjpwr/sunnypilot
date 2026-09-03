@@ -223,8 +223,13 @@ class SpeedLimitSettingsLayout(Widget):
     # mid-drive from a phone is not allowed) -- match that here so on-device parity holds.
     self._external_nav.action_item.set_enabled(is_korea and is_offroad)
     self._api_key.action_item.set_enabled(is_korea)
-    self._speed_bump.action_item.set_enabled(is_korea)
-    bump_on = is_korea and ui_state.params.get_bool("KoreaSpeedBumpEnabled")
+    # Speed Bump Slowdown decelerates through SmartCruiseControlMap (cruise.py's scc_m_toggle
+    # gates the same way), which cannot act without longitudinal control or ICBM -- without
+    # this, the toggle would be offerable, and do nothing, on a stock-ACC car.
+    has_long_or_icbm = ui_state.CP is not None and (ui_state.has_longitudinal_control or ui_state.has_icbm)
+    bump_available = is_korea and has_long_or_icbm
+    self._speed_bump.action_item.set_enabled(bump_available)
+    bump_on = bump_available and ui_state.params.get_bool("KoreaSpeedBumpEnabled")
     self._bump_arch_speed.action_item.set_enabled(bump_on)
     self._bump_trapezoid_speed.action_item.set_enabled(bump_on)
 

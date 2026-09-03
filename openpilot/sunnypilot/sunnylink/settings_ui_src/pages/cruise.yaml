@@ -250,6 +250,14 @@ sections:
       description: Slow down for speed bumps from the Korean public database. Needs korea_bumps.sqlite on the
         device — without it this does nothing.
       enablement:
+      - type: any
+        conditions:
+        - type: capability
+          field: has_longitudinal_control
+          equals: true
+        - type: capability
+          field: has_icbm
+          equals: true
       - type: param
         key: MapDataSource
         equals: 1
@@ -267,6 +275,14 @@ sections:
         key: KoreaSpeedBumpEnabled
         equals: true
       enablement:
+      - type: any
+        conditions:
+        - type: capability
+          field: has_longitudinal_control
+          equals: true
+        - type: capability
+          field: has_icbm
+          equals: true
       - type: param
         key: MapDataSource
         equals: 1
@@ -284,6 +300,14 @@ sections:
         key: KoreaSpeedBumpEnabled
         equals: true
       enablement:
+      - type: any
+        conditions:
+        - type: capability
+          field: has_longitudinal_control
+          equals: true
+        - type: capability
+          field: has_icbm
+          equals: true
       - type: param
         key: MapDataSource
         equals: 1

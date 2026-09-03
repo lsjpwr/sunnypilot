@@ -16,6 +16,9 @@ from dataclasses import dataclass
 
 from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, haversine, point_segment_distance
 
+# Shared by all three databases (cameras, links, bumps) -- there is no independent version
+# per kind. Bumping this to add a camera/link schema change also invalidates every existing
+# bumps file; that mismatch is now tolerated (see KoreaMapDB.__init__), not fatal.
 SCHEMA_VERSION = "1"
 
 # ~78 m box; wide enough for GPS error, narrow enough to keep the candidate list short
@@ -132,7 +135,15 @@ class KoreaMapDB:
     # Optional third file. A device deployed before speed bumps shipped has cameras and
     # links but no korea_bumps.sqlite, and losing speed limits over a missing comfort
     # feature would be the wrong trade -- so an absent file means "no bumps", not an error.
-    self.bmp = self._open(bumps_path) if bumps_path and os.path.exists(bumps_path) else None
+    # A file that IS present but unusable (schema mismatch, an scp interrupted mid-copy)
+    # must not be an error either: _open raising here would propagate out of __init__ and
+    # take cameras and links down with it over a database this feature calls optional.
+    self.bmp = None
+    if bumps_path and os.path.exists(bumps_path):
+      try:
+        self.bmp = self._open(bumps_path)
+      except (sqlite3.Error, ValueError):
+        logging.getLogger(__name__).exception("korea db: ignoring an unusable bump database")
 
   @staticmethod
   def _open(path: str) -> sqlite3.Connection:

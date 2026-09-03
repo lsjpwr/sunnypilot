@@ -8,14 +8,16 @@ speed_limit_settings.py:_update_state() enables three action items on different 
   - _external_nav requires MapDataSource == korea AND offroad (KoreaExternalNavEnabled
     is offroad-only, same as the mici korea_nav_toggle).
   - _api_key requires MapDataSource == korea only -- it stays enabled onroad.
-  - _speed_bump requires MapDataSource == korea only; _bump_arch_speed and
-    _bump_trapezoid_speed additionally require KoreaSpeedBumpEnabled.
+  - _speed_bump requires MapDataSource == korea AND (longitudinal control or ICBM), since
+    it ultimately drives SmartCruiseControlMap, which cannot act without one of those;
+    _bump_arch_speed and _bump_trapezoid_speed additionally require KoreaSpeedBumpEnabled.
 Previously uncovered by any committed test. Drives the real _update_state() on a real
 constructed layout rather than reimplementing the predicate.
 """
 import os
 import shutil
 import unittest
+from types import SimpleNamespace
 
 import pyray as rl
 
@@ -95,13 +97,32 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
 
     original_source = ui_state.params.get("MapDataSource", return_default=True)
     original_bump = ui_state.params.get_bool("KoreaSpeedBumpEnabled")
+    original_cp = ui_state.CP
+    original_cp_sp = ui_state.CP_SP
+    original_has_long = ui_state.has_longitudinal_control
+    original_has_icbm = ui_state.has_icbm
 
     def _restore():
       ui_state.params.put("MapDataSource", int(original_source), block=True)
       ui_state.params.put_bool("KoreaSpeedBumpEnabled", original_bump, block=True)
+      ui_state.CP = original_cp
+      ui_state.CP_SP = original_cp_sp
+      ui_state.has_longitudinal_control = original_has_long
+      ui_state.has_icbm = original_has_icbm
     self.addCleanup(_restore)
 
     layout = SpeedLimitSettingsLayout(lambda: None)
+
+    # has_longitudinal_control/has_icbm are cached ui_state attributes (refreshed from CP/CP_SP
+    # elsewhere, not read fresh per call) -- set directly, same as ui_state.is_metric and
+    # ui_state.started elsewhere in this file. CP only needs to be non-None for the bump gate;
+    # CP_SP is held None so the unrelated Speed Limit Assist block further down in
+    # _update_state (which reads ui_state.CP.brand once CP_SP is ALSO set) takes its "no CP"
+    # branch instead of touching a bare stand-in CP object.
+    ui_state.CP = SimpleNamespace()
+    ui_state.CP_SP = None
+    ui_state.has_longitudinal_control = True
+    ui_state.has_icbm = False
 
     with subtests.test(case="korea + bump off -> toggle enabled, both speeds disabled"):
       ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
@@ -124,6 +145,30 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
       self.assertFalse(layout._speed_bump.action_item.enabled)
       self.assertFalse(layout._bump_arch_speed.action_item.enabled)
       self.assertFalse(layout._bump_trapezoid_speed.action_item.enabled)
+
+    with subtests.test(case="korea + no longitudinal + no icbm -> everything bump-related disabled " +
+                            "even with the toggle on (SmartCruiseControlMap could not act anyway)"):
+      ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
+      ui_state.params.put_bool("KoreaSpeedBumpEnabled", True, block=True)
+      ui_state.has_longitudinal_control = False
+      ui_state.has_icbm = False
+      layout._update_state()
+      self.assertFalse(layout._speed_bump.action_item.enabled)
+      self.assertFalse(layout._bump_arch_speed.action_item.enabled)
+      self.assertFalse(layout._bump_trapezoid_speed.action_item.enabled)
+
+    with subtests.test(case="korea + icbm only (no full longitudinal) -> still enabled"):
+      ui_state.has_longitudinal_control = False
+      ui_state.has_icbm = True
+      layout._update_state()
+      self.assertTrue(layout._speed_bump.action_item.enabled)
+
+    with subtests.test(case="korea + no CP at all -> disabled even though has_longitudinal_control is stale-True"):
+      ui_state.CP = None
+      ui_state.has_longitudinal_control = True
+      ui_state.has_icbm = False
+      layout._update_state()
+      self.assertFalse(layout._speed_bump.action_item.enabled)
 
   @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_bump_speed_label_converts_for_is_metric(self, subtests):
