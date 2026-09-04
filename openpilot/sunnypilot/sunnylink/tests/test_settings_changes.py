@@ -358,6 +358,22 @@ class TestKoreaSpeedBumpRemote(OpenpilotTestCase):
       assert not item.get("needs_onroad_cycle"), f"{key} claims it takes an onroad cycle"
 
 
+class TestKoreaMapDownloadRemote(OpenpilotTestCase):
+  def test_auto_download_toggle_present(self, schema):
+    assert _find_item(schema, "KoreaMapAutoDownload") is not None
+
+  def test_auto_download_requires_korea_map_source(self, schema):
+    """The manifest names only the korea databases. Offering it under OSM would download
+    220 MB the OSM path never reads."""
+    item = _find_item(schema, "KoreaMapAutoDownload")
+    assert _references_param_equals(item.get("enablement"), "MapDataSource", 1)
+
+  def test_auto_download_is_offroad_only(self, schema):
+    """220 MB over the car's link while driving competes with everything else on it."""
+    item = _find_item(schema, "KoreaMapAutoDownload")
+    assert "offroad_only" in _flatten_rule_types(item.get("enablement"))
+
+
 class TestKoreaMapSettings(OpenpilotTestCase):
   """The source selector and the external-nav toggle must exist on the remote surface.
   A raylib-only setting is invisible to sunnylink users."""

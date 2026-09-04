@@ -171,6 +171,40 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
       self.assertFalse(layout._speed_bump.action_item.enabled)
 
   @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
+  def test_auto_download_gating(self, subtests):
+    rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
+    from openpilot.system.ui.lib.application import gui_app
+    gui_app.init_window("test_speed_limit_settings_auto_download_gating")
+    self.addCleanup(gui_app.close)
+
+    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import SpeedLimitSettingsLayout
+    from openpilot.selfdrive.ui.ui_state import ui_state
+    from openpilot.sunnypilot.mapd import MapSource
+
+    # Same process-wide-singleton hazard as the tests above: ui_state.params may be bound
+    # to a directory an earlier test's OpenpilotPrefix has since deleted.
+    params_dir = ui_state.params.get_param_path()
+    os.makedirs(params_dir, exist_ok=True)
+    self.addCleanup(shutil.rmtree, params_dir, ignore_errors=True)
+
+    original_source = ui_state.params.get("MapDataSource", return_default=True)
+
+    def _restore():
+      ui_state.params.put("MapDataSource", int(original_source), block=True)
+    self.addCleanup(_restore)
+
+    layout = SpeedLimitSettingsLayout(lambda: None)
+
+    for source, expected, why in (
+      (MapSource.korea, True, "the korea source is the only one this downloads for"),
+      (MapSource.osm, False, "OSM gets its map data from the mapd binary, not from us"),
+    ):
+      with subtests.test(source=source):
+        ui_state.params.put("MapDataSource", int(source), block=True)
+        layout._update_state()
+        assert layout._auto_download.action_item.enabled is expected, why
+
+  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_bump_speed_label_converts_for_is_metric(self, subtests):
     rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
     from openpilot.system.ui.lib.application import gui_app

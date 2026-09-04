@@ -112,6 +112,13 @@ class SpeedLimitSettingsLayout(Widget):
                      "korea_bumps.sqlite on the device -- without it this does nothing."),
       param="KoreaSpeedBumpEnabled")
 
+    self._auto_download = toggle_item_sp(
+      title=tr("Download Map Data Automatically"),
+      description=tr("Fetch the Korean link and speed bump databases over Wi-Fi when a newer " +
+                     "release is published. The link database is about 220 MB, so this only " +
+                     "runs on an unmetered connection. Leave it off to copy the files by hand."),
+      param="KoreaMapAutoDownload")
+
     self._bump_arch_speed = option_item_sp(
       title=lambda: tr("Arch Bump Target Speed"),
       param="KoreaSpeedBumpArchSpeed",
@@ -155,6 +162,7 @@ class SpeedLimitSettingsLayout(Widget):
       self._speed_bump,
       self._bump_arch_speed,
       self._bump_trapezoid_speed,
+      self._auto_download,
       LineSeparatorSP(40),
       self._speed_limit_offset_type,
       self._speed_limit_value_offset
@@ -223,6 +231,9 @@ class SpeedLimitSettingsLayout(Widget):
     # mid-drive from a phone is not allowed) -- match that here so on-device parity holds.
     self._external_nav.action_item.set_enabled(is_korea and is_offroad)
     self._api_key.action_item.set_enabled(is_korea)
+    # Same offroad rationale as _external_nav: 220 MB over the car's link while driving
+    # competes with everything else on it.
+    self._auto_download.action_item.set_enabled(is_korea and is_offroad)
     # Speed Bump Slowdown decelerates through SmartCruiseControlMap (cruise.py's scc_m_toggle
     # gates the same way), which cannot act without longitudinal control or ICBM -- without
     # this, the toggle would be offerable, and do nothing, on a stock-ACC car.

@@ -938,6 +938,22 @@
                   ]
                 },
                 {
+                  "key": "KoreaMapAutoDownload",
+                  "widget": "toggle",
+                  "title": "Download Map Data Automatically",
+                  "description": "Fetch the Korean link and speed bump databases over Wi-Fi when a newer release is published. The link database is about 220 MB, so this only runs on an unmetered connection. Leave it off to copy the files by hand.",
+                  "enablement": [
+                    {
+                      "type": "offroad_only"
+                    },
+                    {
+                      "type": "param",
+                      "key": "MapDataSource",
+                      "equals": 1
+                    }
+                  ]
+                },
+                {
                   "key": "KoreaSpeedBumpEnabled",
                   "widget": "toggle",
                   "title": "Speed Bump Slowdown",

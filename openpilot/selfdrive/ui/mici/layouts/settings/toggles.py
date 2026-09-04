@@ -56,6 +56,7 @@ class TogglesLayoutMici(NavScroller):
 
     korea_nav_toggle = BigParamControl("korean external navigation input", "KoreaExternalNavEnabled")
     korea_bump_toggle = BigParamControl("korean speed bump slowdown", "KoreaSpeedBumpEnabled")
+    korea_download_toggle = BigParamControl("auto-download map data", "KoreaMapAutoDownload")
 
     def api_key_callback(text):
       # The dialog always seeds empty now (see edit_api_key below), so a bare tap on
@@ -95,6 +96,7 @@ class TogglesLayoutMici(NavScroller):
       enable_openpilot,
       korea_nav_toggle,
       korea_bump_toggle,
+      korea_download_toggle,
       self._api_key_btn,
     ])
 
@@ -109,6 +111,7 @@ class TogglesLayoutMici(NavScroller):
       ("OpenpilotEnabledToggle", enable_openpilot),
       ("KoreaExternalNavEnabled", korea_nav_toggle),
       ("KoreaSpeedBumpEnabled", korea_bump_toggle),
+      ("KoreaMapAutoDownload", korea_download_toggle),
     )
 
     enable_openpilot.set_enabled(lambda: not ui_state.engaged)
@@ -124,6 +127,9 @@ class TogglesLayoutMici(NavScroller):
     korea_bump_toggle.set_enabled(
       lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea and
       ui_state.CP is not None and (ui_state.has_longitudinal_control or ui_state.has_icbm))
+    korea_download_toggle.set_enabled(
+      lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea
+              and ui_state.is_offroad())
     self._api_key_btn.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
 
     if ui_state.params.get_bool("ShowDebugInfo"):
