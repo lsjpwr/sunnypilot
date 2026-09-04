@@ -7,9 +7,13 @@ See the LICENSE.md file in the root directory for more details.
 import hashlib
 import io
 import json
+import logging
 import os
 import pathlib
+import sys
 import tempfile
+import threading
+import types
 import unittest
 from unittest import mock
 
@@ -48,6 +52,11 @@ def opener_for(path):
 class MapDownloadTestCase(unittest.TestCase):
   def setUp(self):
     super().setUp()
+    # download() logs failures with exc_info=True, and several tests here deliberately fail
+    # a download -- without this, Python's last-resort handler prints a traceback to stderr
+    # for every one of them, which looks like an error but is not.
+    logging.disable(logging.CRITICAL)
+    self.addCleanup(logging.disable, logging.NOTSET)
     self.tmp_path = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
     self.map_dir = str(self.tmp_path / "korea_map")
     os.makedirs(self.map_dir)
@@ -199,8 +208,9 @@ class TestDownload(MapDownloadTestCase):
 
 
 class TestRunOnce(MapDownloadTestCase):
-  """The thread body is one call per wake-up. Testing that call directly keeps these tests
-  fast and deterministic; the thread itself is start/stop plumbing."""
+  """One pass over the manifest, tested directly for speed and determinism. _loop's own
+  decisions -- the opt-in gate, the deviceState and metered guards, the retry backoff, and
+  the catch-all -- are covered separately in TestDownloaderLoop."""
 
   def setUp(self):
     super().setUp()
@@ -227,18 +237,26 @@ class TestRunOnce(MapDownloadTestCase):
     make_bumps_file(target, rows=5)
     manifest = self.write_manifest(sha=sha256_of(target))
 
-    def must_not_be_called(url, timeout=None):
-      raise AssertionError("re-downloaded a database that was already current")
+    calls = []
 
-    self.downloader._run_once(manifest, opener=must_not_be_called)
+    def recording_opener(url, timeout=None):
+      calls.append(url)
+      raise AssertionError("unreachable")
+
+    self.downloader._run_once(manifest, opener=recording_opener)
+    self.assertEqual(calls, [], "re-downloaded a database that was already current")
 
   def test_a_disk_too_small_skips_without_touching_anything(self):
     manifest = self.write_manifest(size=1 << 60)
 
-    def must_not_be_called(url, timeout=None):
-      raise AssertionError("started a download that cannot fit")
+    calls = []
 
-    self.downloader._run_once(manifest, opener=must_not_be_called)
+    def recording_opener(url, timeout=None):
+      calls.append(url)
+      raise AssertionError("unreachable")
+
+    self.downloader._run_once(manifest, opener=recording_opener)
+    self.assertEqual(calls, [], "started a download that cannot fit")
     self.assertFalse(os.path.exists(os.path.join(self.map_dir, "korea_bumps.sqlite")))
 
   def test_one_failing_entry_does_not_stop_the_others(self):
@@ -258,18 +276,132 @@ class TestRunOnce(MapDownloadTestCase):
     self.assertTrue(os.path.exists(os.path.join(self.map_dir, "korea_bumps.sqlite")))
 
 
+class ScriptedStop(threading.Event):
+  """Lets _loop run for an exact number of iterations, recording every wait(timeout) call so
+  a test can assert on the interval _loop chose without sleeping or touching wall-clock time."""
+
+  def __init__(self, iterations=1):
+    super().__init__()
+    self.waits = []
+    self._remaining = iterations
+
+  def wait(self, timeout=None):
+    self.waits.append(timeout)
+    self._remaining -= 1
+    if self._remaining <= 0:
+      self.set()
+    return True
+
+
+class TestDownloaderLoop(MapDownloadTestCase):
+  """_loop holds four decisions -- the opt-in gate, the deviceState guard, the metered
+  guard, and the catch-all -- plus the retry backoff, none of which TestRunOnce exercises
+  since it calls _run_once directly. cereal and Params are faked through sys.modules the
+  same way test_camera_refresh.TestRefresherLoop fakes them for CameraRefresher._loop."""
+
+  def drive_loop(self, *, iterations=1, run_once_results=(True,), run_once=None, recv_frame=1,
+                 metered=False, enabled=True):
+    class FakeSubMaster:
+      def __init__(self):
+        self.recv_frame = {'deviceState': recv_frame}
+
+      def update(self, timeout):
+        pass
+
+      def __getitem__(self, service):
+        return types.SimpleNamespace(networkMetered=metered)
+
+    messaging = types.ModuleType("cereal.messaging")
+    messaging.SubMaster = lambda services: FakeSubMaster()
+    params_mod = types.ModuleType("openpilot.common.params")
+    params_mod.Params = lambda: types.SimpleNamespace(get_bool=lambda key: enabled)
+
+    self.enterContext(mock.patch.dict(sys.modules, {
+      "cereal": types.ModuleType("cereal"),
+      "cereal.messaging": messaging,
+      "openpilot.common.params": params_mod,
+    }))
+
+    calls = []
+    if run_once is None:
+      results = iter(run_once_results)
+
+      def run_once(self):
+        calls.append(1)
+        return next(results, True)
+
+    self.enterContext(mock.patch.object(map_download.MapDownloader, "_run_once", run_once))
+
+    downloader = map_download.MapDownloader(self.map_dir)
+    downloader._stop = ScriptedStop(iterations)
+    downloader._loop()
+    return downloader, calls
+
+  def test_parameter_off_never_calls_run_once(self):
+    """The default is "0" on every device -- get this backwards and every car starts a
+    220 MB download nobody asked for. The off branch must also keep the one-hour wait, not
+    the seven-day one, so a newly-enabled toggle is picked up within the hour."""
+    downloader, calls = self.drive_loop(enabled=False)
+    self.assertEqual(calls, [])
+    self.assertEqual(downloader._stop.waits, [map_download.RETRY_INTERVAL_S])
+
+  def test_no_deviceState_yet_does_not_download(self):
+    """A SubMaster that has received nothing reports networkMetered False -- the capnp
+    default, not an answer -- which would otherwise start a download over a metered link
+    on the first tick after boot."""
+    downloader, calls = self.drive_loop(recv_frame=0)
+    self.assertEqual(calls, [])
+
+  def test_a_metered_network_does_not_download(self):
+    downloader, calls = self.drive_loop(metered=True)
+    self.assertEqual(calls, [])
+
+  def test_enabled_unmetered_with_deviceState_calls_run_once(self):
+    downloader, calls = self.drive_loop()
+    self.assertEqual(calls, [1])
+    self.assertEqual(downloader._stop.waits, [map_download.CHECK_INTERVAL_S])
+
+  def test_the_loop_survives_run_once_raising(self):
+    """This thread has no supervisor. Anything that escapes _loop silently ends map
+    downloads for the life of the process."""
+    def boom(self):
+      raise RuntimeError("something nobody predicted")
+
+    downloader, _ = self.drive_loop(run_once=boom)  # must not raise
+    self.assertEqual(downloader._stop.waits, [map_download.RETRY_INTERVAL_S])
+
+  def test_backoff_grows_on_consecutive_failures_and_resets_on_success(self):
+    """Any incomplete pass must stretch the retry -- otherwise a manifest sha that can never
+    match the hosted asset retries 220 MB every hour forever -- and a success must snap the
+    interval back down."""
+    downloader, calls = self.drive_loop(iterations=5,
+                                        run_once_results=[False, False, False, True, False])
+    R, C = map_download.RETRY_INTERVAL_S, map_download.CHECK_INTERVAL_S
+    self.assertEqual(downloader._stop.waits, [R * 2, R * 4, R * 8, C, R * 2])
+    self.assertEqual(len(calls), 5)
+
+
 class TestThreadLifecycle(MapDownloadTestCase):
   def test_start_is_idempotent_and_stop_joins(self):
     """mapd_manager's korea_main can be re-entered on a source switch; a second start()
     that spawned a second thread would double every download."""
     downloader = map_download.MapDownloader(self.map_dir)
-    with mock.patch.object(map_download.MapDownloader, "_loop", lambda self: None):
+    exited = threading.Event()
+
+    def fake_loop(self):
+      # Blocks on the real _stop event, same as the production loop's trailing wait --
+      # only self._stop.set() in stop() can unblock this.
+      self._stop.wait()
+      exited.set()
+
+    with mock.patch.object(map_download.MapDownloader, "_loop", fake_loop):
       downloader.start()
       first = downloader._thread
       downloader.start()
       self.assertIs(downloader._thread, first)
       downloader.stop()
       self.assertIsNone(downloader._thread)
+    self.assertTrue(exited.is_set(), "stop() did not signal a live _loop to exit")
 
 
 if __name__ == "__main__":

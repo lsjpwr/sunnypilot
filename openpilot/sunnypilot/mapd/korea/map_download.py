@@ -175,6 +175,7 @@ class MapDownloader:
     self.map_dir = map_dir
     self._stop = threading.Event()
     self._thread: threading.Thread | None = None
+    self._fails = 0
 
   def start(self) -> None:
     if self._thread is not None:
@@ -220,8 +221,10 @@ class MapDownloader:
       try:
         sm.update(0)
         if not params.get_bool("KoreaMapAutoDownload"):
+          # Left at RETRY_INTERVAL_S, not promoted to CHECK_INTERVAL_S: this is not a
+          # failure, so it must not feed the backoff below, and polling hourly is what lets
+          # a newly-enabled toggle take effect within the hour instead of up to seven days.
           LOG.info("map download: KoreaMapAutoDownload is off")
-          wait = CHECK_INTERVAL_S
         elif not sm.recv_frame['deviceState']:
           # A SubMaster that has received nothing reports networkMetered False, which is the
           # capnp default, not an answer. On the first tick after boot that would start a
@@ -230,7 +233,14 @@ class MapDownloader:
         elif sm['deviceState'].networkMetered:
           LOG.info("map download: network is metered, waiting")
         elif self._run_once():
+          self._fails = 0
           wait = CHECK_INTERVAL_S
+        else:
+          # An incomplete pass (a failed download, or a manifest sha that can never match a
+          # hosted asset) must not retry 220 MB every hour forever. Back off geometrically,
+          # capped at 24x -- a success snaps this back to 0.
+          self._fails += 1
+          wait = RETRY_INTERVAL_S * min(2 ** self._fails, 24)
       except Exception:
         # This thread has no supervisor. Anything that escapes here ends map downloads for
         # the life of the process, silently -- so the guard goes around the whole body
