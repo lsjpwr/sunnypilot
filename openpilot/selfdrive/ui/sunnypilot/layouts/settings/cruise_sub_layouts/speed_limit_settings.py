@@ -231,8 +231,8 @@ class SpeedLimitSettingsLayout(Widget):
     # mid-drive from a phone is not allowed) -- match that here so on-device parity holds.
     self._external_nav.action_item.set_enabled(is_korea and is_offroad)
     self._api_key.action_item.set_enabled(is_korea)
-    # Same offroad rationale as _external_nav: 220 MB over the car's link while driving
-    # competes with everything else on it.
+    # Offroad-gated for a different reason than _external_nav above: bandwidth, not port
+    # safety -- a ~220 MB download must not compete with the car's connection while driving.
     self._auto_download.action_item.set_enabled(is_korea and is_offroad)
     # Speed Bump Slowdown decelerates through SmartCruiseControlMap (cruise.py's scc_m_toggle
     # gates the same way), which cannot act without longitudinal control or ICBM -- without

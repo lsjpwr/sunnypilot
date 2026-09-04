@@ -127,6 +127,8 @@ class TogglesLayoutMici(NavScroller):
     korea_bump_toggle.set_enabled(
       lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea and
       ui_state.CP is not None and (ui_state.has_longitudinal_control or ui_state.has_icbm))
+    # Offroad-gated for bandwidth, not safety: this downloads a ~220 MB map database, and that
+    # transfer must not compete with the car's connection while driving.
     korea_download_toggle.set_enabled(
       lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea
               and ui_state.is_offroad())

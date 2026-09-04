@@ -188,9 +188,11 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
     self.addCleanup(shutil.rmtree, params_dir, ignore_errors=True)
 
     original_source = ui_state.params.get("MapDataSource", return_default=True)
+    original_started = ui_state.started
 
     def _restore():
       ui_state.params.put("MapDataSource", int(original_source), block=True)
+      ui_state.started = original_started
     self.addCleanup(_restore)
 
     layout = SpeedLimitSettingsLayout(lambda: None)
@@ -203,6 +205,12 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
         ui_state.params.put("MapDataSource", int(source), block=True)
         layout._update_state()
         assert layout._auto_download.action_item.enabled is expected, why
+
+    with subtests.test(case="korea + onroad -> disabled (220 MB must not compete with the drive)"):
+      ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
+      ui_state.started = True
+      layout._update_state()
+      self.assertFalse(layout._auto_download.action_item.enabled)
 
   @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_bump_speed_label_converts_for_is_metric(self, subtests):
