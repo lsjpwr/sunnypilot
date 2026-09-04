@@ -380,6 +380,13 @@ class TestDownloaderLoop(MapDownloadTestCase):
     self.assertEqual(downloader._stop.waits, [R * 2, R * 4, R * 8, C, R * 2])
     self.assertEqual(len(calls), 5)
 
+  def test_backoff_stops_growing_at_the_cap(self):
+    """Without the cap the interval doubles forever, so a database that fails for a week
+    would not be retried for months. 2**6 is 64; the cap must hold it at 24."""
+    downloader, _ = self.drive_loop(iterations=6, run_once_results=[False] * 6)
+    R = map_download.RETRY_INTERVAL_S
+    self.assertEqual(downloader._stop.waits, [R * 2, R * 4, R * 8, R * 16, R * 24, R * 24])
+
 
 class TestThreadLifecycle(MapDownloadTestCase):
   def test_start_is_idempotent_and_stop_joins(self):
