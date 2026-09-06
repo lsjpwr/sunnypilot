@@ -257,6 +257,63 @@ class TestDownload(MapDownloadTestCase):
     self.assertFalse(os.path.exists(self.target))
     self.assertEqual([n for n in os.listdir(self.map_dir) if n.endswith(".tmp")], [])
 
+  def test_a_stop_part_way_through_abandons_the_transfer(self):
+    """stop() sets the event and joins for two seconds; a multi-minute transfer outlives
+    that and is abandoned with its thread. The writer has to end itself, or it installs a
+    database for a source the process has already switched away from."""
+    stop = threading.Event()
+    reads = []
+
+    def stop_after_the_first_chunk():
+      if reads:
+        stop.set()
+      reads.append(1)
+
+    data = pathlib.Path(self.source).read_bytes()
+    response = ChunkedResponse(data, parts=4, hook=stop_after_the_first_chunk)
+    e = entry(sha=sha256_of(self.source), size=len(data), min_rows=5)
+
+    installed = map_download.download(e, self.map_dir, opener=lambda url, timeout=None: response,
+                                      stop=stop)
+
+    self.assertFalse(installed, "finished a transfer after stop() was called")
+    self.assertFalse(os.path.exists(self.target))
+    self.assertEqual([n for n in os.listdir(self.map_dir) if n.endswith(".tmp")], [])
+
+  def test_two_downloads_of_one_file_do_not_share_a_scratch_path(self):
+    """korea_main re-enters on a MapDataSource or KoreaExternalNavEnabled change -- both
+    offroad, which is when downloads run -- and builds a second MapDownloader on the same
+    map_dir while stop()'s join may have abandoned the first one mid-transfer.
+
+    On one shared .tmp name the second writer's open(tmp, "wb") truncates the first one's
+    file, and no sha256 can see it: each writer hashes its own stream, not the file. What
+    reaches os.replace is a mixture of two builds with only verify()'s COUNT(*) in the way.
+
+    The interleaving is driven from the first writer's own read() rather than from a second
+    thread: same ordering at the file level, no scheduler in the assertion.
+    """
+    other = str(self.tmp_path / "other.sqlite")
+    make_bumps_file(other, rows=11)
+    mine = entry(sha=sha256_of(self.source), size=os.path.getsize(self.source), min_rows=5)
+    theirs = entry(sha=sha256_of(other), size=os.path.getsize(other), min_rows=5)
+    reads = []
+
+    def run_the_other_downloader_to_completion():
+      if len(reads) == 1:
+        map_download.download(theirs, self.map_dir, opener=opener_for(other))
+      reads.append(1)
+
+    response = ChunkedResponse(pathlib.Path(self.source).read_bytes(), parts=2,
+                               hook=run_the_other_downloader_to_completion)
+    # A chunk smaller than the write buffer never reaches the file before the second writer
+    # opens it, which would leave this test unable to fail.
+    self.assertGreater(response.step, io.DEFAULT_BUFFER_SIZE, "the fixture is too small to bite")
+
+    map_download.download(mine, self.map_dir, opener=lambda url, timeout=None: response)
+
+    self.assertIn(sha256_of(self.target), (mine.sha256, theirs.sha256),
+                  "the installed database is a mixture of two downloads")
+
 
 class TestRunOnce(MapDownloadTestCase):
   """One pass over the manifest, tested directly for speed and determinism. _loop's own
@@ -472,6 +529,49 @@ class TestThreadLifecycle(MapDownloadTestCase):
       downloader.stop()
       self.assertIsNone(downloader._thread)
     self.assertTrue(exited.is_set(), "stop() did not signal a live _loop to exit")
+
+  def test_stop_ends_a_transfer_the_join_cannot_outwait(self):
+    """The test above only exercises stop() against a loop parked at _stop.wait(). The case
+    that matters is the other one: join(timeout=2.) against a live 220 MB transfer, which it
+    cannot outwait -- stop() sets _thread to None and returns, leaving a writer running.
+
+    That writer has to notice the event itself, and _run_once has to be what hands it over.
+    """
+    source = str(self.tmp_path / "source.sqlite")
+    make_bumps_file(source, rows=5)
+    manifest = str(self.tmp_path / "manifest.json")
+    pathlib.Path(manifest).write_text(json.dumps({"manifest_version": 1, "databases": [{
+      "name": "korea_bumps.sqlite", "url": "https://example.invalid/bumps",
+      "sha256": sha256_of(source), "bytes": os.path.getsize(source),
+      "table": "bumps", "min_rows": 5,
+    }]}), encoding="utf-8")
+
+    downloader = map_download.MapDownloader(self.map_dir)
+    transferring = threading.Event()
+    exited = threading.Event()
+
+    def block_until_stopped():
+      # a socket that only hands over the next chunk once something else has happened --
+      # here, once stop() has set the very event this transfer is supposed to notice
+      transferring.set()
+      downloader._stop.wait(timeout=5.)
+
+    response = ChunkedResponse(pathlib.Path(source).read_bytes(), parts=4,
+                               hook=block_until_stopped)
+
+    def fake_loop(self):
+      self._run_once(manifest, opener=lambda url, timeout=None: response)
+      exited.set()
+
+    with mock.patch.object(map_download.MapDownloader, "_loop", fake_loop):
+      downloader.start()
+      self.assertTrue(transferring.wait(timeout=5.), "the transfer never started")
+      downloader.stop()
+
+    self.assertTrue(exited.wait(timeout=5.), "the abandoned writer never ended")
+    self.assertFalse(os.path.exists(os.path.join(self.map_dir, "korea_bumps.sqlite")),
+                     "installed a database for a source the process had already stopped")
+    self.assertEqual([n for n in os.listdir(self.map_dir) if n.endswith(".tmp")], [])
 
 
 if __name__ == "__main__":

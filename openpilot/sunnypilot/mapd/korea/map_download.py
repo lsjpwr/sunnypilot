@@ -26,6 +26,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import threading
 import urllib.request
 from dataclasses import dataclass
@@ -128,7 +129,8 @@ def enough_disk(entry: Entry, map_dir: str) -> bool:
   return True
 
 
-def download(entry: Entry, map_dir: str, opener=urllib.request.urlopen) -> bool:
+def download(entry: Entry, map_dir: str, opener=urllib.request.urlopen,
+             stop: threading.Event | None = None) -> bool:
   """Fetch, verify, and install one database. True if it was installed.
 
   Never raises: a failed download is not worth taking the mapd process down for. Every
@@ -138,12 +140,26 @@ def download(entry: Entry, map_dir: str, opener=urllib.request.urlopen) -> bool:
   # retry interval covers it; add Range if a retry loop ever shows up in the logs.
   """
   target = target_path(map_dir, entry.name)
-  tmp = f"{target}.tmp"
+  tmp = None
   try:
+    # mkstemp, not a fixed "{target}.tmp": korea_main re-enters on a MapDataSource or
+    # KoreaExternalNavEnabled change and builds a second MapDownloader while stop()'s
+    # two-second join may just have abandoned the first one mid-transfer. Two writers on one
+    # name means the second one's open(tmp, "wb") truncates the first one's file -- and
+    # neither sha256 can see it, because each is computed from its own stream and not from
+    # the file, so a mixture of two builds can reach os.replace with only verify()'s
+    # COUNT(*) between it and the car.
+    fd, tmp = tempfile.mkstemp(dir=map_dir, prefix=os.path.basename(entry.name) + ".",
+                               suffix=".tmp")
     digest = hashlib.sha256()
     written = 0
-    with opener(entry.url, timeout=HTTP_TIMEOUT_S) as response, open(tmp, "wb") as out:
+    # os.fdopen first, so the with-block owns the descriptor even if opener() raises.
+    with os.fdopen(fd, "wb") as out, opener(entry.url, timeout=HTTP_TIMEOUT_S) as response:
       while chunk := response.read(CHUNK):
+        if stop is not None and stop.is_set():
+          # stop() joins for two seconds and a 220 MB transfer outlives that, so the thread
+          # is abandoned rather than stopped. Nothing else can end this writer but itself.
+          raise InterruptedError(f"{entry.name}: stopped mid-transfer")
         written += len(chunk)
         if written > entry.bytes:
           # /data/media holds Paths.log_root() too, and loggerd's deleter answers a full
@@ -162,6 +178,7 @@ def download(entry: Entry, map_dir: str, opener=urllib.request.urlopen) -> bool:
     # built from a broken input is still a database the car should not drive on.
     count = verify(tmp, entry.table, entry.min_rows)
 
+    os.chmod(tmp, 0o644)  # mkstemp makes it 0600, and os.replace would carry that in
     os.replace(tmp, target)
     LOG.info("map download: installed %s, %d rows in %s", entry.name, count, entry.table)
     return True
@@ -171,7 +188,7 @@ def download(entry: Entry, map_dir: str, opener=urllib.request.urlopen) -> bool:
   finally:
     # A partial .tmp is dead weight on a partition that just proved it was tight, and a
     # stale one would be mistaken for progress by anyone reading the directory.
-    if os.path.exists(tmp):
+    if tmp is not None and os.path.exists(tmp):
       try:
         os.remove(tmp)
       except OSError:
@@ -216,7 +233,7 @@ class MapDownloader:
       if not enough_disk(entry, self.map_dir):
         complete = False
         continue
-      if not download(entry, self.map_dir, opener=opener):
+      if not download(entry, self.map_dir, opener=opener, stop=self._stop):
         complete = False
     return complete
 
