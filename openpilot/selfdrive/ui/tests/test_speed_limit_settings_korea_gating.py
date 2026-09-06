@@ -197,6 +197,11 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
 
     layout = SpeedLimitSettingsLayout(lambda: None)
 
+    # Explicit, not inherited: ui_state is a process-wide singleton and this loop asserts
+    # enabled is True, which only holds offroad. Leaving it to the default made this subtest
+    # depend on running before the onroad one below.
+    ui_state.started = False
+
     for source, expected, why in (
       (MapSource.korea, True, "the korea source is the only one this downloads for"),
       (MapSource.osm, False, "OSM gets its map data from the mapd binary, not from us"),

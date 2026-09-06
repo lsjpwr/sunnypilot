@@ -165,6 +165,19 @@ class TestEmitManifest(TestDeploy):
     self.assertEqual([e.name for e in entries], ["korea_bumps.sqlite"])
     self.assertEqual(entries[0].sha256, sha256_of(bumps))
 
+  def test_a_renamed_build_raises_instead_of_emitting_a_url_nobody_can_fetch(self):
+    """--bumps out/2026q2_bumps.sqlite produces the name the device requires but a URL
+    naming the asset gh actually uploaded, so every device 404s. The operator's error has to
+    fail here, before the release exists, not fleet-wide afterwards."""
+    renamed = str(self.tmp_path / "2026q2_bumps.sqlite")
+    with mock.patch.object(deploy, "MIN_BUMPS", 2):
+      write_db(renamed, SCHEMA_BUMPS,
+               lambda con: insert_bumps(con, [(37.5, 127.0 + i * 1e-4, BUMP_ARCH) for i in range(5)]))
+      with self.assertRaises(ValueError) as caught:
+        emit_manifest("t", links=None, bumps=renamed, repo="lsjpwr/sunnypilot")
+    self.assertIn("2026q2_bumps.sqlite", str(caught.exception))
+    self.assertIn("korea_bumps.sqlite", str(caught.exception))
+
   def test_a_database_below_its_floor_raises_instead_of_emitting(self):
     """The failure deploy.py exists to prevent: uploading the 220 MB link database and
     finding out only on the device that it was short a row. A build that fails verify()

@@ -91,6 +91,12 @@ def emit_manifest(tag: str, links: str | None, bumps: str | None, repo: str) -> 
                                       (bumps, "korea_bumps.sqlite", "bumps", MIN_BUMPS)):
     if path is None or not os.path.exists(path):
       continue
+    # The device installs under `name` and looks for nothing else, but `gh` uploads the
+    # asset under the basename it was handed. A mismatch produces a manifest whose name is
+    # right and whose url 404s, so it has to fail here rather than fleet-wide afterwards.
+    got = os.path.basename(path)
+    if got != name:
+      raise ValueError(f"{path}: the device only installs {name}, so uploading it as {got} 404s every device")
     verify(path, table, min_rows)
     databases.append({
       "name": name,

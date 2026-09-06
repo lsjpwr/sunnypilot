@@ -100,9 +100,10 @@ python -m openpilot.sunnypilot.mapd.korea.deploy \
 
 파일은 `/data/media/0/korea_map/` 에 놓인다.
 
-### 2-5. 재부팅
+### 2-5. 반영
 
-링크 DB는 프로세스 시작 시 한 번만 열리므로 **재부팅이 필요하다.** (카메라 DB만 무중단 교체를 지원한다.)
+**재부팅은 필요 없다.** 세 DB(카메라·링크·방지턱) 모두 `reload_if_changed()`가 mtime 변화를 보고
+다음 틱에 다시 연다.
 
 ---
 
@@ -139,7 +140,7 @@ python -m openpilot.sunnypilot.mapd.korea.build_db \
 python -m openpilot.sunnypilot.mapd.korea.deploy --host comma@<device-ip>
 ```
 
-파일은 `/data/media/0/korea_map/korea_bumps.sqlite`에 놓인다. 링크 DB와 마찬가지로 프로세스 시작 시 한 번만 열리므로 **재부팅이 필요하다.**
+파일은 `/data/media/0/korea_map/korea_bumps.sqlite`에 놓인다. 링크 DB와 마찬가지로 **재부팅 없이 다음 틱에 반영된다.**
 
 방지턱 파일이 없으면 `deploy.py`는 건너뛰고 카메라·링크만 검증·배포한다 — 방지턱 파일 하나가 없다고 나머지 갱신까지 실패하지는 않는다.
 
@@ -148,7 +149,11 @@ python -m openpilot.sunnypilot.mapd.korea.deploy --host comma@<device-ip>
 ### 3-4. 릴리스로 배포하기 (권장)
 
 scp는 디바이스 한 대를 위한 방법이다. 여러 대에 뿌리거나 남에게 나눠줄 거면 릴리스로 올린다.
-디바이스는 `KoreaMapAutoDownload`를 켜두면 Wi-Fi에서 알아서 받아간다.
+디바이스는 `KoreaMapAutoDownload`를 켜두면 정차 중 Wi-Fi에서 알아서 받아간다.
+
+저장소에 커밋되어 있는 `map_manifest.json`은 `databases`가 빈 배열이다 — 릴리스를 올리기 전까지는
+받을 것이 없고, 빈 매니페스트는 디바이스가 해시 계산도 네트워크 요청도 하지 않는다는 뜻이다.
+아래 절차로 실제 릴리스를 올릴 때 덮어쓴다.
 
 **1. 매니페스트를 만든다.** sha256을 손으로 옮기지 않는다 — 도구가 실제 파일에서 뽑는다.
 검증에 실패한 파일 — 스키마 버전이 다르거나 행 수가 기준 미달인 경우 — 은 매니페스트에 오르지
@@ -188,7 +193,8 @@ git push
 로그에 실패가 남는다.
 
 **디바이스에서 무슨 일이 일어나는가.** 정규 업데이트로 매니페스트를 받는다. `KoreaMapAutoDownload`가
-켜져 있고 계량 연결이 아니면, 매니페스트의 sha256과 디스크의 파일을 비교해서 다르면 받는다.
+켜져 있고 **정차 중이며** 계량 연결이 아니면, 매니페스트의 sha256과 디스크의 파일을 비교해서 다르면
+받는다. 220 MB 전송이 주행 중 차량의 연결을 나눠 쓰지 않도록, 시동이 걸려 있으면 받지 않는다.
 받은 파일은 sha256·스키마 버전·행 수를 전부 통과해야 설치된다. 하나라도 어긋나면 받은 파일을
 버리고 기존 파일을 그대로 둔다. 설치된 파일은 재부팅 없이 다음 틱에 반영된다.
 
@@ -197,12 +203,14 @@ git push
 | 로그 | 뜻 |
 |---|---|
 | `KoreaMapAutoDownload is off` | 토글이 꺼져 있다 (기본값) |
-| `no deviceState yet, waiting` | 부팅 직후. 계량 여부를 아직 모른다 |
+| `no deviceState yet, waiting` | 부팅 직후. 계량 여부를 아직 모른다 (30초 뒤 다시 본다) |
+| `onroad, waiting` | 주행 중이다. 정차하면 받는다 |
 | `network is metered, waiting` | 테더링 등. Wi-Fi에 붙으면 받는다 |
 | `needs N bytes free, have M` | `/data/media` 여유 부족 |
 | `sha256 ... != ...` | 받은 파일이 매니페스트와 다르다. 에셋을 다시 올려야 한다 |
 | `expected at least N` | 파일은 멀쩡한데 행이 모자란다. 빌드가 잘못됐다 |
 | `schema ... != ...` | 디바이스 코드가 이 DB보다 오래됐다. 먼저 업데이트해야 한다 |
+| `is version ..., expected 1` | 매니페스트 형식이 디바이스 코드보다 새롭다. 먼저 업데이트해야 한다 |
 
 카메라(`korea_cameras.sqlite`)는 이 경로를 타지 않는다. `camera_refresh.py`가 data.go.kr API로
 주 1회 직접 갱신한다.
