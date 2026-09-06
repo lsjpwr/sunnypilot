@@ -79,6 +79,26 @@ class ChunkedResponse:
     return piece
 
 
+# A v1 manifest exactly as an already-shipped device holds it. Hardcoded rather than read
+# from the repo file or produced by emit_manifest on purpose: this is the compatibility
+# contract, and a rename applied symmetrically to both ends of it would pass every test
+# that builds its own fixture.
+V1_MANIFEST_LITERAL = """{
+  "manifest_version": 1,
+  "databases": [
+    {
+      "name": "korea_links.sqlite",
+      "url": "https://github.com/lsjpwr/sunnypilot/releases/download/korea-map-2026.05/korea_links.sqlite",
+      "sha256": "abababababababababababababababababababababababababababababababab",
+      "bytes": 230686720,
+      "table": "links",
+      "min_rows": 1000000
+    }
+  ]
+}
+"""
+
+
 class MapDownloadTestCase(unittest.TestCase):
   def setUp(self):
     super().setUp()
@@ -94,22 +114,58 @@ class MapDownloadTestCase(unittest.TestCase):
 
 class TestReadManifest(MapDownloadTestCase):
   def test_the_shipped_manifest_parses(self):
-    """The file that ships in the package must be readable by the code that reads it."""
+    """Well-formedness of the committed JSON, not its contents.
+
+    It ships with an empty databases list until a release is published, so this asserts a
+    relationship instead of a fixed list: every entry the file holds must survive
+    read_manifest. A regenerated manifest carrying a field the device does not read fails
+    here, empty or not.
+    """
+    payload = json.loads(pathlib.Path(map_download.MANIFEST_PATH).read_text(encoding="utf-8"))
+    self.assertEqual(payload["manifest_version"], 1)
     entries = map_download.read_manifest()
-    self.assertTrue(entries)
-    names = [e.name for e in entries]
-    self.assertIn("korea_bumps.sqlite", names)
-    self.assertIn("korea_links.sqlite", names)
+    self.assertEqual([e.name for e in entries], [d["name"] for d in payload["databases"]])
 
   def test_cameras_are_not_in_the_manifest(self):
     """camera_refresh.py already rewrites that file from the API. Two writers on one path
     would fight, and the API copy is the fresher of the two."""
     self.assertNotIn("korea_cameras.sqlite", [e.name for e in map_download.read_manifest()])
 
+  def test_a_v1_manifest_literal_is_still_understood(self):
+    """The format an already-shipped device holds.
+
+    Every other test here builds its fixture out of the same names the reader uses, so a
+    rename applied to both ends would pass all of them and still leave a fleet unable to
+    read the next manifest we publish.
+    """
+    path = self.tmp_path / "v1.json"
+    path.write_text(V1_MANIFEST_LITERAL, encoding="utf-8")
+
+    entries = map_download.read_manifest(str(path))
+
+    self.assertEqual(len(entries), 1)
+    self.assertEqual(entries[0], map_download.Entry(
+      name="korea_links.sqlite",
+      url="https://github.com/lsjpwr/sunnypilot/releases/download/korea-map-2026.05/korea_links.sqlite",
+      sha256="ab" * 32, bytes=230686720, table="links", min_rows=1000000))
+
   def test_entries_come_back_smallest_first(self):
-    """On a tight disk or a slow link, take the cheap win before the 220 MB one."""
-    sizes = [e.bytes for e in map_download.read_manifest()]
-    self.assertEqual(sizes, sorted(sizes))
+    """On a tight disk or a slow link, take the cheap win before the 220 MB one.
+
+    The fixture is deliberately in descending order: emit_manifest writes links (230 MB)
+    before bumps (11 MB), so the file order a real regeneration produces is the wrong one
+    and sorted() is the only thing standing between it and the device.
+    """
+    path = self.tmp_path / "descending.json"
+    path.write_text(json.dumps({"manifest_version": 1, "databases": [
+      {"name": "korea_links.sqlite", "url": "u", "sha256": "s", "bytes": 230686720,
+       "table": "links", "min_rows": 1},
+      {"name": "korea_bumps.sqlite", "url": "u", "sha256": "s", "bytes": 11141120,
+       "table": "bumps", "min_rows": 1},
+    ]}), encoding="utf-8")
+
+    self.assertEqual([e.name for e in map_download.read_manifest(str(path))],
+                     ["korea_bumps.sqlite", "korea_links.sqlite"])
 
   def test_a_missing_manifest_is_not_an_error(self):
     self.assertEqual(map_download.read_manifest(str(self.tmp_path / "nope.json")), [])
