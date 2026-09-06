@@ -23,7 +23,8 @@ from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, Bump, Camera, KoreaMapDB, Link
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, Bump, Camera, KoreaMapDB, Link,
+                                                 mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -49,6 +50,7 @@ class KoreaMapData(BaseMapData):
     self.bumps_path = bumps_path
     self.db: KoreaMapDB | None = None
     self.open_failed = False
+    self._failed_mtimes: tuple[float | None, ...] = ()
     self.external = external
     self.link: Link | None = None
     self.camera: Camera | None = None
@@ -58,6 +60,16 @@ class KoreaMapData(BaseMapData):
     self.bump_enabled = False
     self.bump_targets: dict[int, float] = {}
 
+  def _db_mtimes(self) -> tuple[float | None, ...]:
+    """When each database file was last written; None for one that is not there."""
+    return tuple(mtime_or_none(p)
+                 for p in (self.cameras_path, self.links_path, self.bumps_path))
+
+  def _give_up(self) -> None:
+    """Stop retrying, but remember which files we gave up on."""
+    self.open_failed = True
+    self._failed_mtimes = self._db_mtimes()
+
   def open_db(self) -> None:
     """Opened lazily: the process still runs, publishing nothing, until both files land.
 
@@ -65,9 +77,18 @@ class KoreaMapData(BaseMapData):
     keep looking every tick. A file that IS there and will not open (schema mismatch,
     corruption) never fixes itself, so we log once and stop: retrying at 1 Hz would do
     nothing but fill the log until the next restart.
+
+    "Never fixes itself" stopped being true when map_download shipped: it installs a good
+    database over the broken one with os.replace while this process runs. So the giving-up
+    is held only against the files we actually failed on -- once one of them has been
+    written again, the next tick tries the new bytes rather than waiting for a reboot.
     """
-    if self.db is not None or self.open_failed:
+    if self.db is not None:
       return
+    if self.open_failed:
+      if self._db_mtimes() == self._failed_mtimes:
+        return
+      self.open_failed = False
     if not (os.path.exists(self.cameras_path) and os.path.exists(self.links_path)):
       return
     try:
@@ -75,7 +96,7 @@ class KoreaMapData(BaseMapData):
       cloudlog.info("korea_map: opened %s + %s (bumps: %s)", self.cameras_path, self.links_path,
                     "yes" if self.db.bmp is not None else "no")
     except Exception:
-      self.open_failed = True
+      self._give_up()
       cloudlog.exception("korea_map: giving up on %s + %s", self.cameras_path, self.links_path)
 
   def close(self) -> None:
@@ -131,7 +152,7 @@ class KoreaMapData(BaseMapData):
       # the corruption is, it raises on every query from here on, so retrying at 1 Hz would
       # only crash-loop. Drop the database and keep publishing zeros: no speed limit is a
       # safe answer, a dead mapd is a worse one.
-      self.open_failed = True
+      self._give_up()
       self.close()
       cloudlog.exception("korea_map: dropping the database after a query error")
 

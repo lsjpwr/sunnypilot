@@ -103,6 +103,19 @@ class Bump:
   distance_m: float
 
 
+def mtime_or_none(path: str | None) -> float | None:
+  """When `path` was last written, or None for a file that is not there.
+
+  None is distinct from any real mtime, so a file that appears later reads as changed.
+  Never raises: every caller is on a 1 Hz path that must not take the process down over a
+  file that vanished between two stat calls.
+  """
+  try:
+    return os.path.getmtime(path) if path else None
+  except OSError:
+    return None
+
+
 def _unpack_geom(blob: bytes) -> list[tuple[float, float]]:
   count = len(blob) // 8
   flat = struct.unpack(f"<{2 * count}f", blob)
@@ -158,9 +171,9 @@ class KoreaMapDB:
     # against the old inode afterwards would leave reload_if_changed permanently satisfied
     # -- stale reads for the life of the process. Sampling early can only cause one
     # redundant reload.
-    self._cameras_mtime = self._mtime_or_none(cameras_path)
-    self._links_mtime = self._mtime_or_none(links_path)
-    self._bumps_mtime = self._mtime_or_none(bumps_path)
+    self._cameras_mtime = mtime_or_none(cameras_path)
+    self._links_mtime = mtime_or_none(links_path)
+    self._bumps_mtime = mtime_or_none(bumps_path)
     self.cam = self._open(cameras_path)
     self.lnk = self._open(links_path)
     # Optional third file. A device deployed before speed bumps shipped has cameras and
@@ -185,15 +198,6 @@ class KoreaMapDB:
       con.close()
       raise
     return con
-
-  @staticmethod
-  def _mtime_or_none(path: str | None) -> float | None:
-    """None means 'no file yet' -- distinct from any real mtime, so a file that appears
-    later reads as changed."""
-    try:
-      return os.path.getmtime(path) if path else None
-    except OSError:
-      return None
 
   def reload_if_changed(self) -> bool:
     """Reopen any of the three databases that was replaced on disk. True if any was.

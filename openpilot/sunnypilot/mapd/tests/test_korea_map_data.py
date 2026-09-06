@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import json
+import os
 import pathlib
 import sqlite3
 import struct
@@ -12,6 +13,7 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 import openpilot.cereal.messaging as messaging
 from openpilot.common.constants import CV
@@ -42,6 +44,7 @@ def make_data(link=None, camera=None, external=None):
   data.bumps_path = ""
   data.db = None
   data.open_failed = False
+  data._failed_mtimes = ()
   data.external = external
   data.link = link
   data.camera = camera
@@ -157,8 +160,8 @@ class TestOpenDB(unittest.TestCase):
     self.addCleanup(data.db.close)
     self.assertEqual(data.db.current_link(37.5000, 127.0260).max_spd, 60)
 
-  def test_open_db_gives_up_after_a_bad_database(self):
-    """A schema mismatch never fixes itself; retrying at 1 Hz would only flood the log."""
+  def bad_pair(self):
+    """A good camera database and a links file that is not a database at all."""
     cameras = str(self.tmp_path / "korea_cameras.sqlite")
     links = str(self.tmp_path / "korea_links.sqlite")
     write_db(cameras, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.5000, 127.0257, 50, 0)]))
@@ -168,17 +171,46 @@ class TestOpenDB(unittest.TestCase):
     data = make_data()
     data.cameras_path = cameras
     data.links_path = links
+    data.bumps_path = str(self.tmp_path / "korea_bumps.sqlite")
+    return data, links
+
+  def test_open_db_gives_up_after_a_bad_database(self):
+    """A schema mismatch never fixes itself while the file sits there; retrying at 1 Hz
+    would only flood the log."""
+    data, _ = self.bad_pair()
     data.open_db()
     self.assertIsNone(data.db)
     self.assertTrue(data.open_failed)
 
-    # A second call must not even try again. Both paths point at openable files now, so
-    # only the open_failed short-circuit can keep db None -- aiming the tripwire at a
-    # nonexistent path instead would be satisfied by the os.path.exists precheck and would
-    # pass whether or not the short-circuit exists.
-    data.links_path = cameras
+    # A second call must not even try again. Counting the constructor is the tripwire,
+    # because both paths still name the same bytes -- "db is still None" would be just as
+    # true with the short-circuit deleted.
+    with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.KoreaMapDB") as ctor:
+      data.open_db()
+    self.assertEqual(ctor.call_count, 0, "open_db retried after giving up")
+    self.assertIsNone(data.db)
+
+  def test_a_replaced_database_clears_the_giving_up(self):
+    """map_download installs a good database over a broken one with os.replace while this
+    process runs. Sticky open_failed meant the device downloaded the fix and then ignored it
+    until a restart -- which is the opposite of what docs/korea_map_update.md promises."""
+    data, links = self.bad_pair()
     data.open_db()
-    self.assertIsNone(data.db, "open_db retried after giving up")
+    self.assertTrue(data.open_failed)
+
+    write_db(links, SCHEMA_LINKS,
+             lambda con: insert_links(con, [(60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])]))
+    # explicit rather than trusting the clock: a coarse filesystem timestamp would leave the
+    # replacement looking untouched and make this pass for the wrong reason
+    moved = os.path.getmtime(links) + 10
+    os.utime(links, (moved, moved))
+
+    data.open_db()
+
+    self.assertIsNotNone(data.db, "a replaced database still needs a reboot to take effect")
+    self.addCleanup(data.db.close)
+    self.assertFalse(data.open_failed)
+    self.assertEqual(data.db.current_link(37.5000, 127.0260).max_spd, 60)
 
 
 class StubDB:
