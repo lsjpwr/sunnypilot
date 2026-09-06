@@ -107,8 +107,13 @@ def installed_sha256(path: str) -> str | None:
   return digest.hexdigest()
 
 
+def target_path(map_dir: str, name: str) -> str:
+  """Where a manifest entry installs to."""
+  return os.path.join(map_dir, name)
+
+
 def needs_download(entry: Entry, map_dir: str) -> bool:
-  return installed_sha256(os.path.join(map_dir, entry.name)) != entry.sha256
+  return installed_sha256(target_path(map_dir, entry.name)) != entry.sha256
 
 
 def enough_disk(entry: Entry, map_dir: str) -> bool:
@@ -132,7 +137,7 @@ def download(entry: Entry, map_dir: str, opener=urllib.request.urlopen) -> bool:
   # ponytail: no range resume, so a 220 MB transfer that drops restarts from zero. The
   # retry interval covers it; add Range if a retry loop ever shows up in the logs.
   """
-  target = os.path.join(map_dir, entry.name)
+  target = target_path(map_dir, entry.name)
   tmp = f"{target}.tmp"
   try:
     digest = hashlib.sha256()
@@ -230,6 +235,12 @@ class MapDownloader:
           # capnp default, not an answer. On the first tick after boot that would start a
           # 220 MB download over a metered link.
           LOG.info("map download: no deviceState yet, waiting")
+        elif sm['deviceState'].started:
+          # Every settings surface gates *changing* this toggle on being offroad; nothing
+          # gated the download itself, so a toggle already on pulled 220 MB mid-drive. The
+          # metered check is no substitute: on cellular networkMetered is just the user's
+          # GsmMetered tap, and over Wi-Fi it is False with nothing misconfigured at all.
+          LOG.info("map download: onroad, waiting")
         elif sm['deviceState'].networkMetered:
           LOG.info("map download: network is metered, waiting")
         elif self._run_once():

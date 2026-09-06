@@ -294,13 +294,14 @@ class ScriptedStop(threading.Event):
 
 
 class TestDownloaderLoop(MapDownloadTestCase):
-  """_loop holds four decisions -- the opt-in gate, the deviceState guard, the metered
-  guard, and the catch-all -- plus the retry backoff, none of which TestRunOnce exercises
-  since it calls _run_once directly. cereal and Params are faked through sys.modules the
-  same way test_camera_refresh.TestRefresherLoop fakes them for CameraRefresher._loop."""
+  """_loop holds five decisions -- the opt-in gate, the deviceState guard, the onroad guard,
+  the metered guard, and the catch-all -- plus the retry backoff, none of which TestRunOnce
+  exercises since it calls _run_once directly. cereal and Params are faked through
+  sys.modules the same way test_camera_refresh.TestRefresherLoop fakes them for
+  CameraRefresher._loop."""
 
   def drive_loop(self, *, iterations=1, run_once_results=(True,), run_once=None, recv_frame=1,
-                 metered=False, enabled=True):
+                 metered=False, started=False, enabled=True):
     class FakeSubMaster:
       def __init__(self):
         self.recv_frame = {'deviceState': recv_frame}
@@ -309,7 +310,7 @@ class TestDownloaderLoop(MapDownloadTestCase):
         pass
 
       def __getitem__(self, service):
-        return types.SimpleNamespace(networkMetered=metered)
+        return types.SimpleNamespace(networkMetered=metered, started=started)
 
     messaging = types.ModuleType("cereal.messaging")
     messaging.SubMaster = lambda services: FakeSubMaster()
@@ -350,6 +351,17 @@ class TestDownloaderLoop(MapDownloadTestCase):
     default, not an answer -- which would otherwise start a download over a metered link
     on the first tick after boot."""
     downloader, calls = self.drive_loop(recv_frame=0)
+    self.assertEqual(calls, [])
+
+  def test_onroad_does_not_download(self):
+    """Every settings surface gates *changing* this toggle on being offroad; nothing gated
+    the download itself, so a toggle already on pulled 220 MB while the car was driving.
+
+    networkMetered is no substitute: hardware.py returns Params().get_bool("GsmMetered") for
+    every cellular type, which is a one-tap user setting, and over Wi-Fi it is False with
+    nothing misconfigured at all.
+    """
+    downloader, calls = self.drive_loop(started=True)
     self.assertEqual(calls, [])
 
   def test_a_metered_network_does_not_download(self):
