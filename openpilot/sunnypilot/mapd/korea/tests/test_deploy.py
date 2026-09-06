@@ -4,15 +4,19 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import json
+import os
 import pathlib
 import sqlite3
 import tempfile
 import unittest
 
+from openpilot.sunnypilot.mapd.korea import map_download
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS,
                                                       insert_bumps, insert_cameras, write_db)
 from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH
-from openpilot.sunnypilot.mapd.korea.deploy import MIN_BUMPS, build_targets, sha256_of, verify
+from openpilot.sunnypilot.mapd.korea.deploy import (MIN_BUMPS, MIN_LINKS, build_targets,
+                                                    emit_manifest, sha256_of, verify)
 
 
 class TestDeploy(unittest.TestCase):
@@ -87,3 +91,55 @@ class TestDeploy(unittest.TestCase):
 
   def test_verify_accepts_a_bump_database_at_min_bumps(self):
     self.assertEqual(verify(self.good_bumps_db(MIN_BUMPS), "bumps", MIN_BUMPS), MIN_BUMPS)
+
+
+class TestEmitManifest(TestDeploy):
+  """The manifest is what the device reads to decide it needs a new file. Hand-writing it
+  would put the sha256 of a 220 MB file in a human's hands."""
+
+  def test_it_emits_an_entry_per_present_file(self):
+    links = self.good_db(5)
+    bumps = self.good_bumps_db(5)
+    payload = json.loads(emit_manifest("korea-map-2026.05", links=links, bumps=bumps,
+                                       repo="lsjpwr/sunnypilot"))
+    names = [d["name"] for d in payload["databases"]]
+    self.assertEqual(sorted(names), ["korea_bumps.sqlite", "korea_links.sqlite"])
+
+  def test_the_sha_matches_the_file(self):
+    bumps = self.good_bumps_db(5)
+    payload = json.loads(emit_manifest("t", links=None, bumps=bumps, repo="lsjpwr/sunnypilot"))
+    entry = payload["databases"][0]
+    self.assertEqual(entry["sha256"], sha256_of(bumps))
+    self.assertEqual(entry["bytes"], os.path.getsize(bumps))
+
+  def test_the_url_names_the_tag_and_the_repo(self):
+    bumps = self.good_bumps_db(5)
+    payload = json.loads(emit_manifest("korea-map-2026.05", links=None, bumps=bumps,
+                                       repo="lsjpwr/sunnypilot"))
+    self.assertEqual(payload["databases"][0]["url"],
+                     "https://github.com/lsjpwr/sunnypilot/releases/download/korea-map-2026.05/korea_bumps.sqlite")
+
+  def test_a_missing_file_is_left_out(self):
+    payload = json.loads(emit_manifest("t", links=None, bumps=None, repo="lsjpwr/sunnypilot"))
+    self.assertEqual(payload["databases"], [])
+
+  def test_the_row_floors_match_the_verify_constants(self):
+    """A manifest whose min_rows disagreed with deploy's own floor would let the device
+    install a file this tool would have rejected."""
+    links = self.good_db(5)
+    bumps = self.good_bumps_db(5)
+    payload = json.loads(emit_manifest("t", links=links, bumps=bumps, repo="lsjpwr/sunnypilot"))
+    floors = {d["name"]: d["min_rows"] for d in payload["databases"]}
+    self.assertEqual(floors["korea_links.sqlite"], MIN_LINKS)
+    self.assertEqual(floors["korea_bumps.sqlite"], MIN_BUMPS)
+
+  def test_the_emitted_manifest_is_readable_by_the_device_code(self):
+    """The two ends of this contract live in different files. This is the test that fails
+    when one of them drifts."""
+    bumps = self.good_bumps_db(5)
+    path = self.tmp_path / "map_manifest.json"
+    path.write_text(emit_manifest("t", links=None, bumps=bumps, repo="lsjpwr/sunnypilot"),
+                    encoding="utf-8")
+    entries = map_download.read_manifest(str(path))
+    self.assertEqual([e.name for e in entries], ["korea_bumps.sqlite"])
+    self.assertEqual(entries[0].sha256, sha256_of(bumps))

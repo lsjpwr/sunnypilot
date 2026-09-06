@@ -5,8 +5,8 @@
 | 파일 | 크기 | 출처 | 갱신 |
 |---|---|---|---|
 | `korea_cameras.sqlite` | ~3 MB | data.go.kr 무인교통단속카메라 API | **디바이스가 자동으로** (주 1회) |
-| `korea_links.sqlite` | ~220 MB | ITS 전국표준노드링크 | **수동** (분기마다, 아래 절차) |
-| `korea_bumps.sqlite` | ~11 MB | data.go.kr 전국과속방지턱표준데이터 | **수동, 선택 사항** (필요할 때, 아래 절차) |
+| `korea_links.sqlite` | ~220 MB | ITS 전국표준노드링크 | **수동 빌드 + 릴리스 발행, 디바이스가 자동 수신** (분기마다, 아래 절차) |
+| `korea_bumps.sqlite` | ~11 MB | data.go.kr 전국과속방지턱표준데이터 | **수동 빌드 + 릴리스 발행, 디바이스가 자동 수신, 선택 사항** (필요할 때, 아래 절차) |
 
 카메라가 자주 바뀌고 크기가 작아서 자동 갱신 대상이고, 링크는 크고 거의 안 바뀌어서 수동이다. 방지턱은 링크보다도 더 안 바뀌는 데다 있어도 그만 없어도 그만인 선택 사항이라, 파일 하나를 통째로 더 나누게 됐다.
 
@@ -145,7 +145,66 @@ python -m openpilot.sunnypilot.mapd.korea.deploy --host comma@<device-ip>
 
 **갱신 주기**: 카메라와 달리 자동 갱신 경로가 없다. 방지턱은 거의 변하지 않으므로 필요할 때 수동으로 다시 빌드한다.
 
-### 3-4. 설정
+### 3-4. 릴리스로 배포하기 (권장)
+
+scp는 디바이스 한 대를 위한 방법이다. 여러 대에 뿌리거나 남에게 나눠줄 거면 릴리스로 올린다.
+디바이스는 `KoreaMapAutoDownload`를 켜두면 Wi-Fi에서 알아서 받아간다.
+
+**1. 매니페스트를 만든다.** sha256을 손으로 옮기지 않는다 — 도구가 실제 파일에서 뽑는다.
+
+```bash
+python -m openpilot.sunnypilot.mapd.korea.deploy \
+  --links out/korea_links.sqlite \
+  --bumps out/korea_bumps.sqlite \
+  --emit-manifest korea-map-2026.05 \
+  > openpilot/sunnypilot/mapd/korea/map_manifest.json
+```
+
+태그 이름(`korea-map-2026.05`)은 데이터 기준일로 짓는다. 코드 버전과 무관하다.
+
+**2. 릴리스를 만들고 에셋을 올린다.**
+
+```bash
+gh release create korea-map-2026.05 \
+  --repo lsjpwr/sunnypilot \
+  --title "Korea map data 2026.05" \
+  --notes "ITS 노드링크 2026-05, 전국과속방지턱표준데이터 2026-05-15" \
+  out/korea_links.sqlite out/korea_bumps.sqlite
+```
+
+**3. 매니페스트를 커밋한다.**
+
+```bash
+git add openpilot/sunnypilot/mapd/korea/map_manifest.json
+git commit -m "chore: publish korea map data 2026.05"
+git push
+```
+
+순서가 중요하다. 매니페스트를 에셋보다 먼저 푸시하면, 그 사이에 업데이트를 받은 디바이스가
+존재하지 않는 URL을 때리고 실패한다. 치명적이지는 않다 — 다음 재시도에서 성공한다 — 하지만
+로그에 실패가 남는다.
+
+**디바이스에서 무슨 일이 일어나는가.** 정규 업데이트로 매니페스트를 받는다. `KoreaMapAutoDownload`가
+켜져 있고 계량 연결이 아니면, 매니페스트의 sha256과 디스크의 파일을 비교해서 다르면 받는다.
+받은 파일은 sha256·스키마 버전·행 수를 전부 통과해야 설치된다. 하나라도 어긋나면 받은 파일을
+버리고 기존 파일을 그대로 둔다. 설치된 파일은 재부팅 없이 다음 틱에 반영된다.
+
+**받지 않는 경우와 그 이유가 로그에 남는다:**
+
+| 로그 | 뜻 |
+|---|---|
+| `KoreaMapAutoDownload is off` | 토글이 꺼져 있다 (기본값) |
+| `no deviceState yet, waiting` | 부팅 직후. 계량 여부를 아직 모른다 |
+| `network is metered, waiting` | 테더링 등. Wi-Fi에 붙으면 받는다 |
+| `needs N bytes free, have M` | `/data/media` 여유 부족 |
+| `sha256 ... != ...` | 받은 파일이 매니페스트와 다르다. 에셋을 다시 올려야 한다 |
+| `expected at least N` | 파일은 멀쩡한데 행이 모자란다. 빌드가 잘못됐다 |
+| `schema ... != ...` | 디바이스 코드가 이 DB보다 오래됐다. 먼저 업데이트해야 한다 |
+
+카메라(`korea_cameras.sqlite`)는 이 경로를 타지 않는다. `camera_refresh.py`가 data.go.kr API로
+주 1회 직접 갱신한다.
+
+### 3-5. 설정
 
 크루즈 → 속도 제한 → **Speed Bump Slowdown** (원격 sunnylink에도 같은 항목이 있다). 목표 속도는 원호형 기본 25 km/h, 사다리꼴형 기본 35 km/h. 하한 20 km/h는 `SmartCruiseControl.MIN_V` 때문이다.
 

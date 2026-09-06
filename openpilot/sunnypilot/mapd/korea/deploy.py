@@ -14,6 +14,7 @@ is uploading 220 MB and finding out on the device that it will not open.
 """
 import argparse
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -72,13 +73,49 @@ def build_targets(cameras: str, links: str, bumps: str) -> list[tuple[str, str, 
   return targets
 
 
+RELEASE_URL = "https://github.com/{repo}/releases/download/{tag}/{name}"
+
+
+def emit_manifest(tag: str, links: str | None, bumps: str | None, repo: str) -> str:
+  """The manifest JSON for a release, as a string.
+
+  Generated rather than hand-written: every field but the tag is derived from the file that
+  will actually be uploaded, so the sha256 in the manifest cannot disagree with the asset.
+  A file that is not present is left out -- publishing only the bump database is a normal
+  thing to want.
+  """
+  databases = []
+  for path, name, table, min_rows in ((links, "korea_links.sqlite", "links", MIN_LINKS),
+                                      (bumps, "korea_bumps.sqlite", "bumps", MIN_BUMPS)):
+    if path is None or not os.path.exists(path):
+      continue
+    databases.append({
+      "name": name,
+      "url": RELEASE_URL.format(repo=repo, tag=tag, name=name),
+      "sha256": sha256_of(path),
+      "bytes": os.path.getsize(path),
+      "table": table,
+      "min_rows": min_rows,
+    })
+  return json.dumps({"manifest_version": 1, "databases": databases}, indent=2) + "\n"
+
+
 def main() -> None:
   parser = argparse.ArgumentParser(description="Verify and deploy the Korean map databases.")
   parser.add_argument("--cameras", default="korea_cameras.sqlite")
   parser.add_argument("--links", default="korea_links.sqlite")
   parser.add_argument("--bumps", default="korea_bumps.sqlite")
   parser.add_argument("--host", help="ssh target, e.g. comma@192.168.1.50. Omit to verify only.")
+  parser.add_argument("--emit-manifest", metavar="TAG",
+                      help="print the manifest json for a release tag instead of deploying")
+  parser.add_argument("--repo", default="lsjpwr/sunnypilot",
+                      help="github repo that hosts the release assets")
   args = parser.parse_args()
+
+  if args.emit_manifest:
+    print(emit_manifest(args.emit_manifest, links=args.links, bumps=args.bumps, repo=args.repo),
+          end="")
+    return
 
   targets = build_targets(args.cameras, args.links, args.bumps)
   for path, table, minimum in targets:
