@@ -141,8 +141,16 @@ def download(entry: Entry, map_dir: str, opener=urllib.request.urlopen) -> bool:
   tmp = f"{target}.tmp"
   try:
     digest = hashlib.sha256()
+    written = 0
     with opener(entry.url, timeout=HTTP_TIMEOUT_S) as response, open(tmp, "wb") as out:
       while chunk := response.read(CHUNK):
+        written += len(chunk)
+        if written > entry.bytes:
+          # /data/media holds Paths.log_root() too, and loggerd's deleter answers a full
+          # partition by deleting the user's oldest routes. An asset uploaded at the wrong
+          # size would evict recorded drives to make room for bytes the sha check is about
+          # to throw away. entry.bytes is known, so refuse before the disk pays for it.
+          raise ValueError(f"{entry.name}: stream ran past the manifest's {entry.bytes} bytes")
         digest.update(chunk)
         out.write(chunk)
 

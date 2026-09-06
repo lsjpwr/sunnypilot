@@ -49,6 +49,36 @@ def opener_for(path):
   return opener
 
 
+class ChunkedResponse:
+  """A urlopen response that hands `data` over in `parts` pieces, calling `hook` first.
+
+  The hook is where a test puts whatever has to happen part-way through a transfer -- set
+  the stop event, or let a second downloader run start to finish against the same map_dir.
+  `served` is what the transfer actually pulled off the wire, which is how a test can see
+  that download() stopped reading rather than draining the stream and rejecting it after.
+  """
+
+  def __init__(self, data, parts=2, hook=None):
+    step = max(1, -(-len(data) // parts))
+    self.step = step
+    self._pieces = iter([data[i:i + step] for i in range(0, len(data), step)])
+    self._hook = hook
+    self.served = 0
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, *exc):
+    return False
+
+  def read(self, size=None):
+    if self._hook is not None:
+      self._hook()
+    piece = next(self._pieces, b"")
+    self.served += len(piece)
+    return piece
+
+
 class MapDownloadTestCase(unittest.TestCase):
   def setUp(self):
     super().setUp()
@@ -205,6 +235,27 @@ class TestDownload(MapDownloadTestCase):
       raise RuntimeError("something nobody predicted")
 
     self.assertFalse(map_download.download(entry(sha="0" * 64), self.map_dir, opener=boom))
+
+  def test_a_stream_longer_than_the_manifest_says_is_cut_off(self):
+    """/data/media is Paths.log_root()'s partition, and loggerd's deleter answers a full one
+    by deleting the user's oldest routes. An asset uploaded at the wrong size would evict
+    recorded drives to make room for bytes the sha check then throws away -- so the read has
+    to stop at entry.bytes, not merely fail afterwards.
+
+    The assertion is on what was pulled off the wire, not on the return value: an oversized
+    stream fails the sha check either way, which is exactly why the return value cannot see
+    this defect.
+    """
+    data = pathlib.Path(self.source).read_bytes()
+    response = ChunkedResponse(data * 8, parts=8)
+    e = entry(sha=sha256_of(self.source), size=len(data), min_rows=5)
+
+    self.assertFalse(map_download.download(e, self.map_dir, opener=lambda url, timeout=None: response))
+
+    self.assertLessEqual(response.served, len(data) + response.step,
+                         "kept reading past the size the manifest declared")
+    self.assertFalse(os.path.exists(self.target))
+    self.assertEqual([n for n in os.listdir(self.map_dir) if n.endswith(".tmp")], [])
 
 
 class TestRunOnce(MapDownloadTestCase):
