@@ -122,7 +122,7 @@ class TestReadManifest(MapDownloadTestCase):
     here, empty or not.
     """
     payload = json.loads(pathlib.Path(map_download.MANIFEST_PATH).read_text(encoding="utf-8"))
-    self.assertEqual(payload["manifest_version"], 1)
+    self.assertEqual(payload["manifest_version"], map_download.MANIFEST_VERSION)
     entries = map_download.read_manifest()
     self.assertEqual([e.name for e in entries], [d["name"] for d in payload["databases"]])
 
@@ -186,11 +186,25 @@ class TestReadManifest(MapDownloadTestCase):
 
   def test_a_non_list_databases_value_is_not_an_error(self):
     """"databases" present but not a list must not escape via a TypeError when the code
-    iterates it."""
+    iterates it. Carries a valid manifest_version so the version guard cannot be what makes
+    this pass."""
     path = self.tmp_path / "wrong_databases.json"
     for databases in ("null", "42", "true", '"x"', '{"a": 1}'):
       with self.subTest(databases=databases):
-        path.write_text(f'{{"databases": {databases}}}', encoding="utf-8")
+        path.write_text(f'{{"manifest_version": 1, "databases": {databases}}}', encoding="utf-8")
+        self.assertEqual(map_download.read_manifest(str(path)), [])
+
+  def test_a_manifest_version_this_code_does_not_know_is_ignored(self):
+    """A newer producer's entries do not have to mean what this reader assumes. Unchecked,
+    an unknown version degrades into "every entry dropped" or, worse, a sha that can never
+    match the hosted asset and is retried at the backoff cap forever."""
+    path = self.tmp_path / "future.json"
+    good = {"name": "korea_bumps.sqlite", "url": "u", "sha256": "s", "bytes": 1,
+            "table": "bumps", "min_rows": 1}
+    for version in (2, "1", None):
+      with self.subTest(version=version):
+        path.write_text(json.dumps({"manifest_version": version, "databases": [good]}),
+                        encoding="utf-8")
         self.assertEqual(map_download.read_manifest(str(path)), [])
 
   def test_an_entry_missing_a_field_is_dropped_not_fatal(self):
@@ -312,6 +326,18 @@ class TestDownload(MapDownloadTestCase):
                          "kept reading past the size the manifest declared")
     self.assertFalse(os.path.exists(self.target))
     self.assertEqual([n for n in os.listdir(self.map_dir) if n.endswith(".tmp")], [])
+
+  def test_a_traversing_name_cannot_write_outside_the_map_dir(self):
+    """The manifest is repo-trusted, so this is depth rather than a live hole -- but
+    os.path.join walks straight out of map_dir on a name like "../korea_bumps.sqlite",
+    and basename() costs nothing."""
+    e = entry(name="../korea_bumps.sqlite", sha=sha256_of(self.source),
+              size=os.path.getsize(self.source), min_rows=5)
+
+    self.assertTrue(map_download.download(e, self.map_dir, opener=opener_for(self.source)))
+
+    self.assertFalse(os.path.exists(self.tmp_path / "korea_bumps.sqlite"))
+    self.assertTrue(os.path.exists(self.target))
 
   def test_a_stop_part_way_through_abandons_the_transfer(self):
     """stop() sets the event and joins for two seconds; a multi-minute transfer outlives
@@ -439,6 +465,18 @@ class TestRunOnce(MapDownloadTestCase):
 
     self.assertTrue(os.path.exists(os.path.join(self.map_dir, "korea_bumps.sqlite")))
 
+  def test_a_scratch_file_from_an_earlier_attempt_is_reclaimed(self):
+    """A .tmp orphaned by a power loss is never cleaned up and is never counted as
+    reclaimable, so on a tight partition enough_disk refuses forever -- over space held by
+    the previous attempt at the very file it is refusing to fetch."""
+    stale = os.path.join(self.map_dir, "korea_bumps.sqlite.28471.tmp")
+    pathlib.Path(stale).write_bytes(b"half a database")
+
+    self.downloader._run_once(self.write_manifest(), opener=opener_for(self.source))
+
+    self.assertFalse(os.path.exists(stale), "a scratch file from an earlier attempt survived")
+    self.assertTrue(os.path.exists(os.path.join(self.map_dir, "korea_bumps.sqlite")))
+
 
 class ScriptedStop(threading.Event):
   """Lets _loop run for an exact number of iterations, recording every wait(timeout) call so
@@ -479,7 +517,11 @@ class TestDownloaderLoop(MapDownloadTestCase):
     messaging = types.ModuleType("cereal.messaging")
     messaging.SubMaster = lambda services: FakeSubMaster()
     params_mod = types.ModuleType("openpilot.common.params")
-    params_mod.Params = lambda: types.SimpleNamespace(get_bool=lambda key: enabled)
+    # Keyed on the name, not just on the value: a fake that answers every key the same way
+    # cannot tell a downloader reading the wrong param from one reading the right one, and
+    # nothing else on this branch ties this read to the string KoreaMapAutoDownload.
+    params_mod.Params = lambda: types.SimpleNamespace(
+      get_bool=lambda key: enabled if key == "KoreaMapAutoDownload" else False)
 
     self.enterContext(mock.patch.dict(sys.modules, {
       "cereal": types.ModuleType("cereal"),
@@ -513,9 +555,16 @@ class TestDownloaderLoop(MapDownloadTestCase):
   def test_no_deviceState_yet_does_not_download(self):
     """A SubMaster that has received nothing reports networkMetered False -- the capnp
     default, not an answer -- which would otherwise start a download over a metered link
-    on the first tick after boot."""
+    on the first tick after boot.
+
+    sm.update(0) is non-blocking on a socket opened microseconds earlier, so this branch is
+    taken after every single boot. Parking the retry interval on it would make a user who
+    just enabled the toggle wait an hour for a startup race to clear.
+    """
     downloader, calls = self.drive_loop(recv_frame=0)
     self.assertEqual(calls, [])
+    self.assertEqual(downloader._stop.waits, [map_download.STARTUP_WAIT_S])
+    self.assertLess(map_download.STARTUP_WAIT_S, map_download.RETRY_INTERVAL_S)
 
   def test_onroad_does_not_download(self):
     """Every settings surface gates *changing* this toggle on being offroad; nothing gated

@@ -21,6 +21,7 @@ picks the new file up on its next tick. Nothing here needs a lock.
 
 stdlib only, on purpose -- this module runs on the device, where nothing else is installed.
 """
+import glob
 import hashlib
 import json
 import logging
@@ -34,12 +35,18 @@ from dataclasses import dataclass
 from openpilot.sunnypilot.mapd.korea.db import verify
 
 MANIFEST_PATH = os.path.join(os.path.dirname(__file__), "map_manifest.json")
+MANIFEST_VERSION = 1
 
 HTTP_TIMEOUT_S = 30.       # per socket operation, not for the whole transfer
 CHUNK = 1 << 20
 
 CHECK_INTERVAL_S = 7 * 24 * 3600.   # ITS republishes links quarterly; bumps move less
 RETRY_INTERVAL_S = 3600.
+# sm.update(0) is non-blocking on a socket opened microseconds earlier, so the first
+# iteration after every boot reliably has no deviceState yet. That is a startup race, not a
+# failure, and parking an hour on it makes a user who just enabled the toggle wait an hour
+# for nothing.
+STARTUP_WAIT_S = 30.
 
 # The .tmp sits beside the target, so the peak is the old file plus the new one. The extra
 # tenth is headroom for whatever else writes to /data/media while this runs.
@@ -75,9 +82,22 @@ def read_manifest(path: str = MANIFEST_PATH) -> list[Entry]:
   # Syntactically valid JSON can still be the wrong shape (a bare list, a number, a string
   # of digits...) -- that is not an OSError or a ValueError, so it must be ruled out here
   # rather than left to crash payload.get() or the loop below.
-  databases = payload.get("databases", []) if isinstance(payload, dict) else None
-  if not isinstance(databases, list):
+  if not isinstance(payload, dict):
     LOG.warning("map download: manifest at %s is not the expected shape", path)
+    return []
+
+  # An unrecognised version is written by a newer producer than this device, so its entries
+  # cannot be trusted to mean what they say. Left unchecked it degrades into "every entry
+  # dropped" or, worse, "a sha that can never match, retried until the cap forever".
+  version = payload.get("manifest_version")
+  if version != MANIFEST_VERSION:
+    LOG.warning("map download: manifest at %s is version %r, expected %d",
+                path, version, MANIFEST_VERSION)
+    return []
+
+  databases = payload.get("databases", [])
+  if not isinstance(databases, list):
+    LOG.warning("map download: manifest at %s has a non-list databases", path)
     return []
 
   entries = []
@@ -109,8 +129,28 @@ def installed_sha256(path: str) -> str | None:
 
 
 def target_path(map_dir: str, name: str) -> str:
-  """Where a manifest entry installs to."""
-  return os.path.join(map_dir, name)
+  """Where a manifest entry installs to.
+
+  basename() because the manifest is repo-trusted but sanitising is free, and a name like
+  "../../params/d/..." reaching os.path.join is not.
+  """
+  return os.path.join(map_dir, os.path.basename(name))
+
+
+def clear_scratch(target: str) -> None:
+  """Drop scratch files left by earlier attempts at `target`, whichever thread wrote them.
+
+  A .tmp orphaned by a power loss is never reclaimed otherwise and is never counted as
+  reclaimable, so on a tight partition enough_disk refuses forever over space held by the
+  previous attempt at the very file we are fetching. Unlinking a live writer's scratch file
+  is survivable: it keeps its fd, and its os.replace then fails into download's except,
+  which is the same outcome that writer was already heading for.
+  """
+  for stale in glob.glob(glob.escape(target) + ".*.tmp"):
+    try:
+      os.remove(stale)
+    except OSError:
+      LOG.warning("map download: could not remove %s", stale, exc_info=True)
 
 
 def needs_download(entry: Entry, map_dir: str) -> bool:
@@ -230,6 +270,9 @@ class MapDownloader:
         return False
       if not needs_download(entry, self.map_dir):
         continue
+      # Before the disk check, not after: the space an abandoned attempt at this very file
+      # is holding is exactly what would make enough_disk refuse forever.
+      clear_scratch(target_path(self.map_dir, entry.name))
       if not enough_disk(entry, self.map_dir):
         complete = False
         continue
@@ -260,6 +303,7 @@ class MapDownloader:
           # capnp default, not an answer. On the first tick after boot that would start a
           # 220 MB download over a metered link.
           LOG.info("map download: no deviceState yet, waiting")
+          wait = STARTUP_WAIT_S
         elif sm['deviceState'].started:
           # Every settings surface gates *changing* this toggle on being offroad; nothing
           # gated the download itself, so a toggle already on pulled 220 MB mid-drive. The
