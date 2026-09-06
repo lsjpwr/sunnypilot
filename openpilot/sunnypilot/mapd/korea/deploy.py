@@ -82,13 +82,16 @@ def emit_manifest(tag: str, links: str | None, bumps: str | None, repo: str) -> 
   Generated rather than hand-written: every field but the tag is derived from the file that
   will actually be uploaded, so the sha256 in the manifest cannot disagree with the asset.
   A file that is not present is left out -- publishing only the bump database is a normal
-  thing to want.
+  thing to want. A file that is present is only ever entered into the manifest after it
+  passes the same verify() check the device will run -- a manifest is worthless as a
+  pre-flight check if it can describe a build the device was always going to reject.
   """
   databases = []
   for path, name, table, min_rows in ((links, "korea_links.sqlite", "links", MIN_LINKS),
                                       (bumps, "korea_bumps.sqlite", "bumps", MIN_BUMPS)):
     if path is None or not os.path.exists(path):
       continue
+    verify(path, table, min_rows)
     databases.append({
       "name": name,
       "url": RELEASE_URL.format(repo=repo, tag=tag, name=name),
