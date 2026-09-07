@@ -40,7 +40,7 @@ mici 기기의 로컬 UI는 다음 화면만 가진다: developer, device, fireh
 이 설계는 다음 사실 위에 서 있다. 구현 중 이와 어긋나는 것을 발견하면 설계를 다시 봐야 한다.
 
 1. **앱 버전 협상이 없다.** `getParamsMetadata()`는 인자를 받지 않는다 (`sunnylinkd.py:204`). 기기가 스키마 전체를 무조건 전송하므로, 앱 버전에 따라 다른 내용을 내보낼 방법이 없다.
-2. **위젯 enum이 세 곳에 있다.** `settings_ui_src/_schemas/page.schema.json:69`(입력), `settings_ui.schema.json:181-184`(출력), `tools/validate_settings_ui.py:24`의 `VALID_WIDGETS`. 하나라도 빠지면 컴파일 또는 검증이 실패한다.
+2. **위젯 enum이 세 곳에 있다.** `settings_ui_src/_schemas/page.schema.json:69`(입력), `settings_ui.schema.json:181-184`(출력), `tools/validate_settings_ui.py:24`의 `VALID_WIDGETS`. 강제력은 서로 다르다 — `page.schema.json`은 어느 스크립트도 읽지 않는 **에디터 힌트 전용**이고(`sunnylink/docs/README.md:25`의 `yaml-language-server` 주석이 유일한 소비자), 실제로 실패를 만드는 것은 `settings_ui.schema.json`(테스트 `test_validator_accepts_real_json`이 `additionalProperties: false`로 검사)과 `VALID_WIDGETS`(`check_structural`)다. 그래도 세 곳을 함께 고친다 — 하나만 빠지면 편집기가 유효한 YAML에 오류 표시를 낸다.
 3. **컴파일러는 미지 아이템 필드를 통과시킨다.** `_canon_item`(`compile_settings_ui.py:148-153`)이 `_ITEM_KEY_ORDER`에 없는 키를 뒤에 그대로 붙인다. 따라서 `secret`/`max_length`를 위해 컴파일러를 고칠 필요는 없다.
 4. **페이지 레벨 `visibility`가 스키마에 없다.** 페이지가 가진 속성은 `id, label, icon, order, remote_configurable, description, kind, sections, items, sub_panels`뿐이다. 조건부 노출은 섹션 또는 아이템 레벨에서만 가능하다.
 5. **페이지는 자동 발견된다.** `_load_pages`(`compile_settings_ui.py`)가 `pages/` 아래 `_`로 시작하지 않는 모든 `.yaml`/`.yml`을 읽는다. 파일을 두면 등록된다.
@@ -72,6 +72,10 @@ mici 기기의 로컬 UI는 다음 화면만 가진다: developer, device, fireh
 `max_length: 255`는 기기 쪽 입력 다이얼로그와 맞춘 값이다 — `InputDialogSP`가 `Keyboard(max_text_size=255)`를 쓴다 (`system/ui/sunnypilot/widgets/input_dialog.py:25`).
 
 컴파일러의 `_ITEM_KEY_ORDER`(`compile_settings_ui.py:107-125`)에 두 필드를 넣어 출력 키 순서를 고정한다. `widget` 다음, `needs_onroad_cycle` 앞에 `secret`과 `max_length`를 둔다. 기능이 아니라 출력 안정성을 위한 조치다.
+
+역방향 도구 `extract_settings_ui.py`의 `_ITEM_ORDER`에도 같은 두 항목을 같은 자리에 넣는다. 두 목록은 같은 계약을 두 곳에 적어둔 것이고(`_ITEM_ORDER`의 주석: "mirrors settings_ui.json conventions"), 둘 다 미지 필드를 뒤에 그대로 붙이므로 기능 차이는 없다 — 갈라진 채로 두지 않기 위한 조치다.
+
+`sunnylink/docs/README.md`의 위젯 표(113-121행)와 아이템 필드 표(123-140행)에 `text`, `secret`, `max_length`를 더한다. 이 표들이 YAML 작성자가 읽는 유일한 레퍼런스다.
 
 ### 3. 신규 페이지 `korea.yaml`
 
@@ -116,7 +120,7 @@ sections:
 
 **오프로드 게이트를 걸지 않는 이유.** 기기 big UI(`speed_limit_settings.py:233`)와 mici(`toggles.py:135`) 모두 API 키 편집을 오프로드로 제한하지 않는다. 이 설정은 포트를 열지 않고 주행 동작을 바꾸지 않는다. 게다가 `saveParams`가 이미 `IsEngaged` 중 모든 쓰기를 차단한다 (`sunnylinkd.py:283`). 파리티를 지킨다.
 
-**섹션에 `visibility`를 건 이유.** 페이지 레벨 `visibility`가 스키마에 없다(Constraint 4). `MapDataSource != 1`인 사용자에게는 섹션이 숨겨지고 패널은 빈 채로 보인다. 패널 자체를 숨기지 못하는 것은 받아들인다 — 스키마를 확장하는 것보다 미지 요소를 늘리지 않는 편이 낫다.
+**섹션에 `visibility`를 건 이유.** 페이지 레벨 `visibility`가 스키마에 없다(Constraint 4). `MapDataSource != 1`인 사용자에게는 섹션이 비활성으로 보인다 — `sunnylink/docs/README.md:137`은 규칙이 실패해도 항목을 숨기지 않고 UNAVAILABLE 배지와 함께 흐리게 표시한다고 적고 있다. 패널 자체를 숨기지 못하는 것은 받아들인다 — 스키마를 확장하는 것보다 미지 요소를 늘리지 않는 편이 낫다.
 
 ### 4. `sunnylinkd.py`는 변경하지 않는다
 
