@@ -1970,6 +1970,39 @@
       ]
     },
     {
+      "id": "korea",
+      "label": "Korea Map",
+      "icon": "cruise_control",
+      "order": 8,
+      "remote_configurable": true,
+      "description": "Korean public map database credentials",
+      "sections": [
+        {
+          "id": "korea_credentials",
+          "title": "",
+          "description": "",
+          "visibility": [
+            {
+              "type": "param",
+              "key": "MapDataSource",
+              "equals": 1
+            }
+          ],
+          "items": [
+            {
+              "key": "KoreaMapApiKey",
+              "widget": "text",
+              "secret": true,
+              "max_length": 255,
+              "requires_attestation": true,
+              "title": "Speed Camera API Key",
+              "description": "data.go.kr key used to refresh the speed camera database over Wi-Fi. Without it the cameras shipped with the database are used as-is. Other Korean map settings live under Cruise."
+            }
+          ]
+        }
+      ]
+    },
+    {
       "id": "developer",
       "label": "Developer",
       "icon": "developer",

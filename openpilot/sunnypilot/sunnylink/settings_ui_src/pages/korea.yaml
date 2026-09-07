@@ -1,0 +1,31 @@
+# Page: korea
+# Edit this file. Run compile_settings_ui.py to emit settings_ui.json.
+#
+# Deliberately separate from cruise.yaml. `widget: text` is new to the schema and the
+# sunnylink app's handling of an unknown widget is not knowable from this repo. Cruise is
+# the only remote path a mici owner has to StopDistance, DEC, and the speed limit
+# settings, so the new widget lands where a bad guess costs one page and nothing else.
+id: korea
+label: Korea Map
+icon: cruise_control
+order: 8
+remote_configurable: true
+description: Korean public map database credentials
+sections:
+- id: korea_credentials
+  title: ''
+  description: ''
+  visibility:
+  - type: param
+    key: MapDataSource
+    equals: 1
+  items:
+  - key: KoreaMapApiKey
+    widget: text
+    secret: true
+    max_length: 255
+    requires_attestation: true
+    title: Speed Camera API Key
+    description: data.go.kr key used to refresh the speed camera database over Wi-Fi.
+      Without it the cameras shipped with the database are used as-is. Other Korean
+      map settings live under Cruise.

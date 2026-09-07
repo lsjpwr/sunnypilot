@@ -81,6 +81,21 @@ def _find_section(schema: dict[str, Any], panel_id: str, section_id: str) -> dic
   return None
 
 
+def _find_panel(schema: dict[str, Any], panel_id: str) -> dict[str, Any] | None:
+  for panel in schema.get("panels", []):
+    if panel.get("id") == panel_id:
+      return panel
+  return None
+
+
+def _panel_item_keys(schema: dict[str, Any], panel_id: str) -> set[str]:
+  """Every param key reachable inside one panel."""
+  panel = _find_panel(schema, panel_id)
+  if panel is None:
+    return set()
+  return {item["key"] for item in _walk_items({"panels": [panel]}) if "key" in item}
+
+
 def _flatten_rule_types(rules: list[dict[str, Any]] | None) -> set[str]:
   out: set[str] = set()
 
@@ -392,12 +407,6 @@ class TestKoreaMapSettings(OpenpilotTestCase):
     for key in ("MapDataSource", "KoreaExternalNavEnabled"):
       self.assertIsNotNone(_find_item(schema, key), f"{key} missing from the sunnylink schema")
 
-  def test_the_api_key_stays_off_the_remote_surface(self):
-    """The schema has no free-text widget (settings_ui.schema.json enumerates
-    toggle/option/multiple_button/button/info), and an API key does not belong on a
-    remote surface anyway. It is device-only, entered through InputDialogSP."""
-    self.assertIsNone(_find_item(generate_schema(), "KoreaMapApiKey"))
-
   def test_the_source_selector_offers_exactly_two_sources(self):
     """The option values are the button indices the raylib widget writes to the param.
     A third option here without a MapSource member would write a value nothing handles."""
@@ -490,3 +499,50 @@ class TestTextItemValidation(OpenpilotTestCase):
     result = ValidationResult()
     check_text_items(data, result)
     assert result.success
+
+
+class TestKoreaApiKeyRemote(OpenpilotTestCase):
+  def test_korea_panel_present_and_remote_configurable(self, schema):
+    panel = _find_panel(schema, "korea")
+    assert panel is not None, "korea panel missing from settings_ui schema"
+    assert panel.get("remote_configurable") is True
+    assert panel.get("order") == 8
+
+  def test_korea_panel_reuses_an_existing_icon(self, schema):
+    """A new page hands the app two things it may not know: a new widget and a new icon
+    name. The icon resolves to an app asset, so an unknown name can break the page on its
+    own. Reusing a name already in the schema keeps this to one unknown."""
+    panel = _find_panel(schema, "korea")
+    assert panel is not None
+    others = {p.get("icon") for p in schema.get("panels", []) if p.get("id") != "korea"}
+    assert panel.get("icon") in others, \
+      f"korea panel icon {panel.get('icon')!r} is used by no other panel"
+
+  def test_api_key_item_shape(self, schema):
+    item = _find_item(schema, "KoreaMapApiKey")
+    assert item is not None, "KoreaMapApiKey missing from settings_ui schema"
+    assert item.get("widget") == "text"
+    assert item.get("secret") is True
+    assert item.get("max_length") == 255
+
+  def test_api_key_requires_attestation(self, schema):
+    """requires_attestation is the only gate on this write. KoreaMapApiKey is deliberately
+    left out of SENSITIVE_PARAMS, so nothing device-side asks a second time."""
+    item = _find_item(schema, "KoreaMapApiKey")
+    assert item is not None
+    assert item.get("requires_attestation") is True
+
+  def test_api_key_section_requires_korea_map_source(self, schema):
+    """Both device UIs gate the key on MapDataSource == korea (speed_limit_settings.py:233,
+    mici toggles.py:135). Offering it under OSM would be a field that changes nothing."""
+    section = _find_section(schema, "korea", "korea_credentials")
+    assert section is not None, "korea.korea_credentials section missing"
+    assert _references_param_equals(section.get("visibility"), "MapDataSource", 1), \
+      "korea_credentials missing MapDataSource == korea (1) visibility gate"
+
+  def test_api_key_stays_out_of_the_cruise_panel(self, schema):
+    """The separate page exists so a widget the app may not understand cannot take cruise
+    down with it -- and cruise is the only remote path a mici owner has to StopDistance,
+    DEC, and the speed limit settings. Moving the key back into cruise undoes that."""
+    assert "KoreaMapApiKey" in _panel_item_keys(schema, "korea")
+    assert "KoreaMapApiKey" not in _panel_item_keys(schema, "cruise")
