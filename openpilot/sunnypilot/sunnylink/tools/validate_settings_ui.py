@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
 from openpilot.sunnypilot.sunnylink.capabilities import CAPABILITY_FIELDS
 
-VALID_WIDGETS = {"toggle", "option", "multiple_button", "button", "info"}
+VALID_WIDGETS = {"toggle", "option", "multiple_button", "button", "info", "text"}
 VALID_COMPARE_OPS = {">", "<", ">=", "<="}
 
 DEFAULT_PATH = os.path.join(
@@ -496,6 +496,28 @@ def check_vehicle_brands(data: dict, result: ValidationResult) -> None:
     result.ok("vehicle brands")
 
 
+# Fields that belong to option / multiple_button. A text item carrying one is an authoring
+# mistake: the frontend cannot render a free-text box and a slider for the same param.
+_TEXT_FORBIDDEN_FIELDS = ("options", "min", "max", "step")
+
+
+def check_text_items(data: dict, result: ValidationResult) -> None:
+  """Check 11: text items must not carry option/slider attributes."""
+  errors: list[str] = []
+
+  for path, item in collect_all_items(data):
+    if item.get("widget") != "text":
+      continue
+    extra = [f for f in _TEXT_FORBIDDEN_FIELDS if f in item]
+    if extra:
+      errors.append(f"{path}: text item '{item.get('key', '?')}' must not set {', '.join(extra)}")
+
+  if errors:
+    result.error("text items", "; ".join(errors))
+  else:
+    result.ok("text items")
+
+
 def validate(path: str) -> bool:
   """Run all validation checks on the given settings_ui.json file.
 
@@ -509,7 +531,7 @@ def validate(path: str) -> bool:
     result.summary()
     return False
 
-  # Checks 2-10
+  # Checks 2-11
   check_structural(data, result)
   check_item_completeness(data, result)
   check_no_duplicate_keys(data, result)
@@ -519,6 +541,7 @@ def validate(path: str) -> bool:
   check_sub_panel_triggers(data, result)
   check_ordering(data, result)
   check_vehicle_brands(data, result)
+  check_text_items(data, result)
 
   result.summary()
   return result.success

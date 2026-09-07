@@ -107,6 +107,8 @@ def _resolve_refs(node, macros: dict, visiting: tuple[str, ...] = ()):
 _ITEM_KEY_ORDER = [
   "key",
   "widget",
+  "secret",
+  "max_length",
   "needs_onroad_cycle",
   "requires_attestation",
   "blocked",

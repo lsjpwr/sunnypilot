@@ -19,15 +19,24 @@ from openpilot.common.parameterized import parameterized
 
 from openpilot.sunnypilot.sunnylink.tools.generate_settings_schema import (
   DEFINITION_PATH,
+  SCHEMA_VERSION,
   TORQUE_VERSIONS_PATH,
   _build_torque_options,
   _load_torque_versions,
   generate_schema,
 )
+from openpilot.sunnypilot.sunnylink.tools.validate_settings_ui import (
+  VALID_WIDGETS,
+  ValidationResult,
+  check_text_items,
+)
 from openpilot.common.test import OpenpilotTestCase
 
 
 SCHEMA_VALIDATOR_PATH = os.path.join(os.path.dirname(DEFINITION_PATH), "settings_ui.schema.json")
+PAGE_SCHEMA_PATH = os.path.join(
+  os.path.dirname(DEFINITION_PATH), "settings_ui_src", "_schemas", "page.schema.json"
+)
 
 
 def _walk_items(schema: dict[str, Any]):
@@ -418,3 +427,66 @@ class TestSmartCruiseControlMapRemote(OpenpilotTestCase):
     assert item is not None
     assert _references_capability_field(item.get("enablement"), "has_longitudinal_control")
     assert _references_capability_field(item.get("enablement"), "has_icbm")
+
+
+def _text_item_schema(**extra: Any) -> dict[str, Any]:
+  """Minimal one-item schema for exercising check_text_items in isolation."""
+  item: dict[str, Any] = {"key": "SomeString", "widget": "text", "title": "Some String"}
+  item.update(extra)
+  return {"panels": [{"id": "p", "label": "P", "icon": "device", "order": 1,
+                      "sections": [{"id": "s", "title": "S", "items": [item]}]}]}
+
+
+class TestTextWidget(OpenpilotTestCase):
+  def test_text_is_a_valid_widget_everywhere(self):
+    """Three files carry their own widget list. A widget one accepts and another rejects is
+    an authoring trap: the compile succeeds, then the compiled file fails validation."""
+    assert "text" in VALID_WIDGETS
+    with open(SCHEMA_VALIDATOR_PATH) as f:
+      out_enum = json.load(f)["$defs"]["SchemaItem"]["properties"]["widget"]["enum"]
+    assert "text" in out_enum
+    with open(PAGE_SCHEMA_PATH) as f:
+      in_enum = json.load(f)["$defs"]["Item"]["properties"]["widget"]["enum"]
+    assert "text" in in_enum
+
+  def test_secret_and_max_length_are_declared(self):
+    """settings_ui.schema.json sets additionalProperties: false on items, so an undeclared
+    field does not get ignored -- it fails validation of the compiled file."""
+    with open(SCHEMA_VALIDATOR_PATH) as f:
+      props = json.load(f)["$defs"]["SchemaItem"]["properties"]
+    assert props["secret"]["type"] == "boolean"
+    assert props["max_length"]["type"] == "integer"
+    with open(PAGE_SCHEMA_PATH) as f:
+      page_props = json.load(f)["$defs"]["Item"]["properties"]
+    assert page_props["secret"]["type"] == "boolean"
+    assert page_props["max_length"]["type"] == "integer"
+
+  def test_schema_version_is_not_bumped(self):
+    """getParamsMetadata() takes no arguments (sunnylinkd.py:204), so the device never learns
+    which app version it is talking to. A bump cannot gate anything; it can only give an
+    older app a reason to reject the whole file."""
+    assert SCHEMA_VERSION == "1.0"
+
+
+class TestTextItemValidation(OpenpilotTestCase):
+  @parameterized.expand(["options", "min", "max", "step"], names=["field"])
+  def test_text_item_rejects_numeric_fields(self, field):
+    """min/max/step/options belong to option and multiple_button. On a text item they are an
+    authoring mistake the frontend has no way to act on."""
+    result = ValidationResult()
+    check_text_items(_text_item_schema(**{field: 1}), result)
+    assert not result.success
+
+  def test_plain_text_item_passes(self):
+    result = ValidationResult()
+    check_text_items(_text_item_schema(secret=True, max_length=255), result)
+    assert result.success
+
+  def test_non_text_items_keep_their_numeric_fields(self):
+    """The rule must key on the widget, not on the mere presence of min/max -- otherwise it
+    would reject every slider in the schema."""
+    data = _text_item_schema(min=1)
+    data["panels"][0]["sections"][0]["items"][0]["widget"] = "option"
+    result = ValidationResult()
+    check_text_items(data, result)
+    assert result.success

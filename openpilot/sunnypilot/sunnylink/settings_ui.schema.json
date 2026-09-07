@@ -181,7 +181,17 @@
         "widget": {
           "type": "string",
           "description": "The UI widget type to render.",
-          "enum": ["toggle", "option", "multiple_button", "button", "info"]
+          "enum": ["toggle", "option", "multiple_button", "button", "info", "text"]
+        },
+        "secret": {
+          "type": "boolean",
+          "description": "For 'text' widgets: the value is a credential. The UI must mask input and must not display the stored value.",
+          "default": false
+        },
+        "max_length": {
+          "type": "integer",
+          "description": "Maximum number of characters a 'text' widget accepts.",
+          "minimum": 1
         },
         "title": {
           "type": "string",

@@ -54,6 +54,8 @@ def _dump_yaml(data) -> str:
 _ITEM_ORDER = [
   "key",
   "widget",
+  "secret",
+  "max_length",
   "needs_onroad_cycle",
   "requires_attestation",
   "blocked",

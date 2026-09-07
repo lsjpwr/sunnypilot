@@ -117,6 +117,7 @@ The tables below describe the **compiled** `settings_ui.json` schema — what th
 | `toggle` | On/off boolean | `title` |
 | `multiple_button` | 2-4 discrete options | `title` + `options` array |
 | `option` | Numeric range or dropdown | `title` + `min/max/step` or `options` |
+| `text` | Free-text string | `title` + optional `max_length`, `secret` |
 | `info` | Read-only display | `title` |
 
 ## Quick reference: item fields
@@ -124,13 +125,15 @@ The tables below describe the **compiled** `settings_ui.json` schema — what th
 | Field | Required | Description |
 |-------|----------|-------------|
 | `key` | Yes | Param key name (must exist in `params_keys.h`) |
-| `widget` | Yes | `toggle`, `option`, `multiple_button`, `button`, `info` |
+| `widget` | Yes | `toggle`, `option`, `multiple_button`, `button`, `info`, `text` |
 | `title` | Yes | Display name shown to the user |
 | `description` | No | Inline explanatory text below the title. May be empty when only `details` is used. |
 | `details` | No | Extended help text shown in a modal when the user taps an "i" button on the row. Independent of `description`: either, both, or neither may be present. |
 | `options` | For selectors | Array of `{"value": 0, "label": "Off"}` objects (see per-option enablement below) |
 | `min`, `max`, `step` | For sliders | Numeric range constraints |
 | `unit` | No | Unit label. Static: `"seconds"`. Dynamic: `{"metric": "km/h", "imperial": "mph"}` (resolved by IsMetric) |
+| `max_length` | For `text` | Maximum characters accepted. Device-side dialogs cap strings at 255 |
+| `secret` | For `text` | `true` when the value is a credential. Frontend masks input and must not display the stored value |
 | `visibility` | No | Rules for show/hide. Settings are never hidden, always dimmed with UNAVAILABLE badge when rules fail |
 | `enablement` | No | Rules for enabled/disabled (all must pass). Dimmed with badge when rules fail |
 | `blocked` | No | `true` for device-only settings that cannot be modified remotely. Frontend shows as read-only |
