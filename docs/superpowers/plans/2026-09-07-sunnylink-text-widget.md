@@ -19,6 +19,7 @@
 - **테스트·검증·린트는 컨테이너 `sp-build`에서 돌린다.** 로컬 Windows 파이썬에는 `capnp`가 없어 임포트가 실패한다.
 - **`settings_ui.json`을 로컬 Windows에서 컴파일하지 않는다.** 텍스트 모드 쓰기가 파일 전체를 CRLF로 바꿔 2532줄짜리 가짜 diff를 만든다. 컴파일은 컨테이너에서 하고 결과를 `docker cp`로 가져온다.
 - **`icon` 값은 이미 다른 페이지가 쓰는 이름만 쓴다.** 아이콘 이름은 앱 애셋으로 매핑되므로 새 이름은 그 자체로 렌더링을 깰 수 있다.
+- **검증 게이트는 `sunnylink/tests/` 디렉터리 전체를 돌린다.** Task가 건드리는 모듈 하나만 돌리면 안 된다 — 패널 수나 페이지 수를 세는 픽스처는 형제 모듈에 있고, `test_settings_changes` 단독 실행은 그것을 볼 수 없다. `unittest discover`는 여기서 동작하지 않으므로(`ImportError: Start directory is not importable`) 네 모듈을 이름으로 지정한다. CI도 같은 범위를 본다 — `tools/test_runner.py:149`가 저장소 루트에서 `path.rglob("test_*.py")`로 수집한다.
 - 코드·주석·커밋 메시지는 영어로 쓴다. 저장소의 기존 관례다.
 
 ### 반복해서 쓰는 명령
@@ -33,8 +34,12 @@ docker cp openpilot/sunnypilot/sunnylink sp-build:/work/openpilot/sunnypilot/
 docker exec sp-build bash -lc 'cd /work && .venv/bin/python openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py'
 docker cp sp-build:/work/openpilot/sunnypilot/sunnylink/settings_ui.json openpilot/sunnypilot/sunnylink/settings_ui.json
 
-# 3) 테스트
-docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m unittest openpilot.sunnypilot.sunnylink.tests.test_settings_changes -v 2>&1 | tail -5'
+# 3) 테스트 (네 모듈 전부. discover는 여기서 안 된다)
+docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m unittest \
+  openpilot.sunnypilot.sunnylink.tests.test_compile_settings_ui \
+  openpilot.sunnypilot.sunnylink.tests.test_settings_schema \
+  openpilot.sunnypilot.sunnylink.tests.test_settings_changes \
+  openpilot.sunnypilot.sunnylink.tests.test_capabilities 2>&1 | tail -6'
 
 # 4) 스키마 검증기 (수동 스크립트, CI에 연결되어 있지 않다)
 docker exec sp-build bash -lc 'cd /work && .venv/bin/python openpilot/sunnypilot/sunnylink/tools/validate_settings_ui.py 2>&1 | tail -4'
@@ -326,10 +331,18 @@ _ITEM_ORDER = [
 
 ```bash
 docker cp openpilot/sunnypilot/sunnylink sp-build:/work/openpilot/sunnypilot/
-docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m unittest openpilot.sunnypilot.sunnylink.tests.test_settings_changes -v 2>&1 | tail -5'
+docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m unittest \
+  openpilot.sunnypilot.sunnylink.tests.test_compile_settings_ui \
+  openpilot.sunnypilot.sunnylink.tests.test_settings_schema \
+  openpilot.sunnypilot.sunnylink.tests.test_settings_changes \
+  openpilot.sunnypilot.sunnylink.tests.test_capabilities 2>&1 | tail -6'
 ```
 
-Expected: `Ran 48 tests` / `OK`. 기존 39개에 신규 9개가 더해진 숫자다 — `TestTextWidget` 3개, `TestTextItemValidation` 6개(`parameterized`가 `test_text_item_rejects_numeric_fields`를 필드 4개로 펼치고, 나머지 2개가 더해진다). 판정 기준은 **`OK`이고 실패가 0인 것**이다.
+Expected: `Ran 105 tests` / `OK`. `test_settings_changes`가 48개(기존 39개 + 신규 9개 — `TestTextWidget` 3개, `TestTextItemValidation` 6개. `parameterized`가 `test_text_item_rejects_numeric_fields`를 필드 4개로 펼치고 나머지 2개가 더해진다), 형제 세 모듈이 57개(`test_compile_settings_ui` 17, `test_settings_schema` 26, `test_capabilities` 14)다. 판정 기준은 **`OK`이고 실패가 0인 것**이다.
+
+이 Task는 페이지를 만들지 않으므로 형제 모듈의 패널 수·페이지 수 픽스처는 아직 그대로 통과한다. 그것이 바뀌는 것은 Task 2다.
+
+`OK:` / `ERROR:` 줄이 요약 뒤에 남아 있으면 안 된다. `ValidationResult`는 검사할 때마다 출력하므로 `check_text_items`를 직접 부르는 테스트는 `contextlib.redirect_stdout`으로 감싼다.
 
 - [ ] **Step 7: 출력 JSON이 바뀌지 않았음을 확인한다**
 
@@ -562,10 +575,16 @@ Expected: `Wrote /work/openpilot/sunnypilot/sunnylink/settings_ui.json`, 그리�
 
 ```bash
 docker cp openpilot/sunnypilot/sunnylink sp-build:/work/openpilot/sunnypilot/
-docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m unittest openpilot.sunnypilot.sunnylink.tests.test_settings_changes -v 2>&1 | tail -5'
+docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m unittest \
+  openpilot.sunnypilot.sunnylink.tests.test_compile_settings_ui \
+  openpilot.sunnypilot.sunnylink.tests.test_settings_schema \
+  openpilot.sunnypilot.sunnylink.tests.test_settings_changes \
+  openpilot.sunnypilot.sunnylink.tests.test_capabilities 2>&1 | tail -6'
 ```
 
-Expected: `OK`, 실패 0. `test_validator_accepts_real_json`이 함께 통과하는 것이 중요하다 — 그것이 `secret`/`max_length`가 출력 스키마에 제대로 선언되었는지를 실제로 검사하는 테스트다.
+Expected: `Ran 110 tests` / `OK`, 실패 0. `test_validator_accepts_real_json`이 함께 통과하는 것이 중요하다 — 그것이 `secret`/`max_length`가 출력 스키마에 제대로 선언되었는지를 실제로 검사하는 테스트다.
+
+**페이지를 하나 늘리고 `text` 아이템을 처음 실어 보내므로, 형제 모듈 세 곳이 함께 깨진다. 이 Task에서 같이 고친다.** `test_compile_settings_ui.py`의 `test_panels_present`(패널 수 하드코딩 — 세지 말고 id 집합에서 유도한다)와 `test_pages_dir_well_formed`(페이지 파일 수 — 의도적 트립와이어이므로 숫자와 주석을 함께 올린다), 그리고 `test_settings_schema.py:21`의 네 번째 위젯 enum 사본 `VALID_WIDGET_TYPES`(다섯 번째 동기화 대상을 만들지 말고 지운 뒤 `validate_settings_ui`의 `VALID_WIDGETS`를 임포트한다). `test_settings_changes` 하나만 돌리면 이 세 실패가 보이지 않는다 — 이 계획이 처음에 놓쳤던 지점이 정확히 여기다.
 
 - [ ] **Step 6: 검증기와 린트를 돌린다**
 
@@ -614,12 +633,18 @@ no asset for, which would be a second unknown in the same change."
 
 ```bash
 docker cp openpilot/sunnypilot/sunnylink sp-build:/work/openpilot/sunnypilot/
-docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m unittest openpilot.sunnypilot.sunnylink.tests.test_settings_changes -v 2>&1 | tail -5'
+docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m unittest \
+  openpilot.sunnypilot.sunnylink.tests.test_compile_settings_ui \
+  openpilot.sunnypilot.sunnylink.tests.test_settings_schema \
+  openpilot.sunnypilot.sunnylink.tests.test_settings_changes \
+  openpilot.sunnypilot.sunnylink.tests.test_capabilities 2>&1 | tail -6'
 docker exec sp-build bash -lc 'cd /work && .venv/bin/python openpilot/sunnypilot/sunnylink/tools/compile_settings_ui.py --check'
 docker exec sp-build bash -lc 'cd /work && .venv/bin/python openpilot/sunnypilot/sunnylink/tools/validate_settings_ui.py 2>&1 | tail -4'
 docker exec sp-build bash -lc 'cd /work && .venv/bin/python -m ruff check openpilot/sunnypilot/sunnylink/'
 git status --short
 ```
+
+Expected: `Ran 110 tests` / `OK`, 그리고 요약 뒤에 `OK:`/`ERROR:` 줄이 남지 않는다.
 
 전부 통과하고 `git status`에 추적되지 않은 기존 항목(`.codegraph/`, `dev/`, `docs/superpowers/plans/` 아래 예전 파일들) 말고는 아무것도 남지 않아야 한다.
 
@@ -642,6 +667,7 @@ Expected: 목록에 `korea`가 들어 있다.
 | Korea 패널이 보이고 키 입력이 된다 | 앱이 `text`를 지원한다 | 완료 |
 | 패널은 보이는데 항목이 없다 | 앱이 미지 위젯을 건너뛴다 | 우리 쪽 스키마는 옳다. 업스트림에 위젯 지원 PR |
 | Korea 패널만 안 보인다 | 앱이 패널 단위로 실패한다 | 무해. 두거나 되돌린다 |
+| 패널은 보이는데 탭 아이콘이 이상하거나 Cruise와 시각적으로 헷갈린다 | `cruise_control` 아이콘을 Cruise와 공유한 결과다. 스키마에서 아이콘이 중복된 것은 이 페이지가 처음이고, 앱이 아이콘 이름으로 무언가를 식별하는지는 알 수 없다 | 업스트림에 앱이 애셋을 가진 별도 아이콘 이름을 요청한다. 코드 변경 없음 |
 | **설정 화면 전체가 안 뜬다** | 앱이 스키마 전체 파싱에 실패한다 | Task 2 커밋을 `git revert` 한다 |
 
 되돌림은 즉시 반영되지 않는다. 스키마는 기기가 커밋된 `settings_ui.json`에서 생성해 앱에 보내므로, 되돌린 뒤 기기가 소프트웨어 업데이트를 받아야 복구가 끝난다.

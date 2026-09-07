@@ -14,11 +14,11 @@ from openpilot.sunnypilot.sunnylink.tools.generate_settings_schema import (
   collect_all_keys,
   collect_capability_refs,
 )
+from openpilot.sunnypilot.sunnylink.tools.validate_settings_ui import VALID_WIDGETS
 from openpilot.sunnypilot.sunnylink.capabilities import CAPABILITY_FIELDS
 from openpilot.common.test import OpenpilotTestCase
 
 
-VALID_WIDGET_TYPES = {"toggle", "option", "multiple_button", "button", "info"}
 VALID_RULE_TYPES = {"offroad_only", "not_engaged", "capability", "param", "param_compare", "not", "any", "all"}
 VALID_COMPARE_OPS = {">", "<", ">=", "<="}
 MAX_ALLOWED_MISSING_TITLES = 0  # All items must have titles (metadata is inline in settings_ui.json)
@@ -106,7 +106,7 @@ class TestSchemaStructure(OpenpilotTestCase):
       for item in _iter_panel_items(panel):
         assert "key" in item, f"Item in panel {panel['id']} missing 'key'"
         assert "widget" in item, f"Item {item.get('key')} missing 'widget'"
-        assert item["widget"] in VALID_WIDGET_TYPES, \
+        assert item["widget"] in VALID_WIDGETS, \
           f"Item {item['key']} has invalid widget type: {item['widget']}"
 
   def test_sub_panel_items_have_key_and_widget(self, schema):
@@ -117,7 +117,7 @@ class TestSchemaStructure(OpenpilotTestCase):
         for item in sp["items"]:
           assert "key" in item
           assert "widget" in item
-          assert item["widget"] in VALID_WIDGET_TYPES
+          assert item["widget"] in VALID_WIDGETS
 
   def test_vehicle_settings_structure(self, schema):
     vs = schema["vehicle_settings"]

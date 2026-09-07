@@ -11,6 +11,8 @@ and additive — they do not replace the broader test_settings_schema.py.
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 from typing import Any
@@ -446,10 +448,23 @@ def _text_item_schema(**extra: Any) -> dict[str, Any]:
                       "sections": [{"id": "s", "title": "S", "items": [item]}]}]}
 
 
+def _check_text_items_quietly(data: dict[str, Any]) -> ValidationResult:
+  """ValidationResult prints every pass and failure as it goes -- that is the validator
+  script's user interface, but in a test run it leaves stray OK:/ERROR: lines after the
+  unittest summary, and a green suite that prints ERROR: reads as broken."""
+  result = ValidationResult()
+  with contextlib.redirect_stdout(io.StringIO()):
+    check_text_items(data, result)
+  return result
+
+
 class TestTextWidget(OpenpilotTestCase):
   def test_text_is_a_valid_widget_everywhere(self):
-    """Three files carry their own widget list. A widget one accepts and another rejects is
-    an authoring trap: the compile succeeds, then the compiled file fails validation."""
+    """Three files carry their own widget list -- the validator, the output JSON schema, and
+    the input page schema. A widget one accepts and another rejects is an authoring trap: the
+    compile succeeds, then the compiled file fails validation. tests/test_settings_schema.py
+    used to carry a fourth copy; it now imports VALID_WIDGETS, so these three are all of
+    them."""
     assert "text" in VALID_WIDGETS
     with open(SCHEMA_VALIDATOR_PATH) as f:
       out_enum = json.load(f)["$defs"]["SchemaItem"]["properties"]["widget"]["enum"]
@@ -482,23 +497,17 @@ class TestTextItemValidation(OpenpilotTestCase):
   def test_text_item_rejects_numeric_fields(self, field):
     """min/max/step/options belong to option and multiple_button. On a text item they are an
     authoring mistake the frontend has no way to act on."""
-    result = ValidationResult()
-    check_text_items(_text_item_schema(**{field: 1}), result)
-    assert not result.success
+    assert not _check_text_items_quietly(_text_item_schema(**{field: 1})).success
 
   def test_plain_text_item_passes(self):
-    result = ValidationResult()
-    check_text_items(_text_item_schema(secret=True, max_length=255), result)
-    assert result.success
+    assert _check_text_items_quietly(_text_item_schema(secret=True, max_length=255)).success
 
   def test_non_text_items_keep_their_numeric_fields(self):
     """The rule must key on the widget, not on the mere presence of min/max -- otherwise it
     would reject every slider in the schema."""
     data = _text_item_schema(min=1)
     data["panels"][0]["sections"][0]["items"][0]["widget"] = "option"
-    result = ValidationResult()
-    check_text_items(data, result)
-    assert result.success
+    assert _check_text_items_quietly(data).success
 
 
 class TestKoreaApiKeyRemote(OpenpilotTestCase):
@@ -537,12 +546,16 @@ class TestKoreaApiKeyRemote(OpenpilotTestCase):
     mici toggles.py:135). Offering it under OSM would be a field that changes nothing."""
     section = _find_section(schema, "korea", "korea_credentials")
     assert section is not None, "korea.korea_credentials section missing"
-    assert _references_param_equals(section.get("visibility"), "MapDataSource", 1), \
-      "korea_credentials missing MapDataSource == korea (1) visibility gate"
+    assert _references_param_equals(section.get("enablement"), "MapDataSource", 1), \
+      "korea_credentials missing MapDataSource == korea (1) enablement gate"
 
   def test_api_key_stays_out_of_the_cruise_panel(self, schema):
-    """The separate page exists so a widget the app may not understand cannot take cruise
-    down with it -- and cruise is the only remote path a mici owner has to StopDistance,
-    DEC, and the speed limit settings. Moving the key back into cruise undoes that."""
-    assert "KoreaMapApiKey" in _panel_item_keys(schema, "korea")
+    """The separate page exists so a widget the app may not understand cannot take anything
+    a user depends on down with it -- and cruise is the only remote path a mici owner has to
+    StopDistance, DEC, and the speed limit settings. Two mutations break that and both must
+    fail here: moving the key onto a page mici owners use, and letting a second item onto the
+    korea page. The exact-set assertion covers both -- the key is on korea, korea has nothing
+    else, so there is nothing on that page to lose besides the key itself."""
     assert "KoreaMapApiKey" not in _panel_item_keys(schema, "cruise")
+    assert _panel_item_keys(schema, "korea") == {"KoreaMapApiKey"}, \
+      "the korea page exists to isolate an unproven widget -- it must carry nothing else"

@@ -15,7 +15,7 @@ sections:
 - id: korea_credentials
   title: ''
   description: ''
-  visibility:
+  enablement:
   - type: param
     key: MapDataSource
     equals: 1

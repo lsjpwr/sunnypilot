@@ -17,13 +17,20 @@
 API 키를 디바이스에 넣어두면 그 뒤로는 알아서 갱신된다.
 
 1. https://www.data.go.kr/data/15028200/standard.do 에서 활용 신청 → **일반 인증키** 발급
-2. 디바이스에 넣는다 (인코딩/디코딩 어느 형태든 상관없다):
+2. 디바이스에 넣는다. 네 가지 경로 중 아무거나 쓰면 되고, 키는 인코딩/디코딩 어느 형태든 상관없다.
 
-   ```bash
-   ssh comma@<device-ip> "echo -n '<발급받은 키>' > /data/params/d/KoreaMapApiKey"
-   ```
+   - **big UI** — 설정 → Cruise → Speed Limit → **Speed Camera API Key**의 Set/Change 버튼
+   - **mici** — 설정 → Toggles → **speed camera API key** 버튼
+   - **써니링크 앱 (원격)** — **Korea Map** 페이지의 Speed Camera API Key. 100자 안팎의 키를 기기 화면 키보드로 치지 않아도 되는 유일한 경로다. 앱 버전에 따라 이 페이지가 아직 안 보일 수 있다 — 그러면 아래 세 경로를 쓴다
+   - **SSH** — 헤드리스 설정용
 
-3. 재부팅. 이후 `mapd_manager`가 주 1회 확인한다.
+     ```bash
+     ssh comma@<device-ip> "echo -n '<발급받은 키>' > /data/params/d/KoreaMapApiKey"
+     ```
+
+   앞의 세 경로는 `MapDataSource`가 Korea일 때만 활성화된다. SSH는 그 게이트를 거치지 않는다.
+
+3. 끝이다. **재부팅할 필요 없다** — 카메라 갱신 루프가 tick마다 `KoreaMapApiKey`를 다시 읽으므로(`camera_refresh.py:175`) 새 키가 바로 반영된다. 이후 `mapd_manager`가 주 1회 확인한다.
 
 **갱신 조건과 안전장치**
 
