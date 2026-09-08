@@ -16,9 +16,11 @@ class MockCarState:
     self.standstill = standstill
 
 class MockModelData:
-  def __init__(self, valid=True):
+  def __init__(self, valid=True, endpoint=0.0):
     size = 33 if valid else 10  # incomplete if invalid
-    self.position = type("Pos", (), {"x": [0.0] * size})()
+    position_x = [0.0] * size
+    position_x[-1] = endpoint
+    self.position = type("Pos", (), {"x": position_x})()
     self.orientation = type("Ori", (), {"x": [0.0] * size})()
 
 class MockSelfDriveState:
@@ -101,3 +103,45 @@ class TestDynamicExperimentalController(OpenpilotTestCase):
       controller.update(default_sm)
 
     assert controller.mode() == "blended"
+
+  def test_highspeed_endpoint_above_curve_stays_acc(self, mock_cp, mock_mpc, default_sm):
+    mock_cp.radarUnavailable = True
+    controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+
+    # 120 km/h against a 320 m endpoint: above the 315 m curve value, so no shortage at all.
+    default_sm["carState"] = MockCarState(vEgo=120.0 / 3.6, vCruise=120.0)
+    default_sm["modelV2"] = MockModelData(valid=True, endpoint=320.0)
+
+    for _ in range(20):
+      controller.update(default_sm)
+
+    assert not controller._has_slow_down
+    assert controller.mode() == "acc"
+
+  def test_highspeed_slowdown_triggers_blended(self, mock_cp, mock_mpc, default_sm):
+    mock_cp.radarUnavailable = True
+    controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+
+    # 120 km/h against a 250 m endpoint: 21% short of 315 m, urgency clears the 0.7 emergency bar.
+    default_sm["carState"] = MockCarState(vEgo=120.0 / 3.6, vCruise=120.0)
+    default_sm["modelV2"] = MockModelData(valid=True, endpoint=250.0)
+
+    for _ in range(3):
+      controller.update(default_sm)
+
+    assert controller._has_slow_down
+    assert controller.mode() == "blended"
+
+  def test_curve_below_60kph_is_unchanged(self, mock_cp, mock_mpc, default_sm):
+    mock_cp.radarUnavailable = True
+    controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+
+    # 60 km/h still reads 165 m off the curve, so a 160 m endpoint stays under the threshold.
+    default_sm["carState"] = MockCarState(vEgo=60.0 / 3.6, vCruise=60.0)
+    default_sm["modelV2"] = MockModelData(valid=True, endpoint=160.0)
+
+    for _ in range(20):
+      controller.update(default_sm)
+
+    assert not controller._has_slow_down
+    assert controller.mode() == "acc"
