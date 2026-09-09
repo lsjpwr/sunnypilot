@@ -774,7 +774,6 @@ See the LICENSE.md file in the root directory for more details.
 """
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LEAD_EQUIV_FACTOR, LEAD_VELOCITY_COST
 
 # Range offered by the UI. 0.0 is the shipped weight and leaves the relative-velocity residual
 # inert. 2.0 is about seven times the weight that reproduces stock braking at 30 m/s once the
@@ -823,7 +822,7 @@ class LongCostTuningController:
     self._frame += 1
 ```
 
-`LEAD_VELOCITY_COST`와 `LEAD_EQUIV_FACTOR`를 임포트만 하고 쓰지 않는 것처럼 보이지만, 테스트가 중립값을 이 두 상수로 단언하므로 한 곳에서만 정의되도록 유지한다. 린터가 미사용을 지적하면 임포트를 지우지 말고 테스트가 참조하는 경로를 확인한다.
+`long_mpc`에서 아무것도 임포트하지 않는다. 중립값은 이 컨트롤러가 아니라 태스크 1의 모듈 상수가 정의하고, 테스트는 그쪽에서 직접 가져온다. 여기서 임포트하면 `ruff` F401이 걸린다 (확인함).
 
 **주의:** `clipped != value` 비교는 NaN에서 항상 참이므로, NaN 파라미터는 매번 되쓰기가 일어난다. 이는 의도한 동작이다. 첫 되쓰기가 유효한 값을 남기므로 다음 초부터는 정상이다.
 
