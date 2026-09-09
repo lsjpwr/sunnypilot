@@ -294,6 +294,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Stop Distance
     {"StopDistance", {PERSISTENT | BACKUP, FLOAT, "6.0"}},
 
+    // Longitudinal MPC cost split
+    {"LeadVelocityCost", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
+    {"LeadEquivFactor", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
+
     // Torque lateral control custom params
     {"CustomTorqueParams", {PERSISTENT | BACKUP , BOOL}},
     {"EnforceTorqueControl", {PERSISTENT | BACKUP, BOOL}},

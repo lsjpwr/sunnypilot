@@ -559,3 +559,29 @@ class TestKoreaApiKeyRemote(OpenpilotTestCase):
     assert "KoreaMapApiKey" not in _panel_item_keys(schema, "cruise")
     assert _panel_item_keys(schema, "korea") == {"KoreaMapApiKey"}, \
       "the korea page exists to isolate an unproven widget -- it must carry nothing else"
+
+
+class TestLongitudinalCostSplit(OpenpilotTestCase):
+  def test_the_cost_split_widgets_are_present(self, schema):
+    for key in ("LeadEquivFactor", "LeadVelocityCost"):
+      item = _find_item(schema, key)
+      assert item is not None, f"{key} missing from settings_ui schema"
+      assert item.get("widget") == "option"
+
+  def test_the_cost_split_widgets_reach_the_neutral_defaults(self, schema):
+    """Neutral is the factor's ceiling and the weight's floor. A range that excluded either
+    would leave stock behavior unreachable from the UI."""
+    factor = _find_item(schema, "LeadEquivFactor")
+    assert factor is not None
+    assert factor.get("min") == 0.0 and factor.get("max") == 1.0
+
+    cost = _find_item(schema, "LeadVelocityCost")
+    assert cost is not None
+    assert cost.get("min") == 0.0 and cost.get("max") == 2.0
+
+  def test_the_widgets_live_on_the_developer_page(self, schema):
+    """Cost-function coefficients, not a user setting: a wrong value changes longitudinal
+    behavior at once, so they do not belong on the cruise page next to Stop Distance."""
+    section = _find_section(schema, "developer", "longitudinal_tuning")
+    assert section is not None, "longitudinal_tuning section missing from the developer panel"
+    assert {item["key"] for item in section.get("items", [])} == {"LeadEquivFactor", "LeadVelocityCost"}

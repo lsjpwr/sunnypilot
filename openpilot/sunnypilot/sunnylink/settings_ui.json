@@ -2241,6 +2241,47 @@
               ]
             }
           ]
+        },
+        {
+          "id": "longitudinal_tuning",
+          "title": "Longitudinal Tuning",
+          "description": "Cost weights inside the longitudinal MPC. Defaults reproduce stock behavior.",
+          "items": [
+            {
+              "key": "LeadEquivFactor",
+              "widget": "option",
+              "title": "Spacing Cost Split",
+              "description": "How much of the lead's stopping distance stays folded into the gap cost. At 1.0 the cost weights relative velocity about twelve times as heavily as the gap error at highway speed, which is stock. Lower values shed that and leave a plain gap error.",
+              "details": "The gap cost and the relative-velocity cost share one expression, so their ratio is fixed by physics and grows with speed. This separates them. Lower it only together with Lead Velocity Cost, which is what puts the damping back.",
+              "min": 0.0,
+              "max": 1.0,
+              "step": 0.1,
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            },
+            {
+              "key": "LeadVelocityCost",
+              "widget": "option",
+              "title": "Lead Velocity Cost",
+              "description": "Weight on the difference between your speed and the lead's. Zero is stock. Raising it damps closing speed independently of the gap, at a gain that does not grow with speed.",
+              "details": "Only useful once Spacing Cost Split is below 1.0, which is what makes room for it. Around 0.27 reproduces stock braking at 108 km/h with the split fully applied.",
+              "min": 0.0,
+              "max": 2.0,
+              "step": 0.1,
+              "enablement": [
+                {
+                  "type": "capability",
+                  "field": "has_longitudinal_control",
+                  "equals": true
+                }
+              ]
+            }
+          ]
         }
       ]
     },
