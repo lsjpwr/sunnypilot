@@ -27,8 +27,8 @@ MPC_SOURCES = (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1)
 
 X_DIM = 3
 U_DIM = 1
-PARAM_DIM = 6
-COST_E_DIM = 5
+PARAM_DIM = 8
+COST_E_DIM = 6
 COST_DIM = COST_E_DIM + 1
 CONSTR_DIM = 4
 
@@ -39,6 +39,10 @@ A_EGO_COST = 0.
 J_EGO_COST = 5.
 A_CHANGE_COST = 200.
 DANGER_ZONE_COST = 100.
+# Neutral defaults. LEAD_EQUIV_FACTOR 1.0 keeps the stock gap residual; LEAD_VELOCITY_COST 0.0
+# leaves the relative-velocity residual inert. Both are overridden at runtime per instance.
+LEAD_VELOCITY_COST = 0.
+LEAD_EQUIV_FACTOR = 1.
 CRASH_DISTANCE = .25
 LEAD_DANGER_FACTOR = 0.75
 LIMIT_COST = 1e6
@@ -109,7 +113,9 @@ def gen_long_model():
   a_prev = SX.sym('a_prev')
   lead_t_follow = SX.sym('lead_t_follow')
   lead_danger_factor = SX.sym('lead_danger_factor')
-  model.p = vertcat(a_min, a_max, x_obstacle, a_prev, lead_t_follow, lead_danger_factor)
+  v_lead = SX.sym('v_lead')
+  lead_equiv_factor = SX.sym('lead_equiv_factor')
+  model.p = vertcat(a_min, a_max, x_obstacle, a_prev, lead_t_follow, lead_danger_factor, v_lead, lead_equiv_factor)
 
   # dynamics model
   f_expl = vertcat(v_ego, a_ego, j_ego)
@@ -144,6 +150,8 @@ def gen_long_ocp():
   a_prev = ocp.model.p[3]
   lead_t_follow = ocp.model.p[4]
   lead_danger_factor = ocp.model.p[5]
+  v_lead = ocp.model.p[6]
+  lead_equiv_factor = ocp.model.p[7]
 
   ocp.cost.yref = np.zeros((COST_DIM, ))
   ocp.cost.yref_e = np.zeros((COST_E_DIM, ))
@@ -154,11 +162,22 @@ def gen_long_ocp():
   # from an obstacle at every timestep. This obstacle can be a lead car
   # or other object. In e2e mode we can use x_position targets as a cost
   # instead.
-  costs = [((x_obstacle - x_ego) - (desired_dist_comfort)) / (v_ego + 10.),
+  # The stopping-distance equivalence folds the lead's speed into x_obstacle and ego's into the
+  # desired distance. Expanding the residual shows what that leaves: a gap error plus a relative
+  # velocity weighted (v_ego + v_lead) / (2 * COMFORT_BRAKE) times as heavily -- 12x at highway
+  # speed -- with no way to tune the ratio, because both sit in one residual under one weight.
+  # lead_equiv_factor sheds that equivalence from the cost path only; the constraint below keeps
+  # the full expression. At 1.0 nothing is shed and this is the stock residual.
+  shed = 1. - lead_equiv_factor
+  x_obstacle_cost = x_obstacle - shed * get_stopped_equivalence_factor(v_lead)
+  desired_dist_cost = desired_dist_comfort - shed * get_stopped_equivalence_factor(v_ego)
+
+  costs = [((x_obstacle_cost - x_ego) - (desired_dist_cost)) / (v_ego + 10.),
            x_ego,
            v_ego,
            a_ego,
            a_ego - a_prev,
+           v_ego - v_lead,
            j_ego]
   ocp.model.cost_y_expr = vertcat(*costs)
   ocp.model.cost_y_expr_e = vertcat(*costs[:-1])
@@ -174,7 +193,8 @@ def gen_long_ocp():
 
   x0 = np.zeros(X_DIM)
   ocp.constraints.x0 = x0
-  ocp.parameter_values = np.array([-1.2, 1.2, 0.0, 0.0, get_T_FOLLOW(), LEAD_DANGER_FACTOR])
+  ocp.parameter_values = np.array([-1.2, 1.2, 0.0, 0.0, get_T_FOLLOW(), LEAD_DANGER_FACTOR,
+                                   0.0, LEAD_EQUIV_FACTOR])
 
 
   # We put all constraint cost weights to 0 and only set them at runtime
@@ -215,6 +235,9 @@ class LongitudinalMpc:
   def __init__(self, dt=DT_MDL):
     self.dt = dt
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
+    # Set before reset(): reset() calls set_weights(), which reads lead_velocity_cost.
+    self.lead_velocity_cost = LEAD_VELOCITY_COST
+    self.lead_equiv_factor = LEAD_EQUIV_FACTOR
     self.reset()
     self.source = LongitudinalPlanSource.cruise
     self.stop_distance = STOP_DISTANCE
@@ -265,7 +288,8 @@ class LongitudinalMpc:
   def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
     jerk_factor = get_jerk_factor(personality)
     a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
-    cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
+    cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost,
+                    self.lead_velocity_cost, jerk_factor * J_EGO_COST]
     constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
     self.set_cost_weights(cost_weights, constraint_cost_weights)
 
@@ -334,6 +358,14 @@ class LongitudinalMpc:
     self.params[:,3] = np.copy(self.a_prev)
     self.params[:,4] = t_follow
     self.params[:,5] = LEAD_DANGER_FACTOR
+
+    # The cost path sheds get_stopped_equivalence_factor(v_lead) from x_obstacle, so v_lead has to
+    # be the speed of whichever lead won that node's min. Another lead's speed would shed a
+    # quantity that is not in there.
+    lead_choice = np.argmin(x_obstacles, axis=1)
+    v_leads = np.column_stack([lead_xv_0[:,1], lead_xv_1[:,1]])
+    self.params[:,6] = np.take_along_axis(v_leads, lead_choice[:,None], axis=1)[:,0]
+    self.params[:,7] = self.lead_equiv_factor
 
     self.run()
     if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
