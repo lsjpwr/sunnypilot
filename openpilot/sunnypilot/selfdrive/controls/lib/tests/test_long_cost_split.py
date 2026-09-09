@@ -33,12 +33,16 @@ GOLDEN_STEADY_V = [30.000000000, 30.000238547, 30.002873563, 30.010856997, 30.02
 NEUTRAL_ATOL = 1e-8
 
 
-def radar_state(d_rel: float, v_lead: float, present: bool = True):
+def radar_state(d_rel: float, v_lead: float, present: bool = True, lead_two: tuple | None = None):
   msg = messaging.new_message('radarState')
   lead = msg.radarState.leadOne
   lead.present = present
   lead.dRel = d_rel
   lead.vLead = v_lead
+  if lead_two is not None:
+    two = msg.radarState.leadTwo
+    two.present = True
+    two.dRel, two.vLead = lead_two
   return msg.radarState.as_reader()
 
 
@@ -131,3 +135,20 @@ class TestTheSplit(OpenpilotTestCase):
     # overshoots it by about 5e-6. 1e-3 is well clear of that and still fails loudly on a runaway.
     self.assertEqual(mpc.solution_status, 0)
     self.assertLessEqual(mpc.a_solution.max(), 2.0 + 1e-3)
+
+  def test_the_shed_velocity_comes_from_whichever_lead_won_the_node(self):
+    # update() sheds get_stopped_equivalence_factor(v_lead) from x_obstacle, so v_lead has to be
+    # the speed of the lead that won that node's min. With only one lead every argmin is 0 and a
+    # transposed column order would go unnoticed -- silently, and only at non-neutral factors.
+    # leadTwo is nearer and slower here, so its obstacle wins every node.
+    mpc = LongitudinalMpc()
+    mpc.update(radar_state(80., 28., lead_two=(40., 12.)))
+
+    np.testing.assert_allclose(mpc.params[:,6], mpc.params[:,6][0], atol=1e-9)
+    self.assertAlmostEqual(mpc.params[0,6], 12., places=6)
+
+  def test_stock_spacing_with_the_top_velocity_weight_converges(self):
+    # The other reachable corner of the offered range: stock coupling plus the maximum extra
+    # damping. Behaviorally conservative, but a different Hessian under qp_solver_iter_max = 10.
+    mpc = drive(tuned(1., 2.), v_ego=30., d_rel=60., v_lead=20.)
+    self.assertEqual(mpc.solution_status, 0)

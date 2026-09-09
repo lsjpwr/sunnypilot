@@ -258,6 +258,8 @@ class LongitudinalMpc:
     self.solver.cost_set(N, "yref", self.yref[N][:COST_E_DIM])
 
     self.params = np.zeros((N+1, PARAM_DIM))
+    # zeros() would leave the equivalence factor fully shed, the inverse of neutral.
+    self.params[:,7] = LEAD_EQUIV_FACTOR
     for i in range(N+1):
       self.solver.set(i, 'x', np.zeros(X_DIM))
 

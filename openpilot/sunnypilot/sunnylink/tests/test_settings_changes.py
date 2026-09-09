@@ -32,6 +32,12 @@ from openpilot.sunnypilot.sunnylink.tools.validate_settings_ui import (
   ValidationResult,
   check_text_items,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.long_cost_tuning import (
+  LEAD_EQUIV_FACTOR_MAX,
+  LEAD_EQUIV_FACTOR_MIN,
+  LEAD_VELOCITY_COST_MAX,
+  LEAD_VELOCITY_COST_MIN,
+)
 from openpilot.common.test import OpenpilotTestCase
 
 
@@ -573,11 +579,11 @@ class TestLongitudinalCostSplit(OpenpilotTestCase):
     would leave stock behavior unreachable from the UI."""
     factor = _find_item(schema, "LeadEquivFactor")
     assert factor is not None
-    assert factor.get("min") == 0.0 and factor.get("max") == 1.0
+    assert factor.get("min") == LEAD_EQUIV_FACTOR_MIN and factor.get("max") == LEAD_EQUIV_FACTOR_MAX
 
     cost = _find_item(schema, "LeadVelocityCost")
     assert cost is not None
-    assert cost.get("min") == 0.0 and cost.get("max") == 2.0
+    assert cost.get("min") == LEAD_VELOCITY_COST_MIN and cost.get("max") == LEAD_VELOCITY_COST_MAX
 
   def test_the_widgets_live_on_the_developer_page(self, schema):
     """Cost-function coefficients, not a user setting: a wrong value changes longitudinal

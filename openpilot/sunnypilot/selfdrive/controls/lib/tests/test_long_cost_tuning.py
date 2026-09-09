@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LEAD_EQUIV_FACTOR, LEAD_VELOCITY_COST
@@ -109,3 +110,13 @@ class TestReadThrottle(OpenpilotTestCase):
 
     drive(controller, 1)
     self.assertEqual(mpc.lead_velocity_cost, 1.5)
+
+
+class TestShippedDefaults(OpenpilotTestCase):
+  """params_keys.h is what a fresh device reads. It is the one link in the neutrality chain
+  that neither the module constants nor the NaN fallthrough would catch if it drifted."""
+
+  def test_the_registered_defaults_are_the_neutral_values(self):
+    params = Params()
+    self.assertEqual(float(params.get_default_value("LeadVelocityCost")), LEAD_VELOCITY_COST)
+    self.assertEqual(float(params.get_default_value("LeadEquivFactor")), LEAD_EQUIV_FACTOR)

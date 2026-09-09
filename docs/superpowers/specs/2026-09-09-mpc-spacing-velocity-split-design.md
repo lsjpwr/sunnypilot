@@ -180,12 +180,13 @@ self.params[:,7] = self.lead_equiv_factor
 | 파일 | 변경 | 태스크 |
 |---|---|---|
 | `openpilot/selfdrive/controls/lib/longitudinal_mpc_lib/long_mpc.py` | 상수 3개, `gen_long_model`의 `model.p`, `gen_long_ocp`의 `costs`·`parameter_values`, `LongitudinalMpc.__init__`의 속성 2개, `set_weights`의 리스트, `update`의 리드 선택 | 1 |
-| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_cost_tuning.py` | 신규. 골든 중립성 + 분리 거동 | 1 |
+| `openpilot/sunnypilot/selfdrive/controls/lib/tests/test_long_cost_split.py` | 신규. 골든 중립성 + 분리 거동 | 1 |
 | `openpilot/common/params_keys.h` | 키 2개 등록 | 2 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/long_cost_tuning.py` | 신규. `LongCostTuningController` | 2 |
 | `openpilot/sunnypilot/selfdrive/controls/lib/longitudinal_planner.py` | import 1줄, 생성 1줄, `update` 1줄 | 2 |
 | `openpilot/sunnypilot/sunnylink/settings_ui_src/pages/developer.yaml` | 섹션 1개, 아이템 2개 | 2 |
 | `openpilot/sunnypilot/sunnylink/settings_ui.json` | `compile_settings_ui.py` 산출물 | 2 |
+| `openpilot/sunnypilot/sunnylink/tests/test_settings_changes.py` | 위젯 존재·범위 가드 | 2 |
 
 태스크 1만 마쳐도 거동은 현재와 동일하다. 조절 수단이 없을 뿐이므로 안전하게 멈출 수 있는 경계다.
 
