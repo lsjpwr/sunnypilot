@@ -437,6 +437,7 @@ def main(demo=False):
 
       mdv2sp_send = messaging.new_message('modelDataV2SP')
       left_edge, right_edge = RELC.update_and_fill(modelv2_send.modelV2, mdv2sp_send.modelDataV2SP, v_ego)
+      mdv2sp_send.valid = modelv2_send.valid
       mdv2sp_send.modelDataV2SP.laneTurnDirection = DH.lane_turn_direction
 
       fill_driving_model_data(drivingdata_send, modelv2_send)
