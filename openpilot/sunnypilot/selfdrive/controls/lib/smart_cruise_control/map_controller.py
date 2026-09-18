@@ -101,16 +101,21 @@ class SmartCruiseControlMap:
     """One toggle per source, because the two sources fill this controller differently.
 
     OSM: the native mapd binary streams curve target velocities, gated by
-    SmartCruiseControlMap. Korea: korea_map_data writes a single speed bump point, gated
-    by KoreaSpeedBumpEnabled. Neither toggle may enable the other source -- the danger is
-    a snapshot that stops advancing after a source switch, and each writer is only
-    trusted to keep its own param fresh.
+    SmartCruiseControlMap. Korea: korea_map_data writes the next speed bump and the curves
+    ahead, gated by KoreaSpeedBumpEnabled or KoreaExternalNavEnabled -- curve targets need a
+    fetched route, and KoreaExternalNavEnabled is what starts the route thread, so gating on
+    the bump toggle alone left curve targets published and silently discarded whenever a
+    driver wanted routed curve braking without also wanting speed bumps. An empty
+    MapTargetVelocities list still leaves the state machine a no-op, so enabling on external
+    nav alone costs nothing while no route is active. Neither toggle may enable the other
+    source -- the danger is a snapshot that stops advancing after a source switch, and each
+    writer is only trusted to keep its own param fresh.
     """
     source = self.params.get("MapDataSource", return_default=True)
     if source == MapSource.osm:
       return self.params.get_bool("SmartCruiseControlMap")
     if source == MapSource.korea:
-      return self.params.get_bool("KoreaSpeedBumpEnabled")
+      return self.params.get_bool("KoreaSpeedBumpEnabled") or self.params.get_bool("KoreaExternalNavEnabled")
     return False
 
   def update_params(self):

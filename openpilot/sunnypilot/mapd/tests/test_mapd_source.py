@@ -97,6 +97,22 @@ class FakeExternal:
     self.stopped = True
 
 
+class FakeRouteSource:
+  """RouteSource stand-in: the real one starts a background thread that reads real Params
+  and, given a destination, makes real HTTP requests -- none of which this test's device
+  stack fakes out."""
+
+  def __init__(self):
+    self.started = False
+    self.stopped = False
+
+  def start(self):
+    self.started = True
+
+  def stop(self):
+    self.stopped = True
+
+
 class FakeRefresher:
   def __init__(self, cameras_path):
     self.cameras_path = cameras_path
@@ -176,6 +192,7 @@ class MapdSourceTestCase(unittest.TestCase):
       "update_osm_db": lambda p, mem_p: None,
       "get_files_for_cleanup": list,  # nothing to clean up, so no OSM update alert
       "ExternalNavSource": _record(built, "external", FakeExternal),
+      "RouteSource": _record(built, "route_source", FakeRouteSource),
       "CameraRefresher": _record(built, "refresher", FakeRefresher),
       "KoreaMapData": _record(built, "map_data", FakeMapData),
       "OsmMapData": _record(built, "map_data", FakeMapData),

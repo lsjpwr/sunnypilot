@@ -55,6 +55,10 @@ class KoreaMapData(BaseMapData):
     self._failed_mtimes: tuple[float | None, ...] = ()
     self.external = external
     self.route_source = route_source
+    # Last destination this object wrote to NavDestination, or None. update_destination()
+    # compares against this before writing, so a phone that repeats the same destination in
+    # every datagram does not touch /data/params (flash) once a second forever.
+    self._last_written_destination: tuple[float, float] | None = None
     self.route: list[tuple[float, float]] = []
     self.curve_points: list[tuple[float, float, float]] = []
     self.link: Link | None = None
@@ -130,18 +134,34 @@ class KoreaMapData(BaseMapData):
     The socket's TTL is 5 s (external_source.py:101) and a destination is sent once, so it
     cannot live there. The param is the one place both writers -- this socket and athenad's
     setNavDestination RPC -- agree on, which is why the JSON shape is athenad's.
+
+    Written only when it changes, and removed only on an explicit end-of-guidance signal --
+    this loop runs forever at 1 Hz and NavDestination lives on flash. nav.destination alone
+    cannot drive that: ExternalNav.destination is None both for "this datagram carried no
+    destination keys" and for "the phone sent 0,0 (or a point outside Korea)", and those need
+    opposite responses. So key presence in nav.raw -- not the parsed value -- is what tells a
+    repeated no-op apart from the phone saying guidance ended.
     """
     nav = self.nav()
     if nav is None:
       return
+    if "destination_lat" not in nav.raw and "destination_lon" not in nav.raw:
+      # Nothing about the destination in this datagram: leave the param exactly as it is,
+      # whether that means untouched or already cleared.
+      return
     if nav.destination is None:
+      # Keys were present but parsed to None: 0/0 or a coordinate outside Korea, i.e. the
+      # phone's explicit end-of-guidance signal, not "nothing new this tick". Clearing the
+      # remembered value too means a later re-send of the same destination writes again.
       if self.params.get("NavDestination"):
         self.params.remove("NavDestination")
-      return
-    self.params.put("NavDestination", json.dumps({
-      "latitude": nav.destination[0], "longitude": nav.destination[1],
-      "place_name": nav.road_name or None, "place_details": None,
-    }))
+      self._last_written_destination = None
+    elif nav.destination != self._last_written_destination:
+      self.params.put("NavDestination", json.dumps({
+        "latitude": nav.destination[0], "longitude": nav.destination[1],
+        "place_name": nav.road_name or None, "place_details": None,
+      }))
+      self._last_written_destination = nav.destination
 
   def update_location(self) -> None:
     location = self.sm['liveLocationKalman']

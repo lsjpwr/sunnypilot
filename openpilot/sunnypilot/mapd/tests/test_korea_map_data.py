@@ -49,6 +49,7 @@ def make_data(link=None, camera=None, external=None):
   data._failed_mtimes = ()
   data.external = external
   data.route_source = None
+  data._last_written_destination = None
   data.route = []
   data.curve_points = []
   data.link = link
@@ -553,5 +554,6 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     data.last_position = Coordinate(37.5000, 127.0200)
     data.route_source = None
     data.db = None
+    data.route = [(37.5000, 127.0200)]  # a previously-held route must be dropped, not kept
     data.update_location()
     self.assertEqual(data.route, [])

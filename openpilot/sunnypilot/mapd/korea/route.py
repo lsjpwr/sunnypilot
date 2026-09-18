@@ -341,7 +341,11 @@ class RouteSource:
       self._position = (lat, lon)
 
   def latest(self) -> list[tuple[float, float]]:
-    return self.state.route
+    # RouteState is single-owner and documents no lock of its own -- this is the boundary
+    # where the control loop's reads and the route thread's writes actually cross, so the
+    # lock belongs here, not inside RouteState.
+    with self._lock:
+      return self.state.route
 
   def _destination(self, params) -> tuple[float, float] | None:
     """The destination athenad's setNavDestination RPC and the UDP socket both write."""
@@ -375,13 +379,15 @@ class RouteSource:
           destination = None
 
         if destination is None or position is None:
-          self.state.set_route([])
+          with self._lock:
+            self.state.set_route([])
         elif self.state.update(*position):
           api_key = params.get("KoreaRouteApiKey", return_default=True) or ""
           route = fetch_route(api_key, position, destination, budget=self.budget)
           self.state.note_request()
           if route:
-            self.state.set_route(route)
+            with self._lock:
+              self.state.set_route(route)
       except Exception:
         # This thread dying disables the feature silently until the next reboot, and
         # nothing it does is worth that. Keep going and try again next second.

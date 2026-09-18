@@ -94,6 +94,20 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     controller = SmartCruiseControlMap()
     self.assertTrue(controller._get_enabled())
 
+  def test_korea_source_is_also_gated_on_the_external_nav_toggle(self):
+    """Curve targets (korea_map_data.py) need a fetched route, and KoreaExternalNavEnabled
+    is what starts the route thread -- so the state machine must not stay off just because
+    the unrelated speed-bump toggle is off."""
+    self.params.put("MapDataSource", int(MapSource.korea), block=True)
+    self.params.put_bool("KoreaSpeedBumpEnabled", False, block=True)
+    self.params.put_bool("KoreaExternalNavEnabled", False, block=True)
+    controller = SmartCruiseControlMap()
+    self.assertFalse(controller._get_enabled())
+
+    self.params.put_bool("KoreaExternalNavEnabled", True, block=True)
+    controller = SmartCruiseControlMap()
+    self.assertTrue(controller._get_enabled())
+
   def test_korea_bump_toggle_does_not_leak_into_the_osm_source(self):
     self.params.put("MapDataSource", int(MapSource.osm), block=True)
     self.params.put_bool("SmartCruiseControlMap", False, block=True)

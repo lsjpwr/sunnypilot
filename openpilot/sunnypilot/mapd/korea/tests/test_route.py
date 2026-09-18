@@ -7,13 +7,14 @@ See the LICENSE.md file in the root directory for more details.
 import json
 import math
 import unittest
+from types import SimpleNamespace
 
 from openpilot.sunnypilot.mapd.korea import route
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, MIN_V_MS,
-                                                   OFF_ROUTE_TICKS, REROUTE_BACKOFF_S, RequestBudget, RouteState,
-                                                   arrived, build_request, curve_targets, distance_to_route,
-                                                   fetch_route, in_korea, parse_route)
+                                                   OFF_ROUTE_TICKS, REROUTE_BACKOFF_S, RequestBudget, RouteSource,
+                                                   RouteState, arrived, build_request, curve_targets,
+                                                   distance_to_route, fetch_route, in_korea, parse_route)
 
 
 def feature(coords, kind="LineString"):
@@ -309,6 +310,53 @@ class TestRouteState(unittest.TestCase):
     # Under a flattened (5., 5., 5., 5.) tuple this would return True instead.
     clock.now = 10.
     self.assertFalse(state.update(37.5675, 126.9780))
+
+
+class TestRouteSourceDestination(unittest.TestCase):
+  """RouteSource._destination reads a value written by athenad's setNavDestination RPC or by
+  our own external_source.py socket -- either way, untrusted input from a remote party. It
+  must degrade to "no destination" rather than raise on anything malformed, since it runs on
+  a background thread whose death would silently disable the whole feature."""
+
+  def setUp(self):
+    self.source = RouteSource()
+
+  def destination(self, raw):
+    return self.source._destination(SimpleNamespace(get=lambda key: raw))
+
+  def test_the_key_is_absent_entirely(self):
+    self.assertIsNone(self.destination(None))
+
+  def test_an_empty_string(self):
+    self.assertIsNone(self.destination(""))
+
+  def test_an_empty_json_object(self):
+    self.assertIsNone(self.destination("{}"))
+
+  def test_malformed_json(self):
+    self.assertIsNone(self.destination("{not valid json"))
+
+  def test_the_json_literal_null(self):
+    self.assertIsNone(self.destination("null"))
+
+  def test_a_json_array_instead_of_an_object(self):
+    self.assertIsNone(self.destination("[]"))
+
+  def test_latitude_present_but_non_numeric(self):
+    raw = json.dumps({"latitude": "not-a-number", "longitude": 127.0276})
+    self.assertIsNone(self.destination(raw))
+
+  def test_latitude_present_as_a_nested_object(self):
+    raw = json.dumps({"latitude": {"deg": 37, "min": 30}, "longitude": 127.0276})
+    self.assertIsNone(self.destination(raw))
+
+  def test_a_coordinate_outside_korea(self):
+    raw = json.dumps({"latitude": 35.6762, "longitude": 139.6503})  # Tokyo
+    self.assertIsNone(self.destination(raw))
+
+  def test_a_valid_destination_inside_korea(self):
+    raw = json.dumps({"latitude": 37.4979, "longitude": 127.0276})
+    self.assertEqual(self.destination(raw), (37.4979, 127.0276))
 
 
 def arc(center_lat, center_lon, radius_m, start_deg, end_deg, step_deg=5.):
