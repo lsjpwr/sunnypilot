@@ -14,7 +14,10 @@ editing parse_route alone.
 Deliberately free of openpilot imports so it runs under a bare Python interpreter --
 same rule as db.py and geo.py.
 """
+import json
 import logging
+import time
+import urllib.request
 
 # Everything this feature serves is inside South Korea, so a coordinate outside it is a
 # provider bug or a hostile answer either way. Generous on purpose: the box covers Jeju
@@ -66,3 +69,86 @@ def parse_route(payload: dict) -> list[tuple[float, float]]:
     return []
 
   return points if len(points) >= MIN_ROUTE_POINTS else []
+
+
+ROUTE_URL = "https://apis.openapi.sk.com/tmap/routes?version=1&format=json"
+# Much shorter than camera_refresh's 30 s: that one runs offroad with all day to finish,
+# this one is a driver waiting for a reroute. A request that has not answered in 10 s has
+# already lost to the backoff that follows it.
+HTTP_TIMEOUT_S = 10.
+# A hard ceiling that does not depend on knowing the provider's free tier, which is not
+# published. Real use is a handful of requests per drive, so this only ever fires on a bug.
+DAILY_REQUEST_CAP = 200
+_DAY_S = 24 * 3600
+
+
+class RequestBudget:
+  """A per-day request ceiling. Not thread-safe -- one route thread owns it."""
+
+  def __init__(self, cap: int = DAILY_REQUEST_CAP, clock=time.time):  # noqa: TID251
+    # Wall clock on purpose: 'per day' is a calendar notion, and a monotonic clock has an
+    # arbitrary epoch. Same reasoning as CameraRefresher._due.
+    self.cap = cap
+    self._clock = clock
+    self._day = int(clock() // _DAY_S)
+    self._spent = 0
+
+  def _roll(self) -> None:
+    day = int(self._clock() // _DAY_S)
+    if day != self._day:
+      self._day, self._spent = day, 0
+
+  def allow(self) -> bool:
+    self._roll()
+    return self._spent < self.cap
+
+  def spend(self) -> None:
+    self._roll()
+    self._spent += 1
+
+
+def build_request(api_key: str, start: tuple[float, float],
+                  dest: tuple[float, float]) -> urllib.request.Request:
+  """The key goes in a header, never the URL: urllib puts the URL in exception messages
+  and those reach cloudlog. camera_refresh.py:105 makes the same promise."""
+  body = {
+    "startX": start[1], "startY": start[0],
+    "endX": dest[1], "endY": dest[0],
+    "reqCoordType": "WGS84GEO", "resCoordType": "WGS84GEO",
+    "searchOption": "0",
+  }
+  return urllib.request.Request(
+    ROUTE_URL,
+    data=json.dumps(body).encode(),
+    headers={"appKey": api_key, "Content-Type": "application/json"},
+    method="POST",
+  )
+
+
+def fetch_route(api_key: str, start: tuple[float, float], dest: tuple[float, float],
+                opener=urllib.request.urlopen, budget: RequestBudget | None = None
+                ) -> list[tuple[float, float]]:
+  """One routing request. [] for anything that does not produce a route we trust.
+
+  Every reason to not make the request is checked before the socket is touched, so a
+  missing key or a bad destination costs nothing.
+  """
+  if not api_key or not in_korea(*start) or not in_korea(*dest):
+    return []
+  if budget is not None and not budget.allow():
+    LOG.warning("route: daily request cap reached")
+    return []
+
+  try:
+    if budget is not None:
+      budget.spend()
+    with opener(build_request(api_key, start, dest), timeout=HTTP_TIMEOUT_S) as response:
+      payload = json.loads(response.read())
+  except Exception:
+    # Deliberately broad. urllib raises OSError/HTTPError, json raises ValueError, and a
+    # truncated body can raise almost anything -- all of them mean the same thing here,
+    # and this runs on a thread whose death would silently disable the feature.
+    LOG.warning("route: request failed")
+    return []
+
+  return parse_route(payload) if isinstance(payload, dict) else []
