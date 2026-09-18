@@ -72,7 +72,7 @@ def _destination(payload: dict) -> tuple[float, float] | None:
   for value in (lat, lon):
     if isinstance(value, bool) or not isinstance(value, int | float):
       return None
-  return (float(lat), float(lon)) if in_korea(float(lat), float(lon)) else None
+  return (float(lat), float(lon)) if in_korea(lat, lon) else None
 
 
 def parse_payload(payload: dict) -> ExternalNav:

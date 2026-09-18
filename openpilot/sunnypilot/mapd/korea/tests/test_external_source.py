@@ -87,6 +87,15 @@ class TestParsePayload(unittest.TestCase):
     nav = parse_payload({**VALID, "destination_lat": "37.5", "destination_lon": None})
     self.assertIsNone(nav.destination)
 
+  def test_huge_destination_integer_degrades_gracefully(self):
+    # JSON integers have no size limit, so a bare integer literal can exceed double range.
+    # This must degrade gracefully with the destination as None, not raise OverflowError.
+    # One bad field must not drop the entire datagram.
+    huge_int = int("9" * 400)
+    nav = parse_payload({**VALID, "destination_lat": huge_int, "destination_lon": 127.0276})
+    self.assertIsNone(nav.destination)
+    self.assertEqual(nav.speed_limit_kph, 60.)  # other fields in the same payload still parse
+
 
 class TestExternalNavSource(unittest.TestCase):
   def setUp(self):
