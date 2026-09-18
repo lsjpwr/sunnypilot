@@ -12,8 +12,8 @@ from openpilot.sunnypilot.mapd.korea import route
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, MIN_V_MS,
                                                    OFF_ROUTE_TICKS, REROUTE_BACKOFF_S, RequestBudget, RouteState,
-                                                   build_request, curve_targets, distance_to_route, fetch_route,
-                                                   in_korea, parse_route)
+                                                   arrived, build_request, curve_targets, distance_to_route,
+                                                   fetch_route, in_korea, parse_route)
 
 
 def feature(coords, kind="LineString"):
@@ -98,6 +98,21 @@ class FakeClock:
 
   def __call__(self):
     return self.now
+
+
+class TestArrived(unittest.TestCase):
+  def test_the_destination_itself_counts(self):
+    self.assertTrue(arrived((37.4979, 127.0276), (37.4979, 127.0276)))
+
+  def test_inside_the_threshold_counts(self):
+    self.assertTrue(arrived((37.4979 + 0.0005, 127.0276), (37.4979, 127.0276)))  # ~55 m
+
+  def test_outside_the_threshold_does_not(self):
+    self.assertFalse(arrived((37.4979 + 0.002, 127.0276), (37.4979, 127.0276)))  # ~220 m
+
+  def test_an_unknown_position_is_not_arrival(self):
+    self.assertFalse(arrived(None, (37.4979, 127.0276)))
+    self.assertFalse(arrived((37.4979, 127.0276), None))
 
 
 class TestBuildRequest(unittest.TestCase):

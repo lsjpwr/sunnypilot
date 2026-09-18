@@ -114,8 +114,9 @@ class FakeMapData:
   """KoreaMapData/OsmMapData stand-in: the real ones open messaging sockets, and the
   korean one a 220 MB sqlite database."""
 
-  def __init__(self, external=None):
+  def __init__(self, external=None, route_source=None):
     self.external = external
+    self.route_source = route_source
     self.ticks = 0
     self.closed = False
 

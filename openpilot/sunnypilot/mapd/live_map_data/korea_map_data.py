@@ -26,7 +26,8 @@ from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, Bump, Camera, KoreaMapDB, Link,
                                                  mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
-from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData
+from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets
+from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 KOREA_MAP_DIR = Paths.korea_map_root()
@@ -43,7 +44,8 @@ BUMP_TRAPEZOID_SPEED_RANGE = (20, 50)
 
 class KoreaMapData(BaseMapData):
   def __init__(self, cameras_path: str = KOREA_CAMERAS_PATH, links_path: str = KOREA_LINKS_PATH,
-               bumps_path: str = KOREA_BUMPS_PATH, external: ExternalNavSource | None = None):
+               bumps_path: str = KOREA_BUMPS_PATH, external: ExternalNavSource | None = None,
+               route_source: RouteSource | None = None):
     super().__init__()
     self.cameras_path = cameras_path
     self.links_path = links_path
@@ -52,6 +54,9 @@ class KoreaMapData(BaseMapData):
     self.open_failed = False
     self._failed_mtimes: tuple[float | None, ...] = ()
     self.external = external
+    self.route_source = route_source
+    self.route: list[tuple[float, float]] = []
+    self.curve_points: list[tuple[float, float, float]] = []
     self.link: Link | None = None
     self.camera: Camera | None = None
     self.bump: Bump | None = None
@@ -119,6 +124,25 @@ class KoreaMapData(BaseMapData):
   def nav(self) -> ExternalNav | None:
     return self.external.latest() if self.external is not None else None
 
+  def update_destination(self) -> None:
+    """Copy a destination from the socket into the param the route thread reads.
+
+    The socket's TTL is 5 s (external_source.py:101) and a destination is sent once, so it
+    cannot live there. The param is the one place both writers -- this socket and athenad's
+    setNavDestination RPC -- agree on, which is why the JSON shape is athenad's.
+    """
+    nav = self.nav()
+    if nav is None:
+      return
+    if nav.destination is None:
+      if self.params.get("NavDestination"):
+        self.params.remove("NavDestination")
+      return
+    self.params.put("NavDestination", json.dumps({
+      "latitude": nav.destination[0], "longitude": nav.destination[1],
+      "place_name": nav.road_name or None, "place_details": None,
+    }))
+
   def update_location(self) -> None:
     location = self.sm['liveLocationKalman']
     self.localizer_valid = (location.status == log.LiveLocationKalman.Status.valid) and location.positionGeodetic.valid
@@ -131,6 +155,15 @@ class KoreaMapData(BaseMapData):
     self.camera = None
     self.bump = None
 
+    # Kept apart from open_db() below on purpose: the route thread must keep tracking our
+    # position, and self.route must stay current, even while the camera/link database is
+    # still being copied down or has just been dropped after a corrupt read -- neither is a
+    # reason to feed the lookups (and next_camera/next_bump, gated on self.db below) a route
+    # that stopped following the driver.
+    self.route = self.route_source.latest() if self.route_source is not None else []
+    if self.route_source is not None and self.localizer_valid:
+      self.route_source.set_position(self.last_position.latitude, self.last_position.longitude)
+
     self.open_db()
     if self.db is None or self.last_position is None:
       return
@@ -142,8 +175,8 @@ class KoreaMapData(BaseMapData):
     lat, lon = self.last_position.latitude, self.last_position.longitude
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing)
-      self.camera = self.db.next_camera(lat, lon, self.last_bearing)
-      self.bump = self.db.next_bump(lat, lon, self.last_bearing)
+      self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route)
+      self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
     except Exception:
       # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
       # geometry blob raises struct.error from _unpack_geom -- not a sqlite exception at
@@ -185,11 +218,15 @@ class KoreaMapData(BaseMapData):
     arch = get_sanitize_int_param("KoreaSpeedBumpArchSpeed", *BUMP_ARCH_SPEED_RANGE, self.params)
     trapezoid = get_sanitize_int_param("KoreaSpeedBumpTrapezoidSpeed", *BUMP_TRAPEZOID_SPEED_RANGE, self.params)
     # BUMP_VIRTUAL is deliberately absent: next_bump never returns one, and a missing key
-    # here means publish_bump_target would fall through to "no target" if one ever arrived.
+    # here means publish_targets would fall through to "no target" if one ever arrived.
     self.bump_targets = {BUMP_ARCH: arch * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid * CV.KPH_TO_MS}
 
-  def publish_bump_target(self) -> None:
-    """Hand the next bump to SmartCruiseControlMap through the two mem_params it reads.
+  def publish_targets(self) -> None:
+    """Hand the next bump AND the curves ahead to SmartCruiseControlMap.
+
+    One writer, not two: SCC-Map reads the whole list from this one param, so a second
+    writer would delete the first one's points every tick. The bump feature shipped first
+    and owned the param alone -- it now shares it.
 
     Written on every tick, cleared when there is nothing ahead. SCC-Map has no staleness
     check of its own -- it trusts whatever is in the param -- so 'stop writing' is not a
@@ -197,17 +234,21 @@ class KoreaMapData(BaseMapData):
 
     Also requires localizer_valid: last_position/last_bearing only update while the
     localizer is valid (see update_location), so a localizer that stops updating would
-    otherwise freeze self.bump at whatever it last resolved to and republish that same
-    point forever -- the car keeps moving, SCC-Map keeps seeing a constant distance, and
-    the slowdown never releases.
+    otherwise freeze self.bump (and republish self.curve_points against a stale car
+    position) forever -- the car keeps moving, SCC-Map keeps seeing a constant distance,
+    and the slowdown never releases.
     """
-    points: list[dict[str, float]] = []
-    if self.bump_enabled and self.bump is not None and self.last_position is not None and self.localizer_valid:
-      target = self.bump_targets.get(self.bump.kind, 0.)
-      if target > 0.:
-        points = [{"latitude": self.bump.lat, "longitude": self.bump.lon, "velocity": target}]
+    points: list[tuple[float, float, float]] = []
+    if self.localizer_valid and self.last_position is not None:
+      if self.bump_enabled and self.bump is not None:
+        target = self.bump_targets.get(self.bump.kind, 0.)
+        if target > 0.:
+          points.append((self.bump.lat, self.bump.lon, target))
+      points.extend(self.curve_points)
+      points.sort(key=lambda p: self.last_position.distance_to(Coordinate(p[0], p[1])))
 
-    self.mem_params.put("MapTargetVelocities", json.dumps(points))
+    self.mem_params.put("MapTargetVelocities", json.dumps(
+      [{"latitude": lat, "longitude": lon, "velocity": velocity} for lat, lon, velocity in points]))
     if self.last_position is not None:
       self.mem_params.put("LastGPSPosition", json.dumps(self.last_position.as_dict()))
 
@@ -215,5 +256,14 @@ class KoreaMapData(BaseMapData):
     """Override rather than calling from update_location: update_location returns early on
     every tick before the database opens, and the clearing write has to happen anyway."""
     self.read_bump_params()
+    self.update_destination()
     super().tick()
-    self.publish_bump_target()
+    self.curve_points = []
+    if self.route and self.last_position is not None and self.localizer_valid:
+      # The road's own limit, not the set speed: mapd never sees the set speed, and
+      # SmartCruiseControlMap already refuses to act on a target above it
+      # (map_controller.py:234). A curve target above the posted limit is noise either way.
+      v_max = self.get_current_speed_limit() or MAX_SPEED_LIMIT
+      self.curve_points = curve_targets(self.route, self.last_position.latitude,
+                                        self.last_position.longitude, v_max)
+    self.publish_targets()

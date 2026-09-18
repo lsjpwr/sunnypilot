@@ -23,6 +23,7 @@ from openpilot.sunnypilot.mapd import MAPD_PATH, MapSource
 from openpilot.sunnypilot.mapd.korea.camera_refresh import CameraRefresher
 from openpilot.sunnypilot.mapd.korea.map_download import MapDownloader
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNavSource
+from openpilot.sunnypilot.mapd.korea.route import RouteSource
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KOREA_CAMERAS_PATH, KOREA_LINKS_PATH,
                                                                     KOREA_MAP_DIR, KoreaMapData)
 from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
@@ -191,6 +192,7 @@ def korea_main() -> None:
   refresher = None
   downloader = None
   live_map_sp = None
+  route_source = None
 
   try:
     if external_nav:
@@ -205,7 +207,15 @@ def korea_main() -> None:
         external = None
         cloudlog.exception("mapd: external nav failed to start, continuing without it")
 
-    live_map_sp = KoreaMapData(external=external)
+    # The route feature follows KoreaExternalNavEnabled, not external's bind success: a
+    # destination can still arrive through athenad's setNavDestination RPC even when this
+    # process's own UDP socket lost the port race, and a separate toggle would only make a
+    # trap where a user has to enable both.
+    if external_nav:
+      route_source = RouteSource()
+      route_source.start()
+
+    live_map_sp = KoreaMapData(external=external, route_source=route_source)
 
     refresher = CameraRefresher(KOREA_CAMERAS_PATH)
     refresher.start()
@@ -245,6 +255,8 @@ def korea_main() -> None:
     set_offroad_alert("Offroad_KoreaMapMissing", False, "")
     if external is not None:
       external.stop()
+    if route_source is not None:
+      route_source.stop()
     if refresher is not None:
       refresher.stop()
     if downloader is not None:

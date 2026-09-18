@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import json
+import math
 import os
 import pathlib
 import sqlite3
@@ -16,6 +17,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import openpilot.cereal.messaging as messaging
+from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.parameterized import parameterized
 from openpilot.common.params import Params
@@ -46,6 +48,9 @@ def make_data(link=None, camera=None, external=None):
   data.open_failed = False
   data._failed_mtimes = ()
   data.external = external
+  data.route_source = None
+  data.route = []
+  data.curve_points = []
   data.link = link
   data.camera = camera
   data.bump = None
@@ -65,7 +70,7 @@ class StubMemParams:
 
 
 def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, position=None, localizer_valid=True):
-  """A KoreaMapData wired only far enough to exercise publish_bump_target."""
+  """A KoreaMapData wired only far enough to exercise publish_targets."""
   data = KoreaMapData.__new__(KoreaMapData)
   data.mem_params = StubMemParams()
   data.bump = bump
@@ -73,6 +78,7 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
   data.bump_targets = {BUMP_ARCH: arch_kph * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid_kph * CV.KPH_TO_MS}
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
   data.localizer_valid = localizer_valid
+  data.curve_points = []
   return data
 
 
@@ -226,10 +232,10 @@ class StubDB:
   def current_link(self, lat, lon, heading_deg=None):
     return None
 
-  def next_camera(self, lat, lon, heading_deg):
+  def next_camera(self, lat, lon, heading_deg, route=None):
     return None
 
-  def next_bump(self, lat, lon, heading_deg):
+  def next_bump(self, lat, lon, heading_deg, route=None):
     return None
 
 
@@ -313,7 +319,7 @@ class TestUpdateLocation(unittest.TestCase):
 class BumpTargetTestCase(unittest.TestCase):
   def test_publishes_the_bump_as_a_map_target_velocity(self):
     data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.))
-    data.publish_bump_target()
+    data.publish_targets()
 
     points = json.loads(data.mem_params.values["MapTargetVelocities"])
     self.assertEqual(len(points), 1)
@@ -327,7 +333,7 @@ class BumpTargetTestCase(unittest.TestCase):
 
   def test_trapezoid_bumps_use_the_gentler_target(self):
     data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_TRAPEZOID, distance_m=150.))
-    data.publish_bump_target()
+    data.publish_targets()
     points = json.loads(data.mem_params.values["MapTargetVelocities"])
     self.assertAlmostEqual(points[0]["velocity"], 35 * CV.KPH_TO_MS)
 
@@ -335,20 +341,20 @@ class BumpTargetTestCase(unittest.TestCase):
     """Not merely 'writes nothing' -- SCC-Map reads this every frame, so a stale point
     left behind would keep braking for a bump we already passed."""
     data = make_bump_data(bump=None)
-    data.publish_bump_target()
+    data.publish_targets()
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
 
   def test_the_toggle_being_off_clears_the_param(self):
     data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.),
                           enabled=False)
-    data.publish_bump_target()
+    data.publish_targets()
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
 
   def test_no_position_publishes_nothing_rather_than_a_zero_coordinate(self):
     data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.),
                           position=None)
     data.last_position = None
-    data.publish_bump_target()
+    data.publish_targets()
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
     self.assertNotIn("LastGPSPosition", data.mem_params.values)
 
@@ -359,15 +365,15 @@ class BumpTargetTestCase(unittest.TestCase):
     release the slowdown, even though the car keeps moving."""
     data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_ARCH, distance_m=150.),
                           localizer_valid=False)
-    data.publish_bump_target()
+    data.publish_targets()
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
 
   def test_a_virtual_bump_is_never_published_even_if_one_reaches_here(self):
     """next_bump never returns a virtual bump and bump_targets has no key for one either --
-    belt and suspenders: publish_bump_target's own `target > 0.` guard must independently
+    belt and suspenders: publish_targets's own `target > 0.` guard must independently
     refuse to publish one if it ever did reach this far."""
     data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_VIRTUAL, distance_m=150.))
-    data.publish_bump_target()
+    data.publish_targets()
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
 
 
@@ -409,25 +415,28 @@ class StubSM(dict):
 
 
 class TestTickOrdering(unittest.TestCase):
-  def test_tick_runs_publish_bump_target_after_the_base_tick(self):
-    """Pins the ordering the whole safety story depends on: publish_bump_target must run
+  def test_tick_runs_publish_targets_after_the_base_tick(self):
+    """Pins the ordering the whole safety story depends on: publish_targets must run
     after super().tick() (sm.update, update_location, publish), on every tick -- not from
     inside update_location, whose early return is covered separately below."""
     calls = []
     data = KoreaMapData.__new__(KoreaMapData)
     data.read_bump_params = lambda: calls.append("read_bump_params")
+    data.update_destination = lambda: calls.append("update_destination")
     data.sm = SimpleNamespace(update=lambda rate: calls.append("sm.update"))
     data.update_location = lambda: calls.append("update_location")
     data.publish = lambda: calls.append("publish")
-    data.publish_bump_target = lambda: calls.append("publish_bump_target")
+    data.route = []  # falsy, so tick()'s curve_targets step is a no-op between publish and publish_targets
+    data.publish_targets = lambda: calls.append("publish_targets")
 
     data.tick()
 
-    self.assertEqual(calls, ["read_bump_params", "sm.update", "update_location", "publish", "publish_bump_target"])
+    self.assertEqual(calls, ["read_bump_params", "update_destination", "sm.update", "update_location", "publish",
+                             "publish_targets"])
 
   def test_an_early_return_in_update_location_still_clears_the_target(self):
     """update_location returns early every tick before the database opens, or before the
-    localizer has a fix. publish_bump_target has to run anyway -- moving its call inside
+    localizer has a fix. publish_targets has to run anyway -- moving its call inside
     update_location, after the early return, would leave MapTargetVelocities unwritten (and
     so stale) for that entire window instead of the empty list SCC-Map is safe to read."""
     data = make_data()
@@ -440,3 +449,109 @@ class TestTickOrdering(unittest.TestCase):
     data.tick()
 
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+
+
+class TestMapTargetVelocitiesMerge(unittest.TestCase):
+  """The bump feature owns this param today. Curves have to join it, not replace it."""
+
+  def make(self, bump=None, curve_points=(), enabled=True, localizer_valid=True):
+    data = make_bump_data(bump=bump, enabled=enabled, localizer_valid=localizer_valid,
+                          position=Coordinate(37.5000, 127.0200))
+    data.route = []
+    data.curve_points = list(curve_points)
+    return data
+
+  def read(self, data):
+    data.publish_targets()
+    return json.loads(data.mem_params.values["MapTargetVelocities"])
+
+  def test_a_bump_alone_is_unchanged(self):
+    data = self.make(bump=Bump(lat=37.5000, lon=127.0217, kind=BUMP_ARCH, distance_m=150.))
+    self.assertEqual(self.read(data), [
+      {"latitude": 37.5000, "longitude": 127.0217, "velocity": 25 * CV.KPH_TO_MS},
+    ])
+
+  def test_a_curve_alone_is_published(self):
+    data = self.make(curve_points=[(37.5000, 127.0234, 12.)])
+    self.assertEqual(self.read(data), [
+      {"latitude": 37.5000, "longitude": 127.0234, "velocity": 12.},
+    ])
+
+  def test_both_are_published_nearest_first(self):
+    data = self.make(bump=Bump(lat=37.5000, lon=127.0234, kind=BUMP_ARCH, distance_m=300.),
+                     curve_points=[(37.5000, 127.0217, 12.)])
+    self.assertEqual([p["longitude"] for p in self.read(data)], [127.0217, 127.0234])
+
+  def test_nothing_ahead_clears_the_param(self):
+    self.assertEqual(self.read(self.make()), [])
+
+  def test_a_disabled_bump_does_not_remove_the_curve(self):
+    data = self.make(bump=Bump(lat=37.5000, lon=127.0234, kind=BUMP_ARCH, distance_m=300.),
+                     curve_points=[(37.5000, 127.0217, 12.)], enabled=False)
+    self.assertEqual(self.read(data), [
+      {"latitude": 37.5000, "longitude": 127.0217, "velocity": 12.},
+    ])
+
+  def test_an_invalid_localizer_publishes_nothing(self):
+    data = self.make(bump=Bump(lat=37.5000, lon=127.0217, kind=BUMP_ARCH, distance_m=150.),
+                     curve_points=[(37.5000, 127.0234, 12.)], localizer_valid=False)
+    self.assertEqual(self.read(data), [])
+
+
+class SingleLocationSM:
+  """SubMaster stand-in: update() is a no-op and every key is the same location.
+
+  Named apart from the dict-based StubSM above (TestTickOrdering) -- the two are not
+  interchangeable (this one ignores the subscript key entirely) and redefining StubSM here
+  would silently shadow that one for every test below it in the file.
+  """
+
+  def __init__(self, llk):
+    self._llk = llk
+
+  def __getitem__(self, key):
+    return self._llk
+
+  def update(self, timeout):
+    pass
+
+
+def valid_llk(lat=37.5000, lon=127.0200, heading_deg=90.):
+  return SimpleNamespace(
+    status=log.LiveLocationKalman.Status.valid,
+    gpsOK=True,
+    positionGeodetic=SimpleNamespace(valid=True, value=[lat, lon, 0.]),
+    calibratedOrientationNED=SimpleNamespace(value=[0., 0., math.radians(heading_deg)]),
+  )
+
+
+class TestRouteReachesTheLookups(unittest.TestCase):
+  def test_the_route_is_handed_to_both_lookups(self):
+    data = make_data()
+    data.sm = SingleLocationSM(valid_llk())
+    data.last_position = Coordinate(37.5000, 127.0200)
+    data.last_bearing = 90.
+    data.curve_points = []
+    route = [(37.5000, 127.0200), (37.5000, 127.0320)]
+    data.route_source = SimpleNamespace(latest=lambda: route, set_position=lambda lat, lon: None)
+
+    seen = {}
+    data.db = SimpleNamespace(
+      reload_if_changed=lambda: False,
+      current_link=lambda *a, **k: None,
+      next_camera=lambda *a, **k: seen.update(camera=k.get("route")),
+      next_bump=lambda *a, **k: seen.update(bump=k.get("route")),
+    )
+
+    data.update_location()
+    self.assertEqual(seen["camera"], route)
+    self.assertEqual(seen["bump"], route)
+
+  def test_no_route_source_means_an_empty_route(self):
+    data = make_data()
+    data.sm = SingleLocationSM(valid_llk())
+    data.last_position = Coordinate(37.5000, 127.0200)
+    data.route_source = None
+    data.db = None
+    data.update_location()
+    self.assertEqual(data.route, [])

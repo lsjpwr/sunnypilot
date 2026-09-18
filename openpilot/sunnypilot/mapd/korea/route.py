@@ -17,6 +17,7 @@ same rule as db.py and geo.py.
 import json
 import logging
 import math
+import threading
 import time
 import urllib.request
 
@@ -293,3 +294,97 @@ def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
       targets.append((route[i][0], route[i][1], velocity))
 
   return targets
+
+
+# Close enough to be there. Generous on purpose -- the destination the phone sends is a
+# POI centroid, not the kerb, and a 20 m threshold would leave the route live in a car park.
+ARRIVED_M = 100.
+
+
+def arrived(position: tuple[float, float] | None, destination: tuple[float, float] | None) -> bool:
+  """Are we there? False when either end is unknown -- 'no position' is not 'arrived'."""
+  if position is None or destination is None:
+    return False
+  return haversine(position[0], position[1], destination[0], destination[1]) <= ARRIVED_M
+
+
+class RouteSource:
+  """Background thread that keeps a polyline for the current destination.
+
+  Runs off the control loop for one reason: a routing request takes seconds, and
+  KoreaMapData.tick() is the 1 Hz path that decides whether to brake. Same split, and the
+  same start/stop shape, as CameraRefresher.
+  """
+
+  def __init__(self, clock=time.monotonic):
+    self.state = RouteState(clock=clock)
+    self.budget = RequestBudget()
+    self._lock = threading.Lock()
+    self._position: tuple[float, float] | None = None
+    self._stop = threading.Event()
+    self._thread: threading.Thread | None = None
+
+  def start(self) -> None:
+    if self._thread is not None:
+      return
+    self._thread = threading.Thread(target=self._loop, daemon=True)
+    self._thread.start()
+
+  def stop(self) -> None:
+    self._stop.set()
+    if self._thread is not None:
+      self._thread.join(timeout=2.)
+      self._thread = None
+
+  def set_position(self, lat: float, lon: float) -> None:
+    with self._lock:
+      self._position = (lat, lon)
+
+  def latest(self) -> list[tuple[float, float]]:
+    return self.state.route
+
+  def _destination(self, params) -> tuple[float, float] | None:
+    """The destination athenad's setNavDestination RPC and the UDP socket both write."""
+    raw = params.get("NavDestination")
+    if not raw:
+      return None
+    try:
+      dest = json.loads(raw)
+      lat, lon = float(dest["latitude"]), float(dest["longitude"])
+    except (ValueError, TypeError, KeyError):
+      return None
+    return (lat, lon) if in_korea(lat, lon) else None
+
+  def _loop(self) -> None:
+    # imported here so the module stays importable without the device stack, which is what
+    # lets the tests run under a bare interpreter -- same as CameraRefresher._loop
+    from openpilot.common.params import Params
+
+    params = Params()
+    while not self._stop.is_set():
+      try:
+        with self._lock:
+          position = self._position
+        destination = self._destination(params)
+
+        if arrived(position, destination):
+          # Arrived. Clearing here rather than waiting for the phone means a driver who
+          # closes the nav app on the kerb does not keep a route that now points behind
+          # them -- and the reroute machinery would otherwise fire on every tick.
+          params.remove("NavDestination")
+          destination = None
+
+        if destination is None or position is None:
+          self.state.set_route([])
+        elif self.state.update(*position):
+          api_key = params.get("KoreaRouteApiKey", return_default=True) or ""
+          route = fetch_route(api_key, position, destination, budget=self.budget)
+          self.state.note_request()
+          if route:
+            self.state.set_route(route)
+      except Exception:
+        # This thread dying disables the feature silently until the next reboot, and
+        # nothing it does is worth that. Keep going and try again next second.
+        LOG.exception("route: source loop error")
+
+      self._stop.wait(1.)
