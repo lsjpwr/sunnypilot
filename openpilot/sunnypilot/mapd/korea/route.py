@@ -16,10 +16,11 @@ same rule as db.py and geo.py.
 """
 import json
 import logging
+import math
 import time
 import urllib.request
 
-from openpilot.sunnypilot.mapd.korea.geo import point_segment_distance
+from openpilot.sunnypilot.mapd.korea.geo import haversine, point_segment_distance
 
 # Everything this feature serves is inside South Korea, so a coordinate outside it is a
 # provider bug or a hostile answer either way. Generous on purpose: the box covers Jeju
@@ -217,3 +218,68 @@ class RouteState:
     if self._last_request is not None and self._clock() - self._last_request < self._wait():
       return False
     return True
+
+
+# SCC-Map brakes with a jerk limit, so a point handed over at 300 m is already inside the
+# comfortable window at highway speed and well outside it in town.
+CURVE_HORIZON_M = 300.
+# Matches _A_LAT_REG_MAX in smart_cruise_control/vision_controller.py:31. The two
+# controllers feed the same longitudinal planner, so disagreeing here would show up as one
+# of them fighting the other through a bend.
+A_LAT_MAX = 2.
+# smart_cruise_control/__init__.py: MIN_V = 20 * CV.KPH_TO_MS. Repeated rather than
+# imported because korea/ must stay importable without the openpilot stack.
+MIN_V_MS = 20. / 3.6
+
+
+def _menger_curvature(a: tuple[float, float], b: tuple[float, float],
+                      c: tuple[float, float]) -> float:
+  """Curvature in 1/m of the circle through three points, 0 when they are collinear.
+
+  Menger's formula rather than a derivative: the polyline's point spacing is uneven, and
+  three points with a circumscribed circle need no differentiation to be stable.
+  """
+  ab = haversine(a[0], a[1], b[0], b[1])
+  bc = haversine(b[0], b[1], c[0], c[1])
+  ca = haversine(c[0], c[1], a[0], a[1])
+  if ab == 0. or bc == 0. or ca == 0.:
+    return 0.
+
+  # twice the triangle area, by the cross product in a local flat frame
+  m_lon = 111195. * math.cos(math.radians(b[0]))
+  ax, ay = (a[1] - b[1]) * m_lon, (a[0] - b[0]) * 111195.
+  cx, cy = (c[1] - b[1]) * m_lon, (c[0] - b[0]) * 111195.
+  area2 = abs(ax * cy - ay * cx)
+  return 2. * area2 / (ab * bc * ca) if area2 > 0. else 0.
+
+
+def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
+                  v_max_ms: float) -> list[tuple[float, float, float]]:
+  """(lat, lon, velocity) points for the curves inside CURVE_HORIZON_M ahead, nearest first.
+
+  Only curves that actually ask for a slowdown are returned: a target at or above the set
+  speed is not a target, it is noise SCC-Map would have to filter itself.
+  """
+  if len(route) < 3:
+    return []
+
+  # start at the segment we are on, so a curve already behind us is never reported
+  start = min(range(len(route) - 1),
+              key=lambda i: point_segment_distance(lat, lon, route[i][0], route[i][1],
+                                                   route[i + 1][0], route[i + 1][1]))
+
+  targets: list[tuple[float, float, float]] = []
+  travelled = haversine(lat, lon, route[start][0], route[start][1])
+  for i in range(start + 1, len(route) - 1):
+    travelled += haversine(route[i - 1][0], route[i - 1][1], route[i][0], route[i][1])
+    if travelled > CURVE_HORIZON_M:
+      break
+
+    curvature = _menger_curvature(route[i - 1], route[i], route[i + 1])
+    if curvature <= 0.:
+      continue
+    velocity = max(math.sqrt(A_LAT_MAX / curvature), MIN_V_MS)
+    if velocity < v_max_ms:
+      targets.append((route[i][0], route[i][1], velocity))
+
+  return targets

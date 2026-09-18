@@ -5,12 +5,15 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import json
+import math
 import unittest
 
 from openpilot.sunnypilot.mapd.korea import route
-from openpilot.sunnypilot.mapd.korea.route import (DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, OFF_ROUTE_TICKS,
-                                                   REROUTE_BACKOFF_S, RequestBudget, RouteState, build_request,
-                                                   distance_to_route, fetch_route, in_korea, parse_route)
+from openpilot.sunnypilot.mapd.korea.geo import haversine
+from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, MIN_V_MS,
+                                                   OFF_ROUTE_TICKS, REROUTE_BACKOFF_S, RequestBudget, RouteState,
+                                                   build_request, curve_targets, distance_to_route, fetch_route,
+                                                   in_korea, parse_route)
 
 
 def feature(coords, kind="LineString"):
@@ -291,3 +294,76 @@ class TestRouteState(unittest.TestCase):
     # Under a flattened (5., 5., 5., 5.) tuple this would return True instead.
     clock.now = 10.
     self.assertFalse(state.update(37.5675, 126.9780))
+
+
+def arc(center_lat, center_lon, radius_m, start_deg, end_deg, step_deg=5.):
+  """A circular arc as (lat, lon) points -- a curve with a known radius to check against."""
+  m_per_deg_lat = 111195.
+  m_per_deg_lon = m_per_deg_lat * math.cos(math.radians(center_lat))
+  points = []
+  angle = start_deg
+  while angle <= end_deg:
+    rad = math.radians(angle)
+    points.append((center_lat + radius_m * math.sin(rad) / m_per_deg_lat,
+                   center_lon + radius_m * math.cos(rad) / m_per_deg_lon))
+    angle += step_deg
+  return points
+
+
+class TestCurveTargets(unittest.TestCase):
+  def test_a_straight_road_has_no_targets(self):
+    self.assertEqual(curve_targets(STRAIGHT, 37.5665, 126.9780, 30.), [])
+
+  def test_an_empty_route_has_no_targets(self):
+    self.assertEqual(curve_targets([], 37.5665, 126.9780, 30.), [])
+
+  def test_a_200_m_radius_curve_targets_the_physics_speed(self):
+    route = arc(37.5665, 126.9780, 200., 0., 90.)
+    targets = curve_targets(route, route[0][0], route[0][1], 30.)
+    self.assertTrue(targets)
+    expected = math.sqrt(A_LAT_MAX * 200.)  # ~20 m/s
+    self.assertAlmostEqual(targets[0][2], expected, delta=3.)
+
+  def test_a_tight_curve_is_clamped_to_the_floor(self):
+    route = arc(37.5665, 126.9780, 15., 0., 180.)
+    targets = curve_targets(route, route[0][0], route[0][1], 30.)
+    self.assertTrue(targets)
+    self.assertGreaterEqual(min(t[2] for t in targets), MIN_V_MS)
+
+  def test_a_gentle_curve_is_not_reported_above_the_set_speed(self):
+    route = arc(37.5665, 126.9780, 2000., 0., 90.)
+    self.assertEqual(curve_targets(route, route[0][0], route[0][1], 10.), [])
+
+  def test_targets_come_back_nearest_first(self):
+    # The lead-in must reach the curve's own first point with no gap. An earlier version of
+    # this test used a nearby point as the arc's *center* (arc(37.5685, 126.9780, 100., ...)
+    # with 37.5685 taken from STRAIGHT), but center_lat/center_lon is the circle's centre,
+    # not a point on it -- that put a 100 m teleport between the straight lead-in and the
+    # curve, which alone blew the 300 m CURVE_HORIZON_M budget and left only the single
+    # degenerate joint triplet to report (len(targets) == 1, not > 1).
+    curve = arc(37.5685, 126.9780, 100., 0., 180.)
+    lead_in = [(curve[0][0] - 0.001, curve[0][1]), (curve[0][0] - 0.0005, curve[0][1])]
+    route = lead_in + curve
+    targets = curve_targets(route, lead_in[0][0], lead_in[0][1], 30.)
+    self.assertGreater(len(targets), 1)
+    distances = [haversine(lead_in[0][0], lead_in[0][1], lat, lon) for lat, lon, _ in targets]
+    self.assertEqual(distances, sorted(distances))
+
+  def test_a_curve_behind_us_is_ignored(self):
+    route = arc(37.5665, 126.9780, 100., 0., 90.)
+    beyond = route[-1]
+    self.assertEqual(curve_targets(route, beyond[0], beyond[1], 30.), [])
+
+  def test_a_two_point_route_has_no_targets(self):
+    # Menger curvature needs three points; two can never form a triangle.
+    self.assertEqual(curve_targets(STRAIGHT[:2], 37.5665, 126.9780, 30.), [])
+
+  def test_duplicate_consecutive_points_do_not_raise(self):
+    # A repeated point makes one side of the Menger triangle zero. That must be guarded
+    # before the division, not just happen to avoid a ZeroDivisionError on this input --
+    # the real curve on either side of the duplicate must still come through.
+    curve = arc(37.5665, 126.9780, 200., 0., 90.)
+    route = [curve[0], curve[1], curve[1]] + curve[2:]
+    targets = curve_targets(route, curve[0][0], curve[0][1], 30.)
+    self.assertTrue(targets)
+    self.assertTrue(all(math.isfinite(v) for _, _, v in targets))
