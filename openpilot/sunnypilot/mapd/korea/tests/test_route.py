@@ -6,8 +6,12 @@ See the LICENSE.md file in the root directory for more details.
 """
 import json
 import math
+import sys
+import threading
+import types
 import unittest
 from types import SimpleNamespace
+from unittest import mock
 
 from openpilot.sunnypilot.mapd.korea import route
 from openpilot.sunnypilot.mapd.korea.geo import haversine
@@ -46,29 +50,36 @@ class TestInKorea(unittest.TestCase):
 
 class TestParseRoute(unittest.TestCase):
   def test_linestrings_concatenate_in_order(self):
-    self.assertEqual(parse_route(SAMPLE), [
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      result = parse_route(SAMPLE)
+    self.assertEqual(result, [
       (37.5665, 126.9780), (37.5600, 126.9800), (37.5500, 126.9850), (37.4979, 127.0276),
     ])
 
   def test_point_features_are_ignored(self):
     only_points = {"features": [feature([126.9780, 37.5665], kind="Point")]}
-    self.assertEqual(parse_route(only_points), [])
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      self.assertEqual(parse_route(only_points), [])
 
   def test_a_coordinate_outside_korea_discards_the_whole_route(self):
     payload = {"features": [feature([[126.9780, 37.5665], [139.6503, 35.6762]])]}
-    self.assertEqual(parse_route(payload), [])
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      self.assertEqual(parse_route(payload), [])
 
   def test_too_many_points_are_discarded(self):
     coords = [[126.9780 + i * 1e-5, 37.5665] for i in range(MAX_ROUTE_POINTS + 1)]
-    self.assertEqual(parse_route({"features": [feature(coords)]}), [])
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      self.assertEqual(parse_route({"features": [feature(coords)]}), [])
 
   def test_a_single_point_is_not_a_route(self):
-    self.assertEqual(parse_route({"features": [feature([[126.9780, 37.5665]])]}), [])
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      self.assertEqual(parse_route({"features": [feature([[126.9780, 37.5665]])]}), [])
 
   def test_malformed_payload_is_empty_not_an_exception(self):
     for bad in ({}, {"features": None}, {"features": [{}]}, {"features": [{"geometry": 7}]},
                 {"features": [feature([["nope", "nope"]])]}):
-      self.assertEqual(parse_route(bad), [])
+      with self.assertLogs(route.LOG, level="DEBUG"):
+        self.assertEqual(parse_route(bad), [])
 
 
 class FakeResponse:
@@ -153,8 +164,9 @@ class TestRequestBudget(unittest.TestCase):
 
 class TestFetchRoute(unittest.TestCase):
   def test_a_good_answer_becomes_a_polyline(self):
-    route = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276), opener=fake_opener(SAMPLE))
-    self.assertEqual(len(route), 4)
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      result = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276), opener=fake_opener(SAMPLE))
+    self.assertEqual(len(result), 4)
 
   def test_an_http_failure_is_an_empty_route(self):
     def boom(request, timeout=None):
@@ -171,9 +183,10 @@ class TestFetchRoute(unittest.TestCase):
 
   def test_an_empty_key_is_never_requested(self):
     capture = []
-    route = fetch_route("", (37.5665, 126.9780), (37.4979, 127.0276),
-                        opener=fake_opener(SAMPLE, capture))
-    self.assertEqual(route, [])
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      result = fetch_route("", (37.5665, 126.9780), (37.4979, 127.0276),
+                           opener=fake_opener(SAMPLE, capture))
+    self.assertEqual(result, [])
     self.assertEqual(capture, [])
 
   def test_the_budget_stops_the_request_before_the_socket(self):
@@ -189,8 +202,9 @@ class TestFetchRoute(unittest.TestCase):
     capture = []
     budget = RequestBudget(cap=1, clock=FakeClock())
     # First call should succeed and spend the budget
-    result1 = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276),
-                          opener=fake_opener(SAMPLE, capture), budget=budget)
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      result1 = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276),
+                            opener=fake_opener(SAMPLE, capture), budget=budget)
     self.assertEqual(len(result1), 4)
     self.assertEqual(len(capture), 1)
     # Second call should be blocked by the spent budget
@@ -310,6 +324,20 @@ class TestRouteState(unittest.TestCase):
     # Under a flattened (5., 5., 5., 5.) tuple this would return True instead.
     clock.now = 10.
     self.assertFalse(state.update(37.5675, 126.9780))
+
+  def test_reset_backoff_clears_failures_and_the_cooldown(self):
+    # A new destination is not a continuation of the old one's failures (Fix 2): three
+    # failed requests leave the next update() inside the cooldown...
+    clock = FakeClock()
+    state = RouteState(clock=clock)
+    for _ in range(3):
+      state.note_request()
+    self.assertFalse(state.update(37.5675, 126.9780))
+
+    # ...but reset_backoff() (what a changed destination calls) clears that cooldown just
+    # like arriving back on the route does, with the clock never having moved.
+    state.reset_backoff()
+    self.assertTrue(state.update(37.5675, 126.9780))
 
 
 class TestRouteSourceDestination(unittest.TestCase):
@@ -453,3 +481,80 @@ class TestCurveTargets(unittest.TestCase):
     route = list(STRAIGHT)
     route[2] = (route[1][0], route[1][1] + 0.01 / m_per_deg_lon)  # ~1 cm from route[1]
     self.assertEqual(curve_targets(route, STRAIGHT[0][0], STRAIGHT[0][1], 30.), [])
+
+
+class TwoTickStop(threading.Event):
+  """Lets RouteSource._loop run for exactly two iterations, switching what NavDestination
+  reads back to right after the first one -- same one-shot-per-tick idea as
+  test_camera_refresh.OneShotStop, extended to a scripted second tick."""
+
+  def __init__(self, params_values, second_destination_raw):
+    super().__init__()
+    self._params_values = params_values
+    self._second_destination_raw = second_destination_raw
+    self._ticks = 0
+
+  def wait(self, timeout=None):
+    self._ticks += 1
+    if self._ticks == 1:
+      self._params_values["NavDestination"] = self._second_destination_raw
+    else:
+      self.set()
+    return True
+
+
+class FakeRouteParams:
+  """Params stand-in for _loop: NavDestination/KoreaRouteApiKey read from a plain dict a
+  test can mutate between ticks, the way TwoTickStop does."""
+
+  def __init__(self, values):
+    self._values = values
+
+  def get(self, key, return_default=False):
+    return self._values.get(key)
+
+  def remove(self, key):
+    self._values.pop(key, None)
+
+
+class TestRouteSourceLoopDestinationChange(unittest.TestCase):
+  """RouteState alone cannot exhibit either bug fixed here -- it has no notion of a
+  destination at all. _loop is the only place a destination change actually does anything,
+  so it is the only place that can prove Fix 1 (drop the stale route) and Fix 2 (give the
+  new destination a fresh backoff) actually run. cereal is not imported by this loop, so
+  only openpilot.common.params needs faking through sys.modules -- same technique
+  test_camera_refresh.TestRefresherLoop uses for CameraRefresher._loop.
+  """
+
+  def test_a_changed_destination_drops_the_route_and_its_backoff(self):
+    dest1, dest2 = (37.4979, 127.0276), (37.5000, 127.1000)  # both well clear of ARRIVED_M
+    params_values = {
+      "NavDestination": json.dumps({"latitude": dest1[0], "longitude": dest1[1]}),
+      "KoreaRouteApiKey": "K",
+    }
+    dest2_raw = json.dumps({"latitude": dest2[0], "longitude": dest2[1]})
+
+    fetch_calls = []
+
+    def fake_fetch_route(api_key, start, dest, budget=None):
+      fetch_calls.append(dest)
+      return STRAIGHT  # a route with the car (STRAIGHT[0]) already sitting on it
+
+    source = RouteSource(clock=FakeClock())
+    source.set_position(*STRAIGHT[0])
+    source._stop = TwoTickStop(params_values, dest2_raw)
+
+    params_mod = types.ModuleType("openpilot.common.params")
+    params_mod.Params = lambda: FakeRouteParams(params_values)
+
+    with mock.patch.object(route, "fetch_route", fake_fetch_route):
+      with mock.patch.dict(sys.modules, {"openpilot.common.params": params_mod}):
+        source._loop()
+
+    # Tick 1 fetches dest1's route and the car ends up sitting right on it. Without Fix 1,
+    # tick 2 would read as "still on route" against that stale polyline and never call
+    # fetch_route again -- len(fetch_calls) would stop at 1. Without Fix 2, Fix 1 dropping
+    # the route would still leave dest1's backoff in place, and the frozen clock would hold
+    # dest2's first request behind it -- also 1, not 2. Only with both does dest2 get asked
+    # for on the very next tick.
+    self.assertEqual(fetch_calls, [dest1, dest2])

@@ -72,7 +72,16 @@ def parse_route(payload: dict) -> list[tuple[float, float]]:
     LOG.warning("route: malformed payload")
     return []
 
-  return points if len(points) >= MIN_ROUTE_POINTS else []
+  if len(points) < MIN_ROUTE_POINTS:
+    # A 200 with no usable geometry: the request worked and the budget was spent, but there
+    # is nothing to show for it. This is the one shape of this response TMAP has never been
+    # checked against live, so it is the likeliest place a wrong assumption shows up.
+    LOG.warning("route: parsed %d point(s), below the %d needed for a usable route",
+               len(points), MIN_ROUTE_POINTS)
+    return []
+
+  LOG.info("route: parsed %d points", len(points))
+  return points
 
 
 ROUTE_URL = "https://apis.openapi.sk.com/tmap/routes?version=1&format=json"
@@ -137,7 +146,10 @@ def fetch_route(api_key: str, start: tuple[float, float], dest: tuple[float, flo
   Every reason to not make the request is checked before the socket is touched, so a
   missing key or a bad destination costs nothing.
   """
-  if not api_key or not in_korea(*start) or not in_korea(*dest):
+  if not api_key:
+    LOG.warning("route: no KoreaRouteApiKey set")
+    return []
+  if not in_korea(*start) or not in_korea(*dest):
     return []
   if budget is not None and not budget.allow():
     LOG.warning("route: daily request cap reached")
@@ -202,6 +214,11 @@ class RouteState:
     back on the line, not by this method, so a bad answer keeps walking the backoff."""
     self._last_request = self._clock()
     self._failures += 1
+
+  def reset_backoff(self) -> None:
+    """A new destination starts a fresh backoff."""
+    self._failures = 0
+    self._last_request = None
 
   def _wait(self) -> float:
     return REROUTE_BACKOFF_S[max(0, min(self._failures - 1, len(REROUTE_BACKOFF_S) - 1))]
@@ -321,6 +338,10 @@ class RouteSource:
     self.budget = RequestBudget()
     self._lock = threading.Lock()
     self._position: tuple[float, float] | None = None
+    # The destination the current self.state.route was fetched for (or is being fetched
+    # for), so _loop can tell "still the same drive" from "a new one just got picked" --
+    # RouteState.update alone only knows about position, never about the destination.
+    self._route_destination: tuple[float, float] | None = None
     self._stop = threading.Event()
     self._thread: threading.Thread | None = None
 
@@ -377,6 +398,18 @@ class RouteSource:
           # them -- and the reroute machinery would otherwise fire on every tick.
           params.remove("NavDestination")
           destination = None
+
+        if destination != self._route_destination:
+          # The destination changed -- including to/from None. The old polyline can still
+          # read as "on route" for a road we are no longer headed down (that is the whole
+          # bug: the car is physically on the new road before RouteState notices anything
+          # is wrong), so drop it rather than let the off-route/backoff machinery hold it.
+          # And the old destination's failure history says nothing about this one, so a
+          # fresh destination gets a fresh backoff rather than inheriting a stale cooldown.
+          with self._lock:
+            self.state.set_route([])
+          self.state.reset_backoff()
+          self._route_destination = destination
 
         if destination is None or position is None:
           with self._lock:

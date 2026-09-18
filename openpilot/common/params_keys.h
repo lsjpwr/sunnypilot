@@ -254,6 +254,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Mapd_ClearCache", {CLEAR_ON_MANAGER_START, BOOL}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
+    // Written by athenad's setNavDestination RPC and by the Korean external nav socket;
+    // read by mapd. Cleared on manager start and when the drive ends, so a destination
+    // never carries into a later drive.
+    {"NavDestination", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
     {"OsmDbUpdatesCheck", {CLEAR_ON_MANAGER_START, BOOL}},  // mapd database update happens with device ON, reset on boot
@@ -269,10 +273,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"OsmStateTitle", {PERSISTENT, STRING}},
     {"OsmWayTest", {PERSISTENT, STRING}},
     {"RoadName", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
-    // Written by athenad's setNavDestination RPC and by the Korean external nav socket;
-    // read by mapd. Cleared on manager start and when the drive ends, so a destination
-    // never carries into a later drive.
-    {"NavDestination", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},
 
     // korea map
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},

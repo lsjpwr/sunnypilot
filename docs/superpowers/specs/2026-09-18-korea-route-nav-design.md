@@ -122,7 +122,7 @@ def fetch_route(api_key, start, dest, opener=urllib.request.urlopen) -> list[tup
 
 ### 5. 커브 감속 — `korea/route.py` + `korea_map_data.py` (~50줄)
 
-전방 300 m 폴리라인에서 세 점씩 묶어 곡률을 구하고, 목표속도를 낸다. 하한은 SCC-Map의 `MIN_V`(20 km/h)이고 상한은 현재 설정속도다.
+전방 300 m 폴리라인에서 세 점씩 묶어 곡률을 구하고, 목표속도를 낸다. 하한은 SCC-Map의 `MIN_V`(20 km/h)다. 상한은 설정속도가 아니라 도로의 게시 제한속도이고, 일치하는 링크가 없으면 `MAX_SPEED_LIMIT`로 대체한다 -- mapd는 애초에 설정속도를 모르고, SmartCruiseControlMap이 어차피 그 위의 목표는 스스로 거부하므로 게시 제한속도보다 높은 커브 목표는 어느 쪽으로 계산해도 잡음일 뿐이다.
 
 **`MapTargetVelocities` 병합이 필수다.** `korea_map_data.py:216 publish_bump_target`은 지금 이 파라미터를 매 틱 통째로 덮어쓴다. 커브 점을 따로 쓰면 방지턱이 죽는다. 한 함수에서 두 소스를 합쳐 거리순으로 내보내도록 바꾼다.
 
@@ -147,7 +147,7 @@ def fetch_route(api_key, start, dest, opener=urllib.request.urlopen) -> list[tup
 | 인터넷 끊김 | 마지막 폴리라인 유지. 없으면 off |
 | API 타임아웃·쿼터 초과 | 스레드에서 백오프 재시도. 제어 루프 영향 0 |
 | 응답 좌표 이상 | 폐기, 이전 경로 유지 |
-| 일일 상한 초과 | 그날 경로 기능 off, 자정에 리셋 |
+| 일일 상한 초과 | 그날 경로 기능 off, UTC 타임스탬프를 86400초로 나눠 날짜를 판정하므로 KST 09:00에 리셋 |
 | 목적지 미설정 | 경로 관련 코드 전부 비활성 |
 
 `korea_map_data.py:145`의 기존 방침과 같다 — 경로가 없는 것은 안전한 답이고, 죽은 mapd는 나쁜 답이다.
@@ -198,7 +198,7 @@ def fetch_route(api_key, start, dest, opener=urllib.request.urlopen) -> list[tup
 
 ### 실차 전 검증
 
-`mapd/live_map_data/standalone.py`(이미 있음)에 좌표를 먹여 차 없이 돌린다.
+`mapd/live_map_data/standalone.py`는 `OsmMapData`를 하드코딩하고 경로 기능을 지원하지 않으므로 이 기능을 실행해볼 수 없다. 이 기능의 실차 전 검증은 디바이스에서 직접 해야 한다.
 
 ---
 

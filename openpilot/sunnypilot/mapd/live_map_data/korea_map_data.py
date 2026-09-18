@@ -55,9 +55,13 @@ class KoreaMapData(BaseMapData):
     self._failed_mtimes: tuple[float | None, ...] = ()
     self.external = external
     self.route_source = route_source
-    # Last destination this object wrote to NavDestination, or None. update_destination()
-    # compares against this before writing, so a phone that repeats the same destination in
-    # every datagram does not touch /data/params (flash) once a second forever.
+    # Last destination this object wrote to NavDestination, or None. An optimisation only --
+    # so a phone that repeats the same destination every datagram does not touch /data/params
+    # (flash) once a second forever -- not the source of truth. The param is: it is cleared by
+    # two parties this object hears nothing about (CLEAR_ON_OFFROAD_TRANSITION wipes it when
+    # the drive ends; RouteSource._loop removes it on arrival), and korea_main does not rebuild
+    # this object on either event, so this cache can say "unchanged" while the param itself is
+    # already empty.
     self._last_written_destination: tuple[float, float] | None = None
     self.route: list[tuple[float, float]] = []
     self.curve_points: list[tuple[float, float, float]] = []
@@ -131,13 +135,15 @@ class KoreaMapData(BaseMapData):
   def update_destination(self) -> None:
     """Copy a destination from the socket into the param the route thread reads.
 
-    The socket's TTL is 5 s (external_source.py:101) and a destination is sent once, so it
-    cannot live there. The param is the one place both writers -- this socket and athenad's
-    setNavDestination RPC -- agree on, which is why the JSON shape is athenad's.
+    The socket's TTL is 5 s (external_source.py:35, checked at :124) and a destination is
+    sent once, so it cannot live there. The param is the one place both writers -- this
+    socket and athenad's setNavDestination RPC -- agree on, which is why the JSON shape is
+    athenad's.
 
-    Written only when it changes, and removed only on an explicit end-of-guidance signal --
-    this loop runs forever at 1 Hz and NavDestination lives on flash. nav.destination alone
-    cannot drive that: ExternalNav.destination is None both for "this datagram carried no
+    Written when it changes (or when the param has been cleared out from under this object --
+    see _last_written_destination above), and removed only on an explicit end-of-guidance
+    signal -- this loop runs forever at 1 Hz and NavDestination lives on flash. nav.destination
+    alone cannot drive that: ExternalNav.destination is None both for "this datagram carried no
     destination keys" and for "the phone sent 0,0 (or a point outside Korea)", and those need
     opposite responses. So key presence in nav.raw -- not the parsed value -- is what tells a
     repeated no-op apart from the phone saying guidance ended.
@@ -156,7 +162,10 @@ class KoreaMapData(BaseMapData):
       if self.params.get("NavDestination"):
         self.params.remove("NavDestination")
       self._last_written_destination = None
-    elif nav.destination != self._last_written_destination:
+    elif nav.destination != self._last_written_destination or not self.params.get("NavDestination"):
+      # The "or" covers a destination unchanged from this object's point of view but cleared
+      # by someone else since -- the manager on an offroad transition, or RouteSource on
+      # arrival -- which otherwise left the param empty for the rest of that drive (Fix 3).
       self.params.put("NavDestination", json.dumps({
         "latitude": nav.destination[0], "longitude": nav.destination[1],
         "place_name": nav.road_name or None, "place_details": None,
@@ -282,7 +291,7 @@ class KoreaMapData(BaseMapData):
     if self.route and self.last_position is not None and self.localizer_valid:
       # The road's own limit, not the set speed: mapd never sees the set speed, and
       # SmartCruiseControlMap already refuses to act on a target above it
-      # (map_controller.py:234). A curve target above the posted limit is noise either way.
+      # (map_controller.py:161,239). A curve target above the posted limit is noise either way.
       v_max = self.get_current_speed_limit() or MAX_SPEED_LIMIT
       self.curve_points = curve_targets(self.route, self.last_position.latitude,
                                         self.last_position.longitude, v_max)

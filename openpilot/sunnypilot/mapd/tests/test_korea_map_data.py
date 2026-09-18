@@ -49,6 +49,7 @@ def make_data(link=None, camera=None, external=None):
   data._failed_mtimes = ()
   data.external = external
   data.route_source = None
+  data.params = StubMemParams()
   data._last_written_destination = None
   data.route = []
   data.curve_points = []
@@ -63,11 +64,22 @@ def make_data(link=None, camera=None, external=None):
 
 
 class StubMemParams:
+  """Doubles as both self.params and self.mem_params: both are plain key/value stores in
+  the real Params, and put_calls lets a test count writes without monkeypatching put()."""
+
   def __init__(self):
     self.values: dict[str, str] = {}
+    self.put_calls = 0
 
   def put(self, key, value, block=False):
     self.values[key] = value
+    self.put_calls += 1
+
+  def get(self, key, block=False, return_default=False):
+    return self.values.get(key)
+
+  def remove(self, key):
+    self.values.pop(key, None)
 
 
 def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, position=None, localizer_valid=True):
@@ -133,6 +145,84 @@ class TestPublishedValues(unittest.TestCase):
     data = make_data(link=Link(max_spd=60, name="테헤란로"), external=StubExternal(nav))
     self.assertAlmostEqual(data.get_current_speed_limit(), 60 * CV.KPH_TO_MS, places=9)
     self.assertEqual(data.get_current_road_name(), "시장길")
+
+
+class TestUpdateDestination(unittest.TestCase):
+  """update_destination() is the only link between the socket/athenad and the route thread:
+  nothing downstream of NavDestination ever runs if this method gets a branch wrong. Its
+  three branches are driven by key presence in nav.raw, not by nav.destination itself --
+  see the method's own docstring for why those must be told apart.
+  """
+
+  def test_keys_absent_from_raw_leaves_the_param_untouched(self):
+    """No destination_lat/lon in this datagram at all: neither written nor removed, whether
+    that means untouched or already cleared."""
+    data = make_data(external=StubExternal(ExternalNav(raw={"speed_limit_kph": 60})))
+    data.params.put("NavDestination", "sentinel")
+    puts_before = data.params.put_calls
+
+    data.update_destination()
+
+    self.assertEqual(data.params.put_calls, puts_before, "a datagram with no destination keys must not write")
+    self.assertEqual(data.params.get("NavDestination"), "sentinel")
+
+  def test_keys_present_but_parsed_to_none_removes_the_param(self):
+    """0/0 (or an out-of-Korea point) parses to None but the keys are still in raw -- the
+    phone's explicit end-of-guidance signal, not a no-op tick."""
+    nav = ExternalNav(destination=None, raw={"destination_lat": 0, "destination_lon": 0})
+    data = make_data(external=StubExternal(nav))
+    data.params.put("NavDestination", json.dumps({"latitude": 37.5665, "longitude": 126.9780,
+                                                   "place_name": None, "place_details": None}))
+    data._last_written_destination = (37.5665, 126.9780)
+
+    data.update_destination()
+
+    self.assertIsNone(data.params.get("NavDestination"))
+    self.assertIsNone(data._last_written_destination)
+
+  def test_a_new_destination_is_written_in_athenads_json_shape(self):
+    nav = ExternalNav(destination=(37.5665, 126.9780), road_name="테헤란로",
+                      raw={"destination_lat": 37.5665, "destination_lon": 126.9780})
+    data = make_data(external=StubExternal(nav))
+
+    data.update_destination()
+
+    self.assertEqual(json.loads(data.params.get("NavDestination")), {
+      "latitude": 37.5665, "longitude": 126.9780, "place_name": "테헤란로", "place_details": None,
+    })
+    self.assertEqual(data._last_written_destination, (37.5665, 126.9780))
+
+  def test_the_same_destination_repeated_is_not_rewritten(self):
+    """A phone that resends the same destination every datagram must not touch /data/params
+    (flash) once a second forever."""
+    nav = ExternalNav(destination=(37.5665, 126.9780), road_name="테헤란로",
+                      raw={"destination_lat": 37.5665, "destination_lon": 126.9780})
+    data = make_data(external=StubExternal(nav))
+    data.update_destination()
+    self.assertEqual(data.params.put_calls, 1)
+
+    data.update_destination()  # same nav object, next tick
+
+    self.assertEqual(data.params.put_calls, 1, "a repeated destination must not rewrite the param")
+
+  def test_a_destination_cleared_by_someone_else_is_written_again(self):
+    """Regression test for Fix 3: NavDestination is cleared by CLEAR_ON_OFFROAD_TRANSITION
+    when the drive ends and by RouteSource._loop on arrival -- korea_main rebuilds this
+    object for neither event, so _last_written_destination alone must not decide whether to
+    write. Without this, the second drive to the same place (the commute home) would see
+    "unchanged" and never rewrite an already-empty param."""
+    nav = ExternalNav(destination=(37.5665, 126.9780), road_name="테헤란로",
+                      raw={"destination_lat": 37.5665, "destination_lon": 126.9780})
+    data = make_data(external=StubExternal(nav))
+    data.update_destination()
+    self.assertEqual(data.params.put_calls, 1)
+
+    data.params.remove("NavDestination")  # manager on offroad transition, or arrival
+
+    data.update_destination()  # the same destination, next drive
+
+    self.assertEqual(data.params.put_calls, 2, "a destination must be rewritten once the param is cleared")
+    self.assertIsNotNone(data.params.get("NavDestination"))
 
 
 class TestOpenDB(unittest.TestCase):
