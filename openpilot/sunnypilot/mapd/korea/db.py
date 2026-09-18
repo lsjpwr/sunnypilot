@@ -15,6 +15,7 @@ import struct
 from dataclasses import dataclass
 
 from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, haversine, point_segment_distance
+from openpilot.sunnypilot.mapd.korea.route import distance_to_route
 
 # Shared by all three databases (cameras, links, bumps) -- there is no independent version
 # per kind. Bumping this to add a camera/link schema change also invalidates every existing
@@ -62,6 +63,13 @@ BUMP_AHEAD_TOLERANCE = 45.
 # without it, 6 with it. 20 m rather than 10 m because a 10 m corridor rejects every bump
 # once the localizer's lateral error passes 10 m, which is ordinary in an urban canyon.
 BUMP_CORRIDOR_M = 20.
+
+# Tighter than OFF_ROUTE_M (50 m, route.py): that one asks 'is the route still right', this
+# asks 'is this camera on our road'. A parallel road is typically 20-40 m away, so the
+# corridor has to be narrower than the gap it is meant to reject. 30 m still clears the
+# localizer's lateral error in an urban canyon, which is what forced BUMP_CORRIDOR_M to 20
+# rather than 10.
+ROUTE_CORRIDOR_M = 30.
 
 _RTREE_OVERLAP = "WHERE i.maxlat >= ? AND i.minlat <= ? AND i.maxlon >= ? AND i.minlon <= ?"
 
@@ -313,8 +321,14 @@ class KoreaMapDB:
     _, max_spd, name = candidates[best_id]
     return Link(max_spd=max_spd, name=name)
 
-  def next_camera(self, lat: float, lon: float, heading_deg: float | None) -> Camera | None:
-    """Nearest speed camera ahead of us, or None. Needs a heading to know what 'ahead' means."""
+  def next_camera(self, lat: float, lon: float, heading_deg: float | None,
+                  route: list[tuple[float, float]] | None = None) -> Camera | None:
+    """Nearest speed camera ahead of us, or None. Needs a heading to know what 'ahead' means.
+
+    With a route, 'ahead' stops being a bearing cone and becomes the road we will actually
+    drive: the cone alone accepts a camera on the far side of a fork, which is the single
+    most visible wrong slowdown this database produces.
+    """
     if heading_deg is None:
       return None
 
@@ -329,15 +343,15 @@ class KoreaMapDB:
       distance = haversine(lat, lon, clat, clon)
       if distance > CAMERA_MAX_DISTANCE_M or (best is not None and distance >= best.distance_m):
         continue
-      if bearing_delta(heading_deg, bearing(lat, lon, clat, clon)) > CAMERA_AHEAD_TOLERANCE:
+      if not _on_path(lat, lon, clat, clon, heading_deg, route, CAMERA_AHEAD_TOLERANCE):
         continue
       best = Camera(limit_kph=limit_kph, distance_m=distance, section_m=section_m)
 
     return best
 
-  def next_bump(self, lat: float, lon: float, heading_deg: float | None) -> Bump | None:
-    """Nearest physical speed bump ahead of us, or None. Needs a heading to know what
-    'ahead' means, same as next_camera."""
+  def next_bump(self, lat: float, lon: float, heading_deg: float | None,
+                route: list[tuple[float, float]] | None = None) -> Bump | None:
+    """Nearest physical speed bump ahead of us, or None. Same route rule as next_camera."""
     if self.bmp is None or heading_deg is None:
       return None
 
@@ -354,8 +368,8 @@ class KoreaMapDB:
       distance = haversine(lat, lon, blat, blon)
       if distance > BUMP_MAX_DISTANCE_M or (best is not None and distance >= best.distance_m):
         continue
-      delta = bearing_delta(heading_deg, bearing(lat, lon, blat, blon))
-      if delta > BUMP_AHEAD_TOLERANCE or distance * math.sin(math.radians(delta)) > BUMP_CORRIDOR_M:
+      if not _on_path(lat, lon, blat, blon, heading_deg, route, BUMP_AHEAD_TOLERANCE,
+                      corridor_m=BUMP_CORRIDOR_M):
         continue
       best = Bump(lat=blat, lon=blon, kind=kind, distance_m=distance)
 
@@ -368,3 +382,31 @@ def _heading_matches(heading_deg: float, alat: float, alon: float, blat: float, 
   forward = bearing_delta(heading_deg, segment)
   backward = bearing_delta(heading_deg, (segment + 180.) % 360.)
   return min(forward, backward) <= LINK_BEARING_TOLERANCE
+
+
+def _on_path(lat: float, lon: float, tlat: float, tlon: float, heading_deg: float,
+             route: list[tuple[float, float]] | None, tolerance_deg: float,
+             corridor_m: float | None = None) -> bool:
+  """Is the target ahead of us on the road we are driving?
+
+  The route NARROWS the existing test, never widens it. Every check that runs without a
+  route still runs with one, and the corridor is added on top. Ordered that way on purpose:
+  ROUTE_CORRIDOR_M (30 m) is looser than BUMP_CORRIDOR_M (20 m), so letting the route
+  replace the corridor would start accepting bumps on parallel streets that are rejected
+  today -- a regression dressed up as a feature.
+
+  The bearing cone stays in the with-route case too, because a route that doubles back (a
+  U-turn, a loop ramp) passes within the corridor of a point we already drove past.
+  """
+  delta = bearing_delta(heading_deg, bearing(lat, lon, tlat, tlon))
+  if delta > tolerance_deg:
+    return False
+
+  if corridor_m is not None and \
+     haversine(lat, lon, tlat, tlon) * math.sin(math.radians(delta)) > corridor_m:
+    return False
+
+  if route:
+    return distance_to_route(route, tlat, tlon) <= ROUTE_CORRIDOR_M
+
+  return True

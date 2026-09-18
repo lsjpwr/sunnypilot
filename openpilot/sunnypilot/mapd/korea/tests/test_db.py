@@ -493,3 +493,96 @@ class TestReloadAllThree(KoreaMapDBTestCase):
     database = self.open_db(cams, links)
     database.reload_if_changed()
     self.assertFalse(database.reload_if_changed())
+
+
+# ROAD_60 runs east from (37.5000, 127.0200). CAM_AHEAD sits on it 500 m east.
+# A camera 33 m north of CAM_AHEAD is a parallel road: inside the 60 deg cone that
+# next_camera has always used, outside the 30 m route corridor.
+CAM_SIDE_ROAD = (37.5003, 127.0257, 30, 0)
+
+
+class TestRouteCorridorCameras(KoreaMapDBTestCase):
+  def setUp(self):
+    super().setUp()
+    cams = str(self.tmp_path / "korea_cameras.sqlite")
+    links = str(self.tmp_path / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_SIDE_ROAD]))
+    write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [ROAD_60]))
+    self.db = self.open_db(cams, links)
+    self.route = [(37.5000, 127.0200), (37.5000, 127.0320)]
+
+  def test_without_a_route_the_side_road_camera_is_accepted(self):
+    """Today's behaviour, and the reason this task exists."""
+    camera = self.db.next_camera(37.5000, 127.0200, 90.)
+    self.assertIsNotNone(camera)
+    self.assertEqual(camera.limit_kph, 30)
+
+  def test_the_route_rejects_the_side_road_camera(self):
+    self.assertIsNone(self.db.next_camera(37.5000, 127.0200, 90., route=self.route))
+
+  def test_a_camera_on_the_route_survives(self):
+    # A distinct path, not a rewrite of self.db's open camera file: os.replace onto a
+    # path with a live sqlite3 reader is a POSIX guarantee Windows does not provide (see
+    # _REPLACE_WHILE_OPEN_SKIP_REASON above), and reload semantics are not what this test
+    # is about.
+    cams = str(self.tmp_path / "korea_cameras_on_route.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_AHEAD]))
+    db = self.open_db(cams, str(self.tmp_path / "korea_links.sqlite"))
+    camera = db.next_camera(37.5000, 127.0200, 90., route=self.route)
+    self.assertIsNotNone(camera)
+    self.assertEqual(camera.limit_kph, 50)
+
+  def test_an_empty_route_behaves_like_no_route(self):
+    self.assertEqual(self.db.next_camera(37.5000, 127.0200, 90.),
+                     self.db.next_camera(37.5000, 127.0200, 90., route=[]))
+
+  def test_a_route_running_the_other_way_rejects_everything(self):
+    behind = [(37.5000, 127.0200), (37.5000, 127.0080)]
+    self.assertIsNone(self.db.next_camera(37.5000, 127.0200, 90., route=behind))
+
+
+# ~25 m north of the query point's road, ~150 m ahead: distance_to_route against
+# TestRouteCorridorBumps.route computes to ~25.02 m (inside ROUTE_CORRIDOR_M, 30 m) while
+# the cross-track corridor check computes to the same ~25.02 m (outside BUMP_CORRIDOR_M,
+# 20 m) -- 5 m of margin on both sides. BUMP_LATERAL_30M (defined above) does not work for
+# this: at ~30.02 m its distance_to_route is *outside* ROUTE_CORRIDOR_M too, so the route
+# check alone would already reject it and the test would pass even with the corridor check
+# deleted entirely.
+BUMP_LATERAL_25M = (37.500225, 127.021700, 0)
+
+
+class TestRouteCorridorBumps(KoreaMapDBTestCase):
+  def setUp(self):
+    super().setUp()
+    self.db = self.open_db_with_bumps([BUMP_AHEAD_150, BUMP_LATERAL_10M])
+    # ROAD_60 itself: east from the query point, which is what every bump test drives
+    self.route = [(37.5000, 127.0200), (37.5000, 127.0320)]
+    # a route that turns north 50 m ahead -- the bumps stay east, off it
+    self.turn = [(37.5000, 127.0200), (37.5000, 127.0206), (37.5030, 127.0206)]
+
+  def test_without_a_route_the_nearest_bump_wins(self):
+    bump = self.db.next_bump(37.5000, 127.0200, 90.)
+    self.assertIsNotNone(bump)
+    self.assertAlmostEqual(bump.lon, 127.0217, places=4)
+
+  def test_a_route_along_the_road_keeps_the_same_bump(self):
+    self.assertEqual(self.db.next_bump(37.5000, 127.0200, 90.),
+                     self.db.next_bump(37.5000, 127.0200, 90., route=self.route))
+
+  def test_a_route_that_turns_away_rejects_the_bumps(self):
+    self.assertIsNone(self.db.next_bump(37.5000, 127.0200, 90., route=self.turn))
+
+  def test_an_empty_route_behaves_like_no_route(self):
+    self.assertEqual(self.db.next_bump(37.5000, 127.0200, 90.),
+                     self.db.next_bump(37.5000, 127.0200, 90., route=[]))
+
+  def test_the_route_never_admits_what_the_corridor_rejects(self):
+    # BUMP_LATERAL_25M is ~25 m north: outside BUMP_CORRIDOR_M (20 m) but inside
+    # ROUTE_CORRIDOR_M (30 m). The route must not promote it.
+    # self.db is not used below; close it first so open_db_with_bumps (fixed filenames)
+    # can replace the same files. Otherwise os.replace races a live reader -- a POSIX
+    # guarantee Windows does not provide (see _REPLACE_WHILE_OPEN_SKIP_REASON above).
+    self.db.close()
+    db = self.open_db_with_bumps([BUMP_LATERAL_25M])
+    self.assertIsNone(db.next_bump(37.5000, 127.0200, 90.))
+    self.assertIsNone(db.next_bump(37.5000, 127.0200, 90., route=self.route))
