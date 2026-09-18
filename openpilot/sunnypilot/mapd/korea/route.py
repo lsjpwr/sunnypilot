@@ -148,7 +148,7 @@ def fetch_route(api_key: str, start: tuple[float, float], dest: tuple[float, flo
     # Deliberately broad. urllib raises OSError/HTTPError, json raises ValueError, and a
     # truncated body can raise almost anything -- all of them mean the same thing here,
     # and this runs on a thread whose death would silently disable the feature.
-    LOG.warning("route: request failed")
+    LOG.warning("route: request failed", exc_info=True)
     return []
 
   return parse_route(payload) if isinstance(payload, dict) else []

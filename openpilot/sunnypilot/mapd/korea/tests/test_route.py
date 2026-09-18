@@ -164,3 +164,19 @@ class TestFetchRoute(unittest.TestCase):
                            opener=fake_opener(SAMPLE, capture), budget=budget)
     self.assertEqual(result, [])
     self.assertEqual(capture, [])
+
+  def test_budget_spend_is_enforced_on_subsequent_requests(self):
+    capture = []
+    budget = RequestBudget(cap=1, clock=FakeClock())
+    # First call should succeed and spend the budget
+    result1 = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276),
+                          opener=fake_opener(SAMPLE, capture), budget=budget)
+    self.assertEqual(len(result1), 4)
+    self.assertEqual(len(capture), 1)
+    # Second call should be blocked by the spent budget
+    capture.clear()
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      result2 = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276),
+                            opener=fake_opener(SAMPLE, capture), budget=budget)
+    self.assertEqual(result2, [])
+    self.assertEqual(capture, [])
