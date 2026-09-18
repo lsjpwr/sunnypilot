@@ -266,3 +266,28 @@ class TestRouteState(unittest.TestCase):
     self.state.note_request()
     self.drive(1)  # back on the line resets the backoff
     self.assertEqual(self.drive(OFF_ROUTE_TICKS, lon=126.9800), [False, False, True])
+
+  def test_escalation_means_second_backoff_differs_from_first(self):
+    # This test pins the backoff escalation: with a flattened constant backoff tuple like
+    # (5., 5., 5., 5.), the second and first failures would have the same cooldown, and
+    # this test would fail (update at t=10 would return True instead of False). The real
+    # backoff escalates the second failure from 5 s to 15 s, so the assertion at step 5
+    # discriminates the actual escalation from any flattened version.
+    clock = FakeClock()
+    state = RouteState(clock=clock)
+    # Leave route empty so the off-route gate is skipped entirely.
+
+    # First failure at t=0, cooldown is REROUTE_BACKOFF_S[0] = 5 s.
+    state.note_request()
+
+    # At t=5 the cooldown expires.
+    clock.now = 5.
+    self.assertTrue(state.update(37.5675, 126.9780))
+
+    # Second failure at t=5, cooldown is REROUTE_BACKOFF_S[1] = 15 s.
+    state.note_request()
+
+    # At t=10, only 5 s have passed, so cooldown still holds (5 < 15).
+    # Under a flattened (5., 5., 5., 5.) tuple this would return True instead.
+    clock.now = 10.
+    self.assertFalse(state.update(37.5675, 126.9780))

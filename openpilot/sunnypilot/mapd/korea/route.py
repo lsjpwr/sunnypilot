@@ -202,7 +202,7 @@ class RouteState:
     self._failures += 1
 
   def _wait(self) -> float:
-    return REROUTE_BACKOFF_S[min(self._failures - 1, len(REROUTE_BACKOFF_S) - 1)]
+    return REROUTE_BACKOFF_S[max(0, min(self._failures - 1, len(REROUTE_BACKOFF_S) - 1))]
 
   def update(self, lat: float, lon: float) -> bool:
     if distance_to_route(self.route, lat, lon) <= OFF_ROUTE_M:
