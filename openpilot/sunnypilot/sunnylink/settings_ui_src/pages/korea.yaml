@@ -29,3 +29,12 @@ sections:
     description: data.go.kr key used to refresh the speed camera database over Wi-Fi.
       Without it the cameras shipped with the database are used as-is. Other Korean
       map settings live under Cruise.
+  - key: KoreaRouteApiKey
+    widget: text
+    secret: true
+    max_length: 255
+    requires_attestation: true
+    title: Route API Key
+    description: TMAP appKey used to fetch the route to a destination sent by a companion
+      navigation app. Without it, speed cameras and bumps are matched by heading alone,
+      which can pick the wrong road at a fork.

@@ -106,6 +106,16 @@ class SpeedLimitSettingsLayout(Widget):
         callback=self._edit_api_key,
       ))
 
+    self._route_api_key = ListItemSP(
+      title=lambda: tr("Route API Key"),
+      description=tr("TMAP appKey used to fetch the route to a destination sent by a companion " +
+                     "navigation app. Without it, speed cameras and bumps are matched by heading " +
+                     "alone, which can pick the wrong road at a fork."),
+      action_item=SimpleButtonActionSP(
+        button_text=lambda: tr("Change") if ui_state.params.get("KoreaRouteApiKey") else tr("Set"),
+        callback=self._edit_route_api_key,
+      ))
+
     self._speed_bump = toggle_item_sp(
       title=lambda: tr("Speed Bump Slowdown"),
       description=tr("Slow down for speed bumps from the Korean public database. Needs " +
@@ -159,6 +169,7 @@ class SpeedLimitSettingsLayout(Widget):
       LineSeparatorSP(40),
       self._external_nav,
       self._api_key,
+      self._route_api_key,
       self._speed_bump,
       self._bump_arch_speed,
       self._bump_trapezoid_speed,
@@ -181,6 +192,16 @@ class SpeedLimitSettingsLayout(Widget):
       sub_title=tr("data.go.kr service key"),
       current_text=ui_state.params.get("KoreaMapApiKey") or "",
       param="KoreaMapApiKey",
+      password_mode=True,
+    ).show()
+
+  @staticmethod
+  def _edit_route_api_key():
+    InputDialogSP(
+      title=tr("Route API Key"),
+      sub_title=tr("TMAP appKey"),
+      current_text=ui_state.params.get("KoreaRouteApiKey") or "",
+      param="KoreaRouteApiKey",
       password_mode=True,
     ).show()
 
@@ -231,6 +252,10 @@ class SpeedLimitSettingsLayout(Widget):
     # mid-drive from a phone is not allowed) -- match that here so on-device parity holds.
     self._external_nav.action_item.set_enabled(is_korea and is_offroad)
     self._api_key.action_item.set_enabled(is_korea)
+    # Same gate as _api_key just above: the TMAP route is only ever matched against the
+    # Korea camera/bump database, so the key is meaningless outside Korea mode. Mirrors
+    # the mici surface, where _route_api_key_btn gets the identical set_enabled call.
+    self._route_api_key.action_item.set_enabled(is_korea)
     # Offroad-gated for a different reason than _external_nav above: bandwidth, not port
     # safety -- a ~220 MB download must not compete with the car's connection while driving.
     self._auto_download.action_item.set_enabled(is_korea and is_offroad)

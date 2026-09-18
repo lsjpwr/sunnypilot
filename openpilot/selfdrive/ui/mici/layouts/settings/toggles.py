@@ -84,6 +84,24 @@ class TogglesLayoutMici(NavScroller):
     self._api_key_btn = BigButton("speed camera API key", "Set" if has_key else "Not set")
     self._api_key_btn.set_click_callback(edit_api_key)
 
+    def route_api_key_callback(text):
+      # Same no-op-on-empty rule as api_key_callback above, for the same reason: this
+      # dialog seeds empty, so a bare confirm would otherwise wipe a live credential.
+      if not text and ui_state.params.get("KoreaRouteApiKey"):
+        return
+      ui_state.params.put("KoreaRouteApiKey", text)
+      self._route_api_key_btn.set_value("Set" if text else "Not set")
+
+    def edit_route_api_key():
+      gui_app.push_widget(BigInputDialog("enter TMAP appKey...",
+                                         "",
+                                         minimum_length=0,
+                                         confirm_callback=route_api_key_callback))
+
+    has_route_key = bool(ui_state.params.get("KoreaRouteApiKey"))
+    self._route_api_key_btn = BigButton("route API key", "Set" if has_route_key else "Not set")
+    self._route_api_key_btn.set_click_callback(edit_route_api_key)
+
     self._scroller.add_widgets([
       self._personality_toggle,
       self._experimental_btn,
@@ -98,6 +116,7 @@ class TogglesLayoutMici(NavScroller):
       korea_bump_toggle,
       korea_download_toggle,
       self._api_key_btn,
+      self._route_api_key_btn,
     ])
 
     # Toggle lists
@@ -133,6 +152,8 @@ class TogglesLayoutMici(NavScroller):
       lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea
               and ui_state.is_offroad())
     self._api_key_btn.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
+    self._route_api_key_btn.set_enabled(
+      lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
 
     if ui_state.params.get_bool("ShowDebugInfo"):
       gui_app.set_show_touches(True)

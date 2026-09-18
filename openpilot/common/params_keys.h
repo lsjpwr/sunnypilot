@@ -269,11 +269,16 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"OsmStateTitle", {PERSISTENT, STRING}},
     {"OsmWayTest", {PERSISTENT, STRING}},
     {"RoadName", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    // Written by athenad's setNavDestination RPC and by the external nav socket; read by
+    // mapd. Cleared on every manager start on purpose -- a destination is one drive's
+    // business, and resuming yesterday's would route the car somewhere nobody asked for.
+    {"NavDestination", {CLEAR_ON_MANAGER_START, STRING}},
 
     // korea map
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"KoreaMapApiKey", {PERSISTENT | BACKUP, STRING, ""}},
     {"KoreaMapAutoDownload", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"KoreaRouteApiKey", {PERSISTENT | BACKUP, STRING, ""}},
     {"KoreaSpeedBumpArchSpeed", {PERSISTENT | BACKUP, INT, "25"}},        // km/h, 원호형
     {"KoreaSpeedBumpEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"KoreaSpeedBumpTrapezoidSpeed", {PERSISTENT | BACKUP, INT, "35"}},   // km/h, 사다리꼴형
