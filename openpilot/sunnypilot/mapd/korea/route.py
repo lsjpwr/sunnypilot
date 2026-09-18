@@ -19,6 +19,8 @@ import logging
 import time
 import urllib.request
 
+from openpilot.sunnypilot.mapd.korea.geo import point_segment_distance
+
 # Everything this feature serves is inside South Korea, so a coordinate outside it is a
 # provider bug or a hostile answer either way. Generous on purpose: the box covers Jeju
 # and Ulleungdo, and it is a sanity check, not a service area.
@@ -152,3 +154,66 @@ def fetch_route(api_key: str, start: tuple[float, float], dest: tuple[float, flo
     return []
 
   return parse_route(payload) if isinstance(payload, dict) else []
+
+
+# Wider than the 30 m corridor the lookups use: the corridor decides whether a camera is
+# on our road, this decides whether the route is wrong. Being strict here buys nothing and
+# costs a request every time the localizer drifts in a tunnel.
+OFF_ROUTE_M = 50.
+# One tick of GPS jitter is not a wrong turn. Three seconds at 1 Hz is.
+OFF_ROUTE_TICKS = 3
+# The first step is the normal reroute latency -- 3 s to confirm plus 5 s is not felt. The
+# rest exist only for the runaway case where the new route is immediately off-route too,
+# which is the failure the cooldown alone used to be asked to cover and could not.
+REROUTE_BACKOFF_S = (5., 15., 60., 300.)
+
+
+def distance_to_route(route: list[tuple[float, float]], lat: float, lon: float) -> float:
+  """Metres from (lat, lon) to the nearest point of the polyline."""
+  if len(route) < MIN_ROUTE_POINTS:
+    return float("inf")
+  return min(point_segment_distance(lat, lon, a[0], a[1], b[0], b[1])
+             for a, b in zip(route, route[1:], strict=False))
+
+
+class RouteState:
+  """Decides when to ask for a new route. Owns no I/O -- the caller does the fetching.
+
+  Kept apart from the fetching on purpose: this is the part with the interesting states,
+  and a pure object is the only way to test a backoff without waiting five minutes.
+  """
+
+  def __init__(self, clock=time.monotonic):
+    self.route: list[tuple[float, float]] = []
+    self._clock = clock
+    self._off_ticks = 0
+    self._failures = 0
+    self._last_request = None  # None means 'never asked', which must not be a cooldown
+
+  def set_route(self, route: list[tuple[float, float]]) -> None:
+    self.route = route
+    self._off_ticks = 0
+
+  def note_request(self) -> None:
+    """Called after a request goes out, whatever it answered. A request that produced a
+    good route is still followed by a reset -- set_route's caller does that by getting
+    back on the line, not by this method, so a bad answer keeps walking the backoff."""
+    self._last_request = self._clock()
+    self._failures += 1
+
+  def _wait(self) -> float:
+    return REROUTE_BACKOFF_S[min(self._failures - 1, len(REROUTE_BACKOFF_S) - 1)]
+
+  def update(self, lat: float, lon: float) -> bool:
+    if distance_to_route(self.route, lat, lon) <= OFF_ROUTE_M:
+      self._off_ticks = 0
+      self._failures = 0  # back on the line: whatever went wrong is over
+      self._last_request = None  # ...and so is any cooldown that went with it
+      return False
+
+    self._off_ticks += 1
+    if self._off_ticks < OFF_ROUTE_TICKS and self.route:
+      return False
+    if self._last_request is not None and self._clock() - self._last_request < self._wait():
+      return False
+    return True

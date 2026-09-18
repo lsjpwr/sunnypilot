@@ -8,8 +8,9 @@ import json
 import unittest
 
 from openpilot.sunnypilot.mapd.korea import route
-from openpilot.sunnypilot.mapd.korea.route import (DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, RequestBudget,
-                                                   build_request, fetch_route, in_korea, parse_route)
+from openpilot.sunnypilot.mapd.korea.route import (DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, OFF_ROUTE_TICKS,
+                                                   REROUTE_BACKOFF_S, RequestBudget, RouteState, build_request,
+                                                   distance_to_route, fetch_route, in_korea, parse_route)
 
 
 def feature(coords, kind="LineString"):
@@ -180,3 +181,88 @@ class TestFetchRoute(unittest.TestCase):
                             opener=fake_opener(SAMPLE, capture), budget=budget)
     self.assertEqual(result2, [])
     self.assertEqual(capture, [])
+
+
+# A 1.1 km straight leg north-east of Seoul city hall. ~0.001 deg lat is ~111 m.
+STRAIGHT = [(37.5665 + i * 0.001, 126.9780) for i in range(11)]
+
+
+class TestDistanceToRoute(unittest.TestCase):
+  def test_a_point_on_the_line_is_zero(self):
+    self.assertLess(distance_to_route(STRAIGHT, 37.5675, 126.9780), 1.)
+
+  def test_an_empty_route_is_infinitely_far(self):
+    self.assertEqual(distance_to_route([], 37.5665, 126.9780), float("inf"))
+
+  def test_the_offset_is_measured_perpendicular(self):
+    # 0.001 deg of longitude at this latitude is about 88 m
+    offset = distance_to_route(STRAIGHT, 37.5675, 126.9790)
+    self.assertGreater(offset, 80.)
+    self.assertLess(offset, 95.)
+
+
+class TestRouteState(unittest.TestCase):
+  def setUp(self):
+    self.clock = FakeClock()
+    self.state = RouteState(clock=self.clock)
+    self.state.set_route(STRAIGHT)
+
+  def drive(self, ticks, lat=37.5675, lon=126.9780):
+    return [self.state.update(lat, lon) for _ in range(ticks)]
+
+  def test_staying_on_route_never_reroutes(self):
+    self.assertEqual(self.drive(10), [False] * 10)
+
+  def test_three_consecutive_off_route_ticks_reroute(self):
+    self.assertEqual(self.drive(3, lon=126.9800), [False, False, True])
+
+  def test_two_off_route_ticks_then_back_on_does_not_reroute(self):
+    self.drive(2, lon=126.9800)
+    self.assertEqual(self.drive(3), [False] * 3)
+
+  def test_an_empty_route_reroutes_immediately(self):
+    self.state.set_route([])
+    self.assertEqual(self.state.update(37.5675, 126.9780), True)
+
+  def test_the_cooldown_holds_the_second_request(self):
+    self.drive(3, lon=126.9800)
+    self.state.note_request()
+    self.assertEqual(self.drive(3, lon=126.9800), [False] * 3)
+    self.clock.now += REROUTE_BACKOFF_S[0]
+    self.assertEqual(self.state.update(37.5675, 126.9800), True)
+
+  def test_consecutive_failures_walk_the_backoff(self):
+    for expected_wait in REROUTE_BACKOFF_S:
+      self.drive(OFF_ROUTE_TICKS, lon=126.9800)
+      self.state.note_request()
+      self.assertEqual(self.state.update(37.5675, 126.9800), False)
+      self.clock.now += expected_wait
+
+  def test_the_last_backoff_step_repeats_rather_than_overflowing(self):
+    for _ in range(len(REROUTE_BACKOFF_S) + 3):
+      self.drive(OFF_ROUTE_TICKS, lon=126.9800)
+      self.state.note_request()
+      self.clock.now += REROUTE_BACKOFF_S[-1]
+    self.assertEqual(self.state.update(37.5675, 126.9800), True)
+
+  def test_getting_back_on_route_resets_the_backoff(self):
+    for _ in range(3):
+      self.drive(OFF_ROUTE_TICKS, lon=126.9800)
+      self.state.note_request()
+      self.clock.now += REROUTE_BACKOFF_S[-1]
+    self.drive(1)  # back on the line
+    self.drive(OFF_ROUTE_TICKS, lon=126.9800)
+    self.state.note_request()
+    self.clock.now += REROUTE_BACKOFF_S[0]
+    self.assertEqual(self.state.update(37.5675, 126.9800), True)
+
+  def test_getting_back_on_route_clears_the_stale_cooldown(self):
+    # Regression test for a bug in the plan's sample RouteState: getting back on route
+    # reset _failures but left a stale _last_request timestamp behind. With _failures at 0,
+    # REROUTE_BACKOFF_S[min(-1, 3)] silently wrapped around to the LARGEST backoff (via
+    # Python negative indexing), so a fresh excursion right after a reset could be held
+    # back for up to 300 s instead of rerouting after OFF_ROUTE_TICKS like a first excursion.
+    self.drive(OFF_ROUTE_TICKS, lon=126.9800)
+    self.state.note_request()
+    self.drive(1)  # back on the line resets the backoff
+    self.assertEqual(self.drive(OFF_ROUTE_TICKS, lon=126.9800), [False, False, True])
