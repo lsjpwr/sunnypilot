@@ -68,6 +68,25 @@ class TestParsePayload(unittest.TestCase):
   def test_parse_rejects_non_string_road_name(self):
     self.assertEqual(parse_payload({"road_name": 123}).road_name, "")
 
+  def test_destination_lands(self):
+    nav = parse_payload({**VALID, "destination_lat": 37.4979, "destination_lon": 127.0276})
+    self.assertEqual(nav.destination, (37.4979, 127.0276))
+
+  def test_no_destination_key_is_none(self):
+    self.assertIsNone(parse_payload(VALID).destination)
+
+  def test_destination_outside_korea_is_rejected(self):
+    nav = parse_payload({**VALID, "destination_lat": 35.6762, "destination_lon": 139.6503})
+    self.assertIsNone(nav.destination)
+
+  def test_zero_destination_means_guidance_ended(self):
+    nav = parse_payload({**VALID, "destination_lat": 0, "destination_lon": 0})
+    self.assertIsNone(nav.destination)
+
+  def test_non_numeric_destination_is_rejected(self):
+    nav = parse_payload({**VALID, "destination_lat": "37.5", "destination_lon": None})
+    self.assertIsNone(nav.destination)
+
 
 class TestExternalNavSource(unittest.TestCase):
   def setUp(self):

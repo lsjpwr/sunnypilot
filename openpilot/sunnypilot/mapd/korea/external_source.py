@@ -11,7 +11,10 @@ for only starting it when KoreaExternalNavEnabled is set.
 Wire format, one JSON object per datagram, every key optional:
 
   {"speed_limit_kph": 60, "next_speed_limit_kph": 50,
-   "next_speed_limit_distance_m": 320, "road_name": "테헤란로"}
+   "next_speed_limit_distance_m": 320, "road_name": "테헤란로",
+   "destination_lat": 37.4979, "destination_lon": 127.0276}
+
+destination_lat/lon start a route the device fetches itself; 0/0 means guidance ended.
 
 Unknown keys are kept in ExternalNav.raw so a future app can extend the payload
 without a wire-format change.
@@ -24,6 +27,8 @@ import socket
 import threading
 import time
 from dataclasses import dataclass, field
+
+from openpilot.sunnypilot.mapd.korea.route import in_korea
 
 MAX_DATAGRAM = 8192
 EXTERNAL_PORT = 5555
@@ -41,6 +46,7 @@ class ExternalNav:
   next_speed_limit_kph: float = 0.
   next_speed_limit_distance_m: float = 0.
   road_name: str = ""
+  destination: tuple[float, float] | None = None
   received_at: float = 0.
   raw: dict = field(default_factory=dict)
 
@@ -53,6 +59,22 @@ def _bounded(payload: dict, key: str, upper: float) -> float:
   return float(value) if 0. < value <= upper else 0.
 
 
+def _destination(payload: dict) -> tuple[float, float] | None:
+  """The destination, or None for 'no destination' -- which 0/0 deliberately means.
+
+  Not built on _bounded: that helper's (0, upper] range would wrongly reject any
+  legitimate negative coordinate, which only fails to matter here because Korea's own
+  box happens to be all-positive. in_korea is the real validity check for a coordinate,
+  and it already excludes (0, 0), so a phone saying guidance ended lands here as None --
+  the same value as never having sent a destination, and the caller needs no third case.
+  """
+  lat, lon = payload.get("destination_lat"), payload.get("destination_lon")
+  for value in (lat, lon):
+    if isinstance(value, bool) or not isinstance(value, int | float):
+      return None
+  return (float(lat), float(lon)) if in_korea(float(lat), float(lon)) else None
+
+
 def parse_payload(payload: dict) -> ExternalNav:
   name = payload.get("road_name", "")
   return ExternalNav(
@@ -60,6 +82,7 @@ def parse_payload(payload: dict) -> ExternalNav:
     next_speed_limit_kph=_bounded(payload, "next_speed_limit_kph", MAX_SPEED_LIMIT_KPH),
     next_speed_limit_distance_m=_bounded(payload, "next_speed_limit_distance_m", MAX_DISTANCE_M),
     road_name=name[:MAX_ROAD_NAME] if isinstance(name, str) else "",
+    destination=_destination(payload),
     received_at=time.monotonic(),
     raw=payload,
   )
