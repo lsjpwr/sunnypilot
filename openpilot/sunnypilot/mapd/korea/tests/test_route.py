@@ -367,3 +367,26 @@ class TestCurveTargets(unittest.TestCase):
     targets = curve_targets(route, curve[0][0], curve[0][1], 30.)
     self.assertTrue(targets)
     self.assertTrue(all(math.isfinite(v) for _, _, v in targets))
+
+  def test_a_car_mid_segment_still_sees_the_curve_ahead(self):
+    # Pins the travelled-distance seeding fix: the old code seeded `travelled` with the
+    # *backward* distance to the segment's start vertex, then re-added that whole segment
+    # on the first loop iteration -- a car 95% along a 200 m lead-in (10 m short of a real
+    # curve) overshot the 300 m CURVE_HORIZON_M budget before the curve was ever examined,
+    # and got zero targets. This assertion fails under that seeding.
+    m_per_deg_lat = 111195.
+    curve = arc(37.5885, 126.9780, 50., 0., 90.)
+    lead_in_start = (curve[0][0] - 200. / m_per_deg_lat, curve[0][1])
+    route = [lead_in_start, curve[0]] + curve[1:]
+    car = (curve[0][0] - 10. / m_per_deg_lat, curve[0][1])  # 10 m short of the curve
+    self.assertTrue(curve_targets(route, car[0], car[1], 30.))
+
+  def test_a_centimetre_offset_on_a_straight_road_has_no_targets(self):
+    # Coordinate noise, not road shape: adjacent GeoJSON LineString features are
+    # concatenated and typically round to 7 decimals (~1 cm), so two points that should be
+    # the same joint can end up a centimetre apart. Menger curvature scales as 1/spacing, so
+    # that gap alone used to read as a phantom hairpin on a dead-straight road.
+    m_per_deg_lon = 111195. * math.cos(math.radians(STRAIGHT[1][0]))
+    route = list(STRAIGHT)
+    route[2] = (route[1][0], route[1][1] + 0.01 / m_per_deg_lon)  # ~1 cm from route[1]
+    self.assertEqual(curve_targets(route, STRAIGHT[0][0], STRAIGHT[0][1], 30.), [])

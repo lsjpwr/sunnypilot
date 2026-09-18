@@ -20,7 +20,7 @@ import math
 import time
 import urllib.request
 
-from openpilot.sunnypilot.mapd.korea.geo import haversine, point_segment_distance
+from openpilot.sunnypilot.mapd.korea.geo import haversine, M_PER_DEG_LAT, point_segment_distance
 
 # Everything this feature serves is inside South Korea, so a coordinate outside it is a
 # provider bug or a hostile answer either way. Generous on purpose: the box covers Jeju
@@ -230,6 +230,11 @@ A_LAT_MAX = 2.
 # smart_cruise_control/__init__.py: MIN_V = 20 * CV.KPH_TO_MS. Repeated rather than
 # imported because korea/ must stay importable without the openpilot stack.
 MIN_V_MS = 20. / 3.6
+# Menger curvature goes as 1/spacing, so a triple whose points are centimetres apart turns
+# coordinate noise into a hairpin reading. No routing polyline carries real road shape below
+# a metre, and a genuine hairpin still registers on the wider triples along it, so a triple
+# this short is treated as straight rather than trusted.
+MIN_SIDE_M = 1.
 
 
 def _menger_curvature(a: tuple[float, float], b: tuple[float, float],
@@ -242,13 +247,13 @@ def _menger_curvature(a: tuple[float, float], b: tuple[float, float],
   ab = haversine(a[0], a[1], b[0], b[1])
   bc = haversine(b[0], b[1], c[0], c[1])
   ca = haversine(c[0], c[1], a[0], a[1])
-  if ab == 0. or bc == 0. or ca == 0.:
+  if ab < MIN_SIDE_M or bc < MIN_SIDE_M or ca < MIN_SIDE_M:
     return 0.
 
   # twice the triangle area, by the cross product in a local flat frame
-  m_lon = 111195. * math.cos(math.radians(b[0]))
-  ax, ay = (a[1] - b[1]) * m_lon, (a[0] - b[0]) * 111195.
-  cx, cy = (c[1] - b[1]) * m_lon, (c[0] - b[0]) * 111195.
+  m_lon = M_PER_DEG_LAT * math.cos(math.radians(b[0]))
+  ax, ay = (a[1] - b[1]) * m_lon, (a[0] - b[0]) * M_PER_DEG_LAT
+  cx, cy = (c[1] - b[1]) * m_lon, (c[0] - b[0]) * M_PER_DEG_LAT
   area2 = abs(ax * cy - ay * cx)
   return 2. * area2 / (ab * bc * ca) if area2 > 0. else 0.
 
@@ -269,9 +274,14 @@ def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
                                                    route[i + 1][0], route[i + 1][1]))
 
   targets: list[tuple[float, float, float]] = []
-  travelled = haversine(lat, lon, route[start][0], route[start][1])
+  # The walk starts at the car, not the segment's start vertex: seeding from route[start]
+  # counted the distance back to that vertex as forward travel, which could shrink the
+  # horizon enough to miss a curve just ahead.
+  travelled = 0.
+  prev = (lat, lon)
   for i in range(start + 1, len(route) - 1):
-    travelled += haversine(route[i - 1][0], route[i - 1][1], route[i][0], route[i][1])
+    travelled += haversine(prev[0], prev[1], route[i][0], route[i][1])
+    prev = route[i]
     if travelled > CURVE_HORIZON_M:
       break
 
