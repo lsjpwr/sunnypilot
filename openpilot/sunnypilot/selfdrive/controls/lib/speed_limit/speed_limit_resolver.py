@@ -13,6 +13,7 @@ from openpilot.common.gps import get_gps_location_service
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
+from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE, LIMIT_ADAPT_ACC
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy, OffsetType
 
@@ -67,6 +68,7 @@ class SpeedLimitResolver:
       self.params
     )
     self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
+    self.map_source = self.params.get("MapDataSource", return_default=True)
 
     self.speed_limit = 0.
     self.speed_limit_last = 0.
@@ -95,6 +97,7 @@ class SpeedLimitResolver:
       self.is_metric = self.params.get_bool("IsMetric")
       self.offset_type = self.params.get("SpeedLimitOffsetType", return_default=True)
       self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
+      self.map_source = self.params.get("MapDataSource", return_default=True)
 
   def _get_speed_limit_offset(self) -> float:
     if self.offset_type == OffsetType.off:
@@ -128,7 +131,12 @@ class SpeedLimitResolver:
       return
 
     speed_limit = map_data.speedLimit if map_data.speedLimitValid else 0.
-    next_speed_limit = map_data.speedLimitAhead if map_data.speedLimitAheadValid else 0.
+    # Korea publishes the next speed camera as speedLimitAhead. SmartCruiseControlMap slows
+    # for it (korea_map_data.publish_targets); here it would only add the confirmation prompt
+    # SLA puts on anything under 80 km/h, and the speed limit offset on top.
+    next_speed_limit = 0.
+    if map_data.speedLimitAheadValid and self.map_source != MapSource.korea:
+      next_speed_limit = map_data.speedLimitAhead
 
     self._calculate_map_data_limits(sm, speed_limit, next_speed_limit)
 

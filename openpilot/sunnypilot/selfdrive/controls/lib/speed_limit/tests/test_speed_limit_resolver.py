@@ -10,6 +10,9 @@ import time
 from openpilot.common.parameterized import parameterized
 
 from openpilot.cereal import custom
+from openpilot.common.constants import CV
+from openpilot.common.params import Params
+from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE
 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, ALL_SOURCES
@@ -145,3 +148,21 @@ class TestSpeedLimitResolverValidation(OpenpilotTestCase):
     resolver._get_from_map_data(sm_mock)
     assert resolver.limit_solutions[SpeedLimitSource.map] == 0.
     assert resolver.distance_solutions[SpeedLimitSource.map] == 0.
+
+  @parameterized.expand([(MapSource.korea, 80.), (MapSource.osm, 50.)], names=["source", "expected_kph"])
+  def test_speed_limit_ahead_only_counts_outside_korea(self, resolver_class, mocker, source, expected_kph):
+    """Korea publishes the next speed camera as speedLimitAhead, and SmartCruiseControlMap
+    slows for it. OSM's is the next posted limit, still SLA's to adapt to."""
+    Params().put("MapDataSource", int(source), block=True)
+    resolver = resolver_class()
+    resolver.policy = Policy.map_data_only
+    sm_mock = setup_sm_mock(mocker)
+    map_data = sm_mock['liveMapDataSP']
+    map_data.speedLimit = 80 * CV.KPH_TO_MS
+    map_data.speedLimitAhead = 50 * CV.KPH_TO_MS
+    map_data.speedLimitAheadValid = True
+    map_data.speedLimitAheadDistance = 50.  # well inside the ~150 m it takes to go from 80 to 50
+
+    resolver.update(80 * CV.KPH_TO_MS, sm_mock)
+
+    self.assertAlmostEqual(resolver.speed_limit, expected_kph * CV.KPH_TO_MS)
