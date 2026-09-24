@@ -234,94 +234,6 @@ sections:
         label: Korea Public Data
       enablement:
       - $ref: '#/macros/offroad'
-    - key: KoreaExternalNavEnabled
-      widget: toggle
-      title: External Navigation Input
-      description: Accept speed limit and speed camera data from a companion navigation app on the local network. Leave
-        this off unless you are running one — the built-in offline map database works without it.
-      enablement:
-      - $ref: '#/macros/offroad'
-      - type: param
-        key: MapDataSource
-        equals: 1
-    - key: KoreaMapAutoDownload
-      widget: toggle
-      title: Download Map Data Automatically
-      description: Fetch the Korean link and speed bump databases over Wi-Fi when a newer release
-        is published. The link database is about 220 MB, so this only runs on an unmetered
-        connection. Leave it off to copy the files by hand.
-      enablement:
-      - $ref: '#/macros/offroad'
-      - type: param
-        key: MapDataSource
-        equals: 1
-    - key: KoreaSpeedBumpEnabled
-      widget: toggle
-      title: Speed Bump Slowdown
-      description: Slow down for speed bumps from the Korean public database. Needs korea_bumps.sqlite on the
-        device — without it this does nothing.
-      enablement:
-      - type: any
-        conditions:
-        - type: capability
-          field: has_longitudinal_control
-          equals: true
-        - type: capability
-          field: has_icbm
-          equals: true
-      - type: param
-        key: MapDataSource
-        equals: 1
-    - key: KoreaSpeedBumpArchSpeed
-      widget: option
-      title: Arch Bump Target Speed
-      min: 20
-      max: 40
-      step: 1
-      unit:
-        metric: km/h
-        imperial: mph
-      visibility:
-      - type: param
-        key: KoreaSpeedBumpEnabled
-        equals: true
-      enablement:
-      - type: any
-        conditions:
-        - type: capability
-          field: has_longitudinal_control
-          equals: true
-        - type: capability
-          field: has_icbm
-          equals: true
-      - type: param
-        key: MapDataSource
-        equals: 1
-    - key: KoreaSpeedBumpTrapezoidSpeed
-      widget: option
-      title: Flat-Top Bump Target Speed
-      min: 20
-      max: 50
-      step: 1
-      unit:
-        metric: km/h
-        imperial: mph
-      visibility:
-      - type: param
-        key: KoreaSpeedBumpEnabled
-        equals: true
-      enablement:
-      - type: any
-        conditions:
-        - type: capability
-          field: has_longitudinal_control
-          equals: true
-        - type: capability
-          field: has_icbm
-          equals: true
-      - type: param
-        key: MapDataSource
-        equals: 1
     - key: SpeedLimitOffsetType
       widget: multiple_button
       title: Speed Limit Offset Type
@@ -346,6 +258,187 @@ sections:
         key: SpeedLimitOffsetType
         op: '>'
         value: 0
+- id: korea_speed_cameras
+  title: Korea Speed Cameras
+  description: Which fixed cameras from the Korean public database slow the car, and how early
+  items:
+  - key: KoreaCameraSpeedEnabled
+    widget: toggle
+    title: Speed Cameras
+    description: Slow down for fixed cameras that enforce speed only. Turning a type off also hides its cameras
+      from the speed limit ahead sign.
+    enablement:
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaCameraSignalEnabled
+    widget: toggle
+    title: Signal + Speed Cameras
+    description: Slow down for intersection cameras that enforce both red lights and speed. Turning a type off
+      also hides its cameras from the speed limit ahead sign.
+    enablement:
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaCameraSectionEnabled
+    widget: toggle
+    title: Section Enforcement
+    description: Slow down at the start and end cameras of average-speed sections. The speed between them is not
+      held. Turning a type off also hides its cameras from the speed limit ahead sign.
+    enablement:
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaCameraZoneEnabled
+    widget: toggle
+    title: Protected Zones
+    description: Slow down for cameras in school and senior protection zones. A camera inside a zone follows this
+      toggle whatever else it enforces. Turning a type off also hides its cameras from the speed limit ahead sign.
+    enablement:
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaCameraMargin
+    widget: option
+    title: Camera Arrival Margin
+    description: Reach the camera's limit about this far before the camera. Speed detectors often sit tens of
+      metres ahead of the pole.
+    min: 0
+    max: 300
+    step: 10
+    unit: m
+    enablement:
+    - type: any
+      conditions:
+      - type: capability
+        field: has_longitudinal_control
+        equals: true
+      - type: capability
+        field: has_icbm
+        equals: true
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaMapApiKey
+    widget: text
+    secret: true
+    max_length: 255
+    requires_attestation: true
+    title: Speed Camera API Key
+    description: data.go.kr key used to refresh the speed camera database over Wi-Fi. Without it the cameras
+      shipped with the database are used as-is.
+    enablement:
+    - type: param
+      key: MapDataSource
+      equals: 1
+- id: korea_speed_bumps
+  title: Korea Speed Bumps
+  description: Speed bumps from the Korean public database
+  items:
+  - key: KoreaSpeedBumpEnabled
+    widget: toggle
+    title: Speed Bump Slowdown
+    description: Slow down for speed bumps from the Korean public database. Needs korea_bumps.sqlite on the
+      device — without it this does nothing.
+    enablement:
+    - type: any
+      conditions:
+      - type: capability
+        field: has_longitudinal_control
+        equals: true
+      - type: capability
+        field: has_icbm
+        equals: true
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaSpeedBumpArchSpeed
+    widget: option
+    title: Arch Bump Target Speed
+    min: 20
+    max: 40
+    step: 1
+    unit:
+      metric: km/h
+      imperial: mph
+    visibility:
+    - type: param
+      key: KoreaSpeedBumpEnabled
+      equals: true
+    enablement:
+    - type: any
+      conditions:
+      - type: capability
+        field: has_longitudinal_control
+        equals: true
+      - type: capability
+        field: has_icbm
+        equals: true
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaSpeedBumpTrapezoidSpeed
+    widget: option
+    title: Flat-Top Bump Target Speed
+    min: 20
+    max: 50
+    step: 1
+    unit:
+      metric: km/h
+      imperial: mph
+    visibility:
+    - type: param
+      key: KoreaSpeedBumpEnabled
+      equals: true
+    enablement:
+    - type: any
+      conditions:
+      - type: capability
+        field: has_longitudinal_control
+        equals: true
+      - type: capability
+        field: has_icbm
+        equals: true
+    - type: param
+      key: MapDataSource
+      equals: 1
+- id: korea_route_map_data
+  title: 'Korea Route & Map Data'
+  description: Routes from a companion navigation app, and map database updates
+  items:
+  - key: KoreaExternalNavEnabled
+    widget: toggle
+    title: External Navigation Input
+    description: Accept speed limit and speed camera data from a companion navigation app on the local network. Leave
+      this off unless you are running one — the built-in offline map database works without it.
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaRouteApiKey
+    widget: text
+    secret: true
+    max_length: 255
+    requires_attestation: true
+    title: Route API Key
+    description: TMAP appKey used to fetch the route to a destination sent by a companion navigation app. Without
+      it, speed cameras and bumps are matched by heading alone, which can pick the wrong road at a fork.
+    enablement:
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaMapAutoDownload
+    widget: toggle
+    title: Download Map Data Automatically
+    description: Fetch the Korean link and speed bump databases over Wi-Fi when a newer release
+      is published. The link database is about 220 MB, so this only runs on an unmetered
+      connection. Leave it off to copy the files by hand.
+    enablement:
+    - $ref: '#/macros/offroad'
+    - type: param
+      key: MapDataSource
+      equals: 1
 - id: smart_cruise
   title: Smart Cruise Control
   description: ''

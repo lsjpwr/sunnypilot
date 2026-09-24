@@ -38,6 +38,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.long_cost_tuning import (
   LEAD_VELOCITY_COST_MAX,
   LEAD_VELOCITY_COST_MIN,
 )
+from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
+from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import CAMERA_MARGIN_RANGE
 from openpilot.common.test import OpenpilotTestCase
 
 
@@ -516,23 +518,46 @@ class TestTextItemValidation(OpenpilotTestCase):
     assert _check_text_items_quietly(data).success
 
 
+KOREA_SECTIONS = ("korea_speed_cameras", "korea_speed_bumps", "korea_route_map_data")
+
+
+def _section_keys(schema: dict[str, Any], panel_id: str, section_id: str) -> list[str]:
+  section = _find_section(schema, panel_id, section_id)
+  return [item["key"] for item in section.get("items", [])] if section else []
+
+
+class TestKoreaSectionsOnCruise(OpenpilotTestCase):
+  """The app's settings sidebar is hardcoded (sunnylink-frontend src/routes/+layout.svelte),
+  so a korea page was never reachable. Its items, and the Korea items that sat in the speed
+  limit sub-panel, now live in three cruise sections grouped by what they do. A text item
+  the app cannot render shows as an empty row (SchemaItemRenderer.svelte has no branch for
+  it) and takes nothing else on the page down, so the keys no longer need a page of their own."""
+
+  def test_there_is_no_korea_panel(self, schema):
+    assert _find_panel(schema, "korea") is None
+
+  def test_the_three_sections_sit_between_speed_limits_and_smart_cruise(self, schema):
+    ids = [s["id"] for s in _find_panel(schema, "cruise")["sections"]]
+    start = ids.index("speed_limits")
+    assert ids[start:start + 5] == ["speed_limits", *KOREA_SECTIONS, "smart_cruise"], ids
+
+  def test_each_section_holds_its_items_in_order(self, schema):
+    assert _section_keys(schema, "cruise", "korea_speed_cameras") == [
+      "KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled",
+      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "KoreaMapApiKey"]
+    assert _section_keys(schema, "cruise", "korea_speed_bumps") == [
+      "KoreaSpeedBumpEnabled", "KoreaSpeedBumpArchSpeed", "KoreaSpeedBumpTrapezoidSpeed"]
+    assert _section_keys(schema, "cruise", "korea_route_map_data") == [
+      "KoreaExternalNavEnabled", "KoreaRouteApiKey", "KoreaMapAutoDownload"]
+
+  def test_the_speed_limit_sub_panel_keeps_only_speed_limit_settings(self, schema):
+    section = _find_section(schema, "cruise", "speed_limits")
+    keys = [item["key"] for sub_panel in section["sub_panels"] for item in sub_panel["items"]]
+    assert keys == ["SpeedLimitMode", "SpeedLimitPolicy", "MapDataSource", "SpeedLimitOffsetType",
+                    "SpeedLimitValueOffset"], keys
+
+
 class TestKoreaApiKeyRemote(OpenpilotTestCase):
-  def test_korea_panel_present_and_remote_configurable(self, schema):
-    panel = _find_panel(schema, "korea")
-    assert panel is not None, "korea panel missing from settings_ui schema"
-    assert panel.get("remote_configurable") is True
-    assert panel.get("order") == 8
-
-  def test_korea_panel_reuses_an_existing_icon(self, schema):
-    """A new page hands the app two things it may not know: a new widget and a new icon
-    name. The icon resolves to an app asset, so an unknown name can break the page on its
-    own. Reusing a name already in the schema keeps this to one unknown."""
-    panel = _find_panel(schema, "korea")
-    assert panel is not None
-    others = {p.get("icon") for p in schema.get("panels", []) if p.get("id") != "korea"}
-    assert panel.get("icon") in others, \
-      f"korea panel icon {panel.get('icon')!r} is used by no other panel"
-
   def test_api_key_item_shape(self, schema):
     item = _find_item(schema, "KoreaMapApiKey")
     assert item is not None, "KoreaMapApiKey missing from settings_ui schema"
@@ -547,24 +572,49 @@ class TestKoreaApiKeyRemote(OpenpilotTestCase):
     assert item is not None
     assert item.get("requires_attestation") is True
 
-  def test_api_key_section_requires_korea_map_source(self, schema):
-    """Both device UIs gate the key on MapDataSource == korea (speed_limit_settings.py:233,
-    mici toggles.py:135). Offering it under OSM would be a field that changes nothing."""
-    section = _find_section(schema, "korea", "korea_credentials")
-    assert section is not None, "korea.korea_credentials section missing"
-    assert _references_param_equals(section.get("enablement"), "MapDataSource", 1), \
-      "korea_credentials missing MapDataSource == korea (1) enablement gate"
+  def test_api_keys_require_korea_map_source(self, schema):
+    """Both device UIs gate the keys on MapDataSource == korea (speed_limit_settings.py, mici
+    toggles.py). The korea page carried that gate on its section; on cruise each item carries
+    its own, like every other Korea item."""
+    for key in ("KoreaMapApiKey", "KoreaRouteApiKey"):
+      item = _find_item(schema, key)
+      assert item is not None, f"{key} missing from settings_ui schema"
+      assert _references_param_equals(item.get("enablement"), "MapDataSource", 1), \
+        f"{key} missing MapDataSource == korea (1) gate"
 
-  def test_api_key_stays_out_of_the_cruise_panel(self, schema):
-    """The separate page exists so a widget the app may not understand cannot take anything
-    a user depends on down with it -- and cruise is the only remote path a mici owner has to
-    StopDistance, DEC, and the speed limit settings. Two mutations break that and both must
-    fail here: moving the key onto a page mici owners use, and letting a second item onto the
-    korea page. The exact-set assertion covers both -- the key is on korea, korea has nothing
-    else, so there is nothing on that page to lose besides the key itself."""
-    assert "KoreaMapApiKey" not in _panel_item_keys(schema, "cruise")
-    assert _panel_item_keys(schema, "korea") == {"KoreaMapApiKey"}, \
-      "the korea page exists to isolate an unproven widget -- it must carry nothing else"
+
+class TestKoreaCameraKindsRemote(OpenpilotTestCase):
+  @parameterized.expand(list(CAMERA_KIND_PARAMS.values()), names=["key"])
+  def test_kind_toggle_needs_only_the_korea_source(self, schema, key):
+    """Not the longitudinal capability: a kind that is off also leaves the speed limit ahead
+    sign, which a stock-ACC car shows too. Not offroad-only: it opens no port and touches no
+    credential. No onroad cycle: korea_map_data rereads it every tick."""
+    item = _find_item(schema, key)
+    assert item is not None, f"{key} missing from settings_ui schema"
+    assert item.get("widget") == "toggle"
+    assert _references_param_equals(item.get("enablement"), "MapDataSource", 1)
+    assert not _references_capability_field(item.get("enablement"), "has_longitudinal_control")
+    assert "offroad_only" not in _flatten_rule_types(item.get("enablement"))
+    assert not item.get("needs_onroad_cycle")
+
+  def test_margin_matches_the_backend_range(self, schema):
+    """korea_map_data clamps to CAMERA_MARGIN_RANGE; a wider remote range would offer values
+    that silently snap back."""
+    item = _find_item(schema, "KoreaCameraMargin")
+    assert item is not None, "KoreaCameraMargin missing from settings_ui schema"
+    assert item.get("widget") == "option"
+    assert (item.get("min"), item.get("max")) == CAMERA_MARGIN_RANGE
+    assert item.get("step") == 10
+    assert item.get("unit") == "m"
+
+  def test_margin_needs_a_capability_and_the_korea_source(self, schema):
+    """It only moves the SmartCruiseControlMap slowdown, which cannot act without
+    longitudinal control or ICBM -- the same gate as Speed Bump Slowdown."""
+    item = _find_item(schema, "KoreaCameraMargin")
+    assert item is not None
+    assert _references_capability_field(item.get("enablement"), "has_longitudinal_control")
+    assert _references_capability_field(item.get("enablement"), "has_icbm")
+    assert _references_param_equals(item.get("enablement"), "MapDataSource", 1)
 
 
 class TestLongitudinalCostSplit(OpenpilotTestCase):
