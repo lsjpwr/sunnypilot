@@ -30,7 +30,8 @@ import sqlite3
 import struct
 from collections.abc import Iterator
 
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_SECTION,
+                                                 CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE)
 
 SCHEMA_VERSION = "1"
 
@@ -41,8 +42,7 @@ KOREA_LON = (124.0, 132.0)
 CSV_ENCODINGS = ("cp949", "utf-8-sig")
 
 # Column names of the CSV distribution on data.go.kr. The open API for the same dataset
-# uses romanised keys instead (latitude/longitude/lmttVe/ovrspdRegltSctnLt), so a fetcher
-# pulling from the API must normalise to these headers before calling load_cameras.
+# romanises them (latitude/longitude/lmttVe/ovrspdRegltSctnLt); load_cameras_api reads those.
 # Verified against the 2026-08 release; re-check if a load returns 0 rows.
 CAMERA_COLUMNS = {
   "lat": "위도",
@@ -50,6 +50,22 @@ CAMERA_COLUMNS = {
   "limit": "제한속도",
   "section": "과속단속구간길이",
 }
+
+# 단속구분 / 단속구간위치구분 / 보호구역구분 in the order classify_camera takes them: the CSV's
+# Korean headers, then the API's romanised keys for the same three fields.
+CAMERA_KIND_COLUMNS = ("단속구분", "단속구간위치구분", "보호구역구분")
+CAMERA_API_KIND_FIELDS = ("regltSe", "regltSctnLcSe", "prtcareaType")
+
+# What those codes mean. data.go.kr publishes no codebook for them, so each set is read off
+# the 2026-08 API snapshot; the evidence and per-kind counts are in
+# docs/superpowers/specs/2026-09-24-korea-camera-kinds-design.md.
+#   단속구분: 1 과속, 2 신호 -- every 신호 row carries a speed limit, so these are the
+#     multi-function 신호·과속 cameras. '01+02' and '1+2' name both. 3/4/99 are other kinds.
+#   단속구간위치구분: 1 시점, 2 종점 of a 구간단속 section, blank for a point camera.
+#   보호구역구분: 1 노인, 2 어린이 보호구역, 99 none, blank unrecorded.
+SIGNAL_CODES = frozenset({2})
+SECTION_CODES = frozenset({1, 2})
+ZONE_CODES = frozenset({1, 2})
 
 # an r-tree entry needs a non-degenerate box; ~0.1 m is far below GPS noise
 POINT_BOX_DEG = 1e-6
@@ -94,7 +110,10 @@ CREATE TABLE cameras(
   -- only. In the 2026-08 dataset just 1120 of 43347 rows populate it at all, and the unit
   -- is inconsistent between submitting agencies: values run 1, 2, 3 ... 45, 200, 18637,
   -- and 99999 as a sentinel. Never feed this to anything that computes a distance.
-  section_m INTEGER NOT NULL
+  section_m INTEGER NOT NULL,
+  -- db.CAMERA_*, from classify_camera. A file built before this column still opens:
+  -- KoreaMapDB treats its cameras as kind unknown (db.has_camera_kind).
+  kind      INTEGER NOT NULL
 );
 CREATE VIRTUAL TABLE cameras_idx USING rtree(id, minlat, maxlat, minlon, maxlon);
 """
@@ -149,29 +168,33 @@ def read_csv_rows(path: str) -> list[dict]:
   raise last_error
 
 
-def load_cameras(path: str) -> Iterator[tuple[float, float, int, int]]:
-  """Yield (lat, lon, limit_kph, section_m) for every usable speed-enforcement camera.
+def load_cameras(path: str) -> Iterator[tuple[float, float, int, int, int]]:
+  """Yield (lat, lon, limit_kph, section_m, kind) for every usable speed-enforcement camera.
 
   Rows without a speed limit are red-light or parking cameras: they carry no target
   speed, so there is nothing for the longitudinal controller to do with them. That filter
-  keeps 33415 of the 43347 rows in the 2026-08 dataset.
+  keeps 33415 of the 43347 rows in the 2026-08 dataset. A speed limit is still the only
+  test for "enforces speed" -- the three CAMERA_KIND_COLUMNS only pick which toggle a kept
+  camera answers to (classify_camera).
 
   section_m is passed through unvalidated -- see the schema comment. Treat it as a label,
-  never as metres. 단속구분 is deliberately not used to classify rows: the field mixes
-  zero-padded and unpadded spellings of the same code plus combined values
-  ('2', '02', '01+02', '1+2', '99'), so a speed limit greater than zero is the only
-  reliable signal that a row describes speed enforcement.
+  never as metres.
   """
   rows = read_csv_rows(path)
-  if rows and CAMERA_COLUMNS["lat"] not in rows[0]:
-    raise KeyError(f"expected column {CAMERA_COLUMNS['lat']!r}, got {list(rows[0])}")
+  expected = [*CAMERA_COLUMNS.values(), *CAMERA_KIND_COLUMNS]
+  if rows and not set(expected) <= set(rows[0]):
+    # Every column, not just lat: a renamed code column reads as None on every row and would
+    # file every camera under CAMERA_SPEED instead of failing loudly -- the trap load_bumps
+    # guards against for its kind column.
+    raise KeyError(f"expected columns {expected!r}, got {list(rows[0])}")
 
   for row in rows:
     limit_kph = to_int(row.get(CAMERA_COLUMNS["limit"]))
     lat = to_float(row.get(CAMERA_COLUMNS["lat"]))
     lon = to_float(row.get(CAMERA_COLUMNS["lon"]))
     if keep_camera(lat, lon, limit_kph):
-      yield lat, lon, limit_kph, to_int(row.get(CAMERA_COLUMNS["section"]))
+      yield (lat, lon, limit_kph, to_int(row.get(CAMERA_COLUMNS["section"])),
+             classify_camera(*(row.get(column) for column in CAMERA_KIND_COLUMNS)))
 
 
 def keep_camera(lat: float, lon: float, limit_kph: int) -> bool:
@@ -179,19 +202,48 @@ def keep_camera(lat: float, lon: float, limit_kph: int) -> bool:
   return 0 < limit_kph <= MAX_SPEED_LIMIT_KPH and in_korea(lat, lon)
 
 
-def load_cameras_api(items) -> Iterator[tuple[float, float, int, int]]:
+def to_codes(value) -> set[int]:
+  """'2', '02', '01+02', '1+2' -> {2}, {2}, {1, 2}, {1, 2}. Pieces that are not integers drop out."""
+  codes = set()
+  for piece in str(value or "").split("+"):
+    try:
+      codes.add(int(piece))
+    except ValueError:
+      pass
+  return codes
+
+
+def classify_camera(enforcement, section_position, zone) -> int:
+  """단속구분, 단속구간위치구분, 보호구역구분 -> one db.CAMERA_* kind.
+
+  The most specific kind wins: zone > section > signal > speed. A signal camera in a school
+  zone answers to the zone toggle, not the signal one. Anything unrecognised is
+  CAMERA_SPEED, so a code this build has never seen keeps the slowdown every camera had
+  before kinds existed.
+  """
+  if to_codes(zone) & ZONE_CODES:
+    return CAMERA_ZONE
+  if to_codes(section_position) & SECTION_CODES:
+    return CAMERA_SECTION
+  if to_codes(enforcement) & SIGNAL_CODES:
+    return CAMERA_SIGNAL
+  return CAMERA_SPEED
+
+
+def load_cameras_api(items) -> Iterator[tuple[float, float, int, int, int]]:
   """Same rows as load_cameras, from the data.go.kr JSON API instead of the CSV.
 
-  The API romanises every field name -- latitude/longitude/lmttVe/ovrspdRegltSctnLt --
-  where the CSV uses 위도/경도/제한속도/과속단속구간길이. Verified against the 2026-08
-  snapshot: both paths yield the identical 33415 rows out of 43347.
+  The API romanises every field name -- latitude/longitude/lmttVe/ovrspdRegltSctnLt and
+  CAMERA_API_KIND_FIELDS -- where the CSV uses the Korean headers. Verified against the
+  2026-08 snapshot: both paths yield the identical 33415 rows out of 43347.
   """
   for item in items:
     limit_kph = to_int(item.get("lmttVe"))
     lat = to_float(item.get("latitude"))
     lon = to_float(item.get("longitude"))
     if keep_camera(lat, lon, limit_kph):
-      yield lat, lon, limit_kph, to_int(item.get("ovrspdRegltSctnLt"))
+      yield (lat, lon, limit_kph, to_int(item.get("ovrspdRegltSctnLt")),
+             classify_camera(*(item.get(field) for field in CAMERA_API_KIND_FIELDS)))
 
 
 def classify_kind(text: str) -> int:
@@ -243,9 +295,9 @@ def insert_bumps(con: sqlite3.Connection, bumps) -> int:
 
 def insert_cameras(con: sqlite3.Connection, cameras) -> int:
   count = 0
-  for lat, lon, limit_kph, section_m in cameras:
-    cur = con.execute("INSERT INTO cameras(lat, lon, limit_kph, section_m) VALUES (?, ?, ?, ?)",
-                      (lat, lon, limit_kph, section_m))
+  for lat, lon, limit_kph, section_m, kind in cameras:
+    cur = con.execute("INSERT INTO cameras(lat, lon, limit_kph, section_m, kind) VALUES (?, ?, ?, ?, ?)",
+                      (lat, lon, limit_kph, section_m, kind))
     con.execute("INSERT INTO cameras_idx VALUES (?, ?, ?, ?, ?)",
                 (cur.lastrowid, lat - POINT_BOX_DEG, lat + POINT_BOX_DEG,
                  lon - POINT_BOX_DEG, lon + POINT_BOX_DEG))

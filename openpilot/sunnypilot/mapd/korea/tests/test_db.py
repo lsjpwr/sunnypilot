@@ -13,16 +13,16 @@ import unittest
 
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS, SCHEMA_LINKS,
                                                       insert_bumps, insert_cameras, insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, KoreaMapDB, verify
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_SECTION, CAMERA_SPEED, KoreaMapDB, verify
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
 ROAD_60 = (60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])
 ROAD_100 = (100, "고속화도로", [(37.5027, 127.0200), (37.5027, 127.0320)])
 
 # camera 500 m east of the start of ROAD_60, and one 500 m west (behind us)
-CAM_AHEAD = (37.5000, 127.0257, 50, 0)
-CAM_BEHIND = (37.5000, 127.0143, 30, 0)
-CAM_SECTION = (37.5000, 127.0280, 80, 4200)
+CAM_AHEAD = (37.5000, 127.0257, 50, 0, CAMERA_SPEED)
+CAM_BEHIND = (37.5000, 127.0143, 30, 0, CAMERA_SPEED)
+CAM_SECTION = (37.5000, 127.0280, 80, 4200, CAMERA_SECTION)
 
 # bumps along ROAD_60, which runs east from (37.5000, 127.0200)
 BUMP_AHEAD_150 = (37.5000, 127.0217, 0)   # ~150 m east, 원호형
@@ -136,7 +136,7 @@ class TestSchemaAndReload(KoreaMapDBTestCase):
 
     # swap in a camera database holding a different limit, the way Task 13 will
     os.utime(cams, (0, 0))  # force a distinct mtime on fast filesystems
-    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.4990, 127.0260, 40, 0)]))
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.4990, 127.0260, 40, 0, CAMERA_SPEED)]))
 
     self.assertIs(database.reload_if_changed(), True)
     cam = database.next_camera(37.4995, 127.0260, 180.)
@@ -498,7 +498,7 @@ class TestReloadAllThree(KoreaMapDBTestCase):
 # ROAD_60 runs east from (37.5000, 127.0200). CAM_AHEAD sits on it 500 m east.
 # A camera 33 m north of CAM_AHEAD is a parallel road: inside the 60 deg cone that
 # next_camera has always used, outside the 30 m route corridor.
-CAM_SIDE_ROAD = (37.5003, 127.0257, 30, 0)
+CAM_SIDE_ROAD = (37.5003, 127.0257, 30, 0, CAMERA_SPEED)
 
 
 class TestRouteCorridorCameras(KoreaMapDBTestCase):

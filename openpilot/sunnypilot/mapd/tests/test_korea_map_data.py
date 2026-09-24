@@ -24,7 +24,7 @@ from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras,
                                                       insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, Bump, Camera, Link
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_SPEED, Bump, Camera, Link
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import KoreaMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -233,7 +233,7 @@ class TestOpenDB(unittest.TestCase):
   def test_open_db_is_a_noop_when_a_file_is_missing(self):
     """Both files must be present. Half a database is not a usable database."""
     cameras = str(self.tmp_path / "korea_cameras.sqlite")
-    write_db(cameras, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.5000, 127.0257, 50, 0)]))
+    write_db(cameras, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.5000, 127.0257, 50, 0, CAMERA_SPEED)]))
 
     data = make_data()
     data.cameras_path = cameras
@@ -245,7 +245,7 @@ class TestOpenDB(unittest.TestCase):
   def test_open_db_opens_both_files(self):
     cameras = str(self.tmp_path / "korea_cameras.sqlite")
     links = str(self.tmp_path / "korea_links.sqlite")
-    write_db(cameras, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.5000, 127.0257, 50, 0)]))
+    write_db(cameras, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.5000, 127.0257, 50, 0, CAMERA_SPEED)]))
     write_db(links, SCHEMA_LINKS,
              lambda con: insert_links(con, [(60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])]))
 
@@ -261,7 +261,7 @@ class TestOpenDB(unittest.TestCase):
     """A good camera database and a links file that is not a database at all."""
     cameras = str(self.tmp_path / "korea_cameras.sqlite")
     links = str(self.tmp_path / "korea_links.sqlite")
-    write_db(cameras, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.5000, 127.0257, 50, 0)]))
+    write_db(cameras, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.5000, 127.0257, 50, 0, CAMERA_SPEED)]))
     with open(links, "wb") as f:
       f.write(b"not a database")
 

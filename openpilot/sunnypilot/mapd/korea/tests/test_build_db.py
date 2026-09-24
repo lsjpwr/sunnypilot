@@ -13,12 +13,13 @@ import tempfile
 import unittest
 
 from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, SCHEMA_CAMERAS, SCHEMA_LINKS, \
-                                                     FALLBACK_PROJECTED_EPSG, WGS84_EPSG, \
+                                                     FALLBACK_PROJECTED_EPSG, WGS84_EPSG, CAMERA_KIND_COLUMNS, \
                                                      build_bumps, build_cameras, write_db, in_korea, \
-                                                     classify_kind, insert_cameras, \
-                                                     insert_links, load_bumps, load_cameras, load_links, \
-                                                     pack_geom, to_float, to_int
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL
+                                                     classify_camera, classify_kind, insert_cameras, \
+                                                     insert_links, load_bumps, load_cameras, load_cameras_api, \
+                                                     load_links, pack_geom, to_float, to_int
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_SECTION, \
+                                               CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE
 
 # pyshp and pyproj are PC-only build tooling: build_db.py imports them lazily and documents
 # them as a manual `pip install`, deliberately keeping them off the device and out of every
@@ -27,14 +28,23 @@ from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_V
 HAS_SHAPEFILE_TOOLING = all(importlib.util.find_spec(m) is not None for m in ("shapefile", "pyproj"))
 _NO_TOOLING_REASON = "needs pyshp and pyproj (PC-only build tooling, see build_db.py)"
 
-CSV_HEADER = "무인교통단속카메라관리번호,위도,경도,단속구분,제한속도,과속단속구간길이\n"
+CSV_HEADER = "무인교통단속카메라관리번호,위도,경도,단속구분,제한속도,과속단속구간길이,단속구간위치구분,보호구역구분\n"
 CSV_ROWS = (
-  "A-1,37.4979,127.0276,과속,60,0\n" +      # kept
-  "A-2,37.5000,127.0300,구간단속,80,4200\n" + # kept, section
-  "A-3,37.5100,127.0400,신호,0,0\n" +        # dropped: no speed limit
-  "A-4,0,0,과속,60,0\n" +                    # dropped: outside Korea
-  "A-5,37.5200,127.0500,과속,999,0\n" +      # dropped: implausible limit
-  "A-6,,,과속,,\n"                            # dropped: empty row
+  "A-1,37.4979,127.0276,1,60,0,,99\n" +       # kept, speed
+  "A-2,37.5000,127.0300,99,80,4200,1,99\n" +  # kept, section start
+  "A-3,37.5100,127.0400,2,0,0,,99\n" +        # dropped: no speed limit
+  "A-4,0,0,1,60,0,,99\n" +                    # dropped: outside Korea
+  "A-5,37.5200,127.0500,1,999,0,,99\n" +      # dropped: implausible limit
+  "A-6,,,,,,,\n"                              # dropped: empty row
+)
+
+# (lat, lon, 단속구분, 제한속도, 단속구간위치구분, 보호구역구분, kind). One row per kind, picked
+# so that swapping any two of the three code columns changes at least one kind.
+KIND_ROWS = (
+  ("37.50", "127.00", "1", "60", "", "99", CAMERA_SPEED),
+  ("37.51", "127.00", "99", "80", "1", "99", CAMERA_SECTION),
+  ("37.52", "127.00", "2", "50", "", "99", CAMERA_SIGNAL),
+  ("37.53", "127.00", "2", "30", "", "2", CAMERA_ZONE),
 )
 
 BUMP_CSV_HEADER = "과속방지턱관리번호,WGS84위도,WGS84경도,과속방지턱형태구분\n"
@@ -98,8 +108,8 @@ class TestLoadCameras(BuildDBTestCase):
   def test_load_cameras_keeps_only_speed_cameras(self):
     rows = list(load_cameras(self.write_csv()))
     self.assertEqual(len(rows), 2, rows)
-    self.assertEqual(rows[0], (37.4979, 127.0276, 60, 0))
-    self.assertEqual(rows[1], (37.5000, 127.0300, 80, 4200))
+    self.assertEqual(rows[0], (37.4979, 127.0276, 60, 0, CAMERA_SPEED))
+    self.assertEqual(rows[1], (37.5000, 127.0300, 80, 4200, CAMERA_SECTION))
 
   def test_load_cameras_reads_utf8_too(self):
     rows = list(load_cameras(self.write_csv(encoding="utf-8-sig")))
@@ -199,7 +209,7 @@ class TestWriteDB(BuildDBTestCase):
     out = str(self.tmp_path / "korea_cameras.sqlite")
 
     def good(con):
-      return insert_cameras(con, [(37.4979, 127.0276, 60, 0)])
+      return insert_cameras(con, [(37.4979, 127.0276, 60, 0, CAMERA_SPEED)])
 
     self.assertEqual(write_db(out, SCHEMA_CAMERAS, good), 1)
     with open(out, "rb") as f:
@@ -360,5 +370,75 @@ class TestLoadBumps(BuildDBTestCase):
       self.assertEqual(con.execute("SELECT COUNT(*) FROM bumps_idx").fetchone()[0], 3)
       kinds = [r[0] for r in con.execute("SELECT kind FROM bumps ORDER BY id")]
       self.assertEqual(kinds, [BUMP_ARCH, BUMP_VIRTUAL, BUMP_TRAPEZOID])
+    finally:
+      con.close()
+
+
+class TestClassifyCamera(unittest.TestCase):
+  def test_speed_only(self):
+    self.assertEqual(classify_camera("1", "", "99"), CAMERA_SPEED)
+    self.assertEqual(classify_camera("01", "", ""), CAMERA_SPEED)
+
+  def test_zero_padded_and_combined_codes_read_as_signal(self):
+    """단속구분 mixes '2' and '02', and names both enforcements as '01+02' or '1+2'."""
+    for code in ("2", "02", "01+02", "1+2"):
+      with self.subTest(code=code):
+        self.assertEqual(classify_camera(code, "", "99"), CAMERA_SIGNAL)
+
+  def test_section_start_and_end(self):
+    for position in ("1", "01", "2", "02"):
+      with self.subTest(position=position):
+        self.assertEqual(classify_camera("99", position, "99"), CAMERA_SECTION)
+
+  def test_a_zone_wins_over_everything_else(self):
+    """A school-zone signal camera answers to the zone toggle, not the signal one."""
+    self.assertEqual(classify_camera("2", "", "2"), CAMERA_ZONE)
+    self.assertEqual(classify_camera("01+02", "", "02"), CAMERA_ZONE)
+    self.assertEqual(classify_camera("99", "1", "1"), CAMERA_ZONE)
+
+  def test_a_section_wins_over_signal(self):
+    self.assertEqual(classify_camera("2", "1", "99"), CAMERA_SECTION)
+
+  def test_unknown_codes_fall_back_to_speed(self):
+    """A code this build has never seen keeps the slowdown every camera had before kinds."""
+    for codes in (("99", "", "99"), ("4", "", ""), ("", "", ""), (None, None, None), ("과속", "x", "3")):
+      with self.subTest(codes=codes):
+        self.assertEqual(classify_camera(*codes), CAMERA_SPEED)
+
+
+class TestCameraKinds(BuildDBTestCase):
+  def write_kind_csv(self, header=CSV_HEADER):
+    path = self.tmp_path / "kinds.csv"
+    rows = "".join(f"K-{i},{lat},{lon},{enforcement},{limit},0,{position},{zone}\n"
+                   for i, (lat, lon, enforcement, limit, position, zone, _) in enumerate(KIND_ROWS))
+    path.write_text(header + rows, encoding="cp949")
+    return str(path)
+
+  def test_the_csv_path_reads_all_three_code_columns(self):
+    self.assertEqual([row[4] for row in load_cameras(self.write_kind_csv())],
+                     [kind for *_, kind in KIND_ROWS])
+
+  def test_the_api_path_classifies_like_the_csv_path(self):
+    """Two loaders, one classify_camera: the same row must land in the same kind either way."""
+    items = [{"latitude": lat, "longitude": lon, "regltSe": enforcement, "lmttVe": limit,
+              "ovrspdRegltSctnLt": "0", "regltSctnLcSe": position, "prtcareaType": zone}
+             for lat, lon, enforcement, limit, position, zone, _ in KIND_ROWS]
+    self.assertEqual(list(load_cameras_api(items)), list(load_cameras(self.write_kind_csv())))
+
+  def test_a_renamed_code_column_raises(self):
+    """lat/lon/limit are unchanged, only one code column is renamed. The old lat-only guard
+    missed this and filed every camera under CAMERA_SPEED."""
+    for column in CAMERA_KIND_COLUMNS:
+      with self.subTest(column=column):
+        with self.assertRaises(KeyError):
+          list(load_cameras(self.write_kind_csv(CSV_HEADER.replace(column, "renamed"))))
+
+  def test_build_cameras_stores_the_kind(self):
+    out = str(self.tmp_path / "korea_cameras.sqlite")
+    build_cameras(out, self.write_csv())
+    con = sqlite3.connect(out)
+    try:
+      self.assertEqual([r[0] for r in con.execute("SELECT kind FROM cameras ORDER BY id")],
+                       [CAMERA_SPEED, CAMERA_SECTION])
     finally:
       con.close()

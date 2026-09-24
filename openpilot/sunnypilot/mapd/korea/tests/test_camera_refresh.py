@@ -20,6 +20,7 @@ from unittest import mock
 from openpilot.sunnypilot.mapd.korea import camera_refresh
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, insert_cameras, load_cameras_api,
                                                       write_db)
+from openpilot.sunnypilot.mapd.korea.db import CAMERA_SPEED
 
 
 def api_item(lat, lon, limit, section=0):
@@ -52,7 +53,7 @@ def count_rows(path):
 
 def seed(path, n):
   write_db(path, SCHEMA_CAMERAS,
-           lambda con: insert_cameras(con, [(37.5 + i * 1e-4, 127.0, 60, 0) for i in range(n)]))
+           lambda con: insert_cameras(con, [(37.5 + i * 1e-4, 127.0, 60, 0, CAMERA_SPEED) for i in range(n)]))
 
 
 class TestFetch(unittest.TestCase):
@@ -62,7 +63,7 @@ class TestFetch(unittest.TestCase):
              api_item(37.5, 127.0, 0),        # red-light camera: no target speed
              api_item(37.5, 127.0, 999),      # above MAX_SPEED_LIMIT_KPH
              api_item(1.0, 1.0, 60)]          # outside Korea
-    self.assertEqual(list(load_cameras_api(items)), [(37.5, 127.0, 60, 0)])
+    self.assertEqual(list(load_cameras_api(items)), [(37.5, 127.0, 60, 0, CAMERA_SPEED)])
 
   def test_fetch_all_walks_every_page(self):
     pages = [[api_item(37.5, 127.0, 60)] * camera_refresh.PAGE_SIZE, [api_item(37.6, 127.1, 50)] * 7]

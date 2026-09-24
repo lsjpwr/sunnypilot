@@ -42,6 +42,14 @@ BUMP_ARCH = 0       # 원호형 -- a rounded hump, the harshest of the three
 BUMP_TRAPEZOID = 1  # 사다리꼴형 -- flat-topped, gentler at the same speed
 BUMP_VIRTUAL = 2    # 가상방지턱 -- road markings only, no physical rise
 
+# 단속 종류, as build_db.classify_camera maps it. Here rather than in build_db for the same
+# builder -> runtime reason as BUMP_* above. A camera has exactly one kind; classify_camera
+# says which one wins when it is several things at once.
+CAMERA_SPEED = 0    # 과속 only -- and any code this build does not recognise
+CAMERA_SIGNAL = 1   # 신호·과속, the multi-function intersection cameras
+CAMERA_SECTION = 2  # the start or end camera of a 구간단속 section
+CAMERA_ZONE = 3     # inside a 노인/어린이 보호구역, whatever else it enforces
+
 # ~3.3 km box, then filtered down to CAMERA_MAX_DISTANCE_M
 CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.

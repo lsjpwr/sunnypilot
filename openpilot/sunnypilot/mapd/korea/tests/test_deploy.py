@@ -16,7 +16,7 @@ from openpilot.sunnypilot.mapd.korea import deploy, map_download
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS, SCHEMA_LINKS,
                                                       insert_bumps, insert_cameras, insert_links,
                                                       write_db)
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH
+from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, CAMERA_SPEED
 from openpilot.sunnypilot.mapd.korea.deploy import (MIN_BUMPS, build_targets, emit_manifest,
                                                     sha256_of, verify)
 
@@ -29,7 +29,7 @@ class TestDeploy(unittest.TestCase):
   def good_db(self, n=5):
     path = str(self.tmp_path / "korea_cameras.sqlite")
     write_db(path, SCHEMA_CAMERAS,
-             lambda con: insert_cameras(con, [(37.5 + i * 1e-4, 127.0, 60, 0) for i in range(n)]))
+             lambda con: insert_cameras(con, [(37.5 + i * 1e-4, 127.0, 60, 0, CAMERA_SPEED) for i in range(n)]))
     return path
 
   def good_bumps_db(self, n=5):
