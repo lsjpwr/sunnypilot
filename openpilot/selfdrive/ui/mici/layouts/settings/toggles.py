@@ -58,6 +58,13 @@ class TogglesLayoutMici(NavScroller):
     korea_bump_toggle = BigParamControl("korean speed bump slowdown", "KoreaSpeedBumpEnabled")
     korea_download_toggle = BigParamControl("auto-download map data", "KoreaMapAutoDownload")
 
+    korea_camera_toggles = (
+      ("KoreaCameraSpeedEnabled", BigParamControl("speed cameras", "KoreaCameraSpeedEnabled")),
+      ("KoreaCameraSignalEnabled", BigParamControl("signal + speed cameras", "KoreaCameraSignalEnabled")),
+      ("KoreaCameraSectionEnabled", BigParamControl("section enforcement cameras", "KoreaCameraSectionEnabled")),
+      ("KoreaCameraZoneEnabled", BigParamControl("protected zone cameras", "KoreaCameraZoneEnabled")),
+    )
+
     def api_key_callback(text):
       # The dialog always seeds empty now (see edit_api_key below), so a bare tap on
       # confirm submits "". If a key is already stored, treat that as a no-op instead
@@ -113,6 +120,7 @@ class TogglesLayoutMici(NavScroller):
       record_mic,
       enable_openpilot,
       korea_nav_toggle,
+      *(toggle for _, toggle in korea_camera_toggles),
       korea_bump_toggle,
       korea_download_toggle,
       self._api_key_btn,
@@ -129,6 +137,7 @@ class TogglesLayoutMici(NavScroller):
       ("RecordAudio", record_mic),
       ("OpenpilotEnabledToggle", enable_openpilot),
       ("KoreaExternalNavEnabled", korea_nav_toggle),
+      *korea_camera_toggles,
       ("KoreaSpeedBumpEnabled", korea_bump_toggle),
       ("KoreaMapAutoDownload", korea_download_toggle),
     )
@@ -139,6 +148,10 @@ class TogglesLayoutMici(NavScroller):
     # Remote schema restricts KoreaExternalNavEnabled to offroad (opening a control-plane
     # UDP port mid-drive from a phone is not allowed) -- match that here for parity.
     korea_nav_toggle.set_enabled(lambda: ui_state.is_offroad() and ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
+    # Not offroad-gated and not gated on longitudinal control: a kind that is off also leaves
+    # the speed limit ahead sign, which a stock-ACC car shows too.
+    for _, toggle in korea_camera_toggles:
+      toggle.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
     # Not offroad-gated, unlike the nav toggle: this opens no port and touches no
     # credential, it only stops a comfort slowdown. Also requires longitudinal control or
     # ICBM -- SmartCruiseControlMap (which this toggle ultimately drives) cannot act without

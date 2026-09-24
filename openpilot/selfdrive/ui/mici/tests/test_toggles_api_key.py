@@ -181,3 +181,37 @@ class TestKoreaModeGating(OpenpilotTestCase):
     ui_state.started = True
     self.assertFalse(korea_nav_toggle.enabled)
     self.assertTrue(layout._api_key_btn.enabled)
+
+  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
+  def test_camera_kind_toggles_follow_the_map_source_only(self):
+    """Not offroad-gated and not gated on longitudinal control: a kind that is off also
+    leaves the speed limit ahead sign, which a stock-ACC car shows too."""
+    rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
+    from openpilot.system.ui.lib.application import gui_app
+    gui_app.init_window("test_camera_kind_toggles")
+    self.addCleanup(gui_app.close)
+
+    from openpilot.selfdrive.ui.mici.layouts.settings.toggles import TogglesLayoutMici
+    from openpilot.selfdrive.ui.ui_state import ui_state
+    from openpilot.sunnypilot.mapd import MapSource
+
+    _ensure_params_dir(self, ui_state)
+
+    original_source = ui_state.params.get("MapDataSource", return_default=True)
+    original_started = ui_state.started
+
+    def _restore():
+      ui_state.params.put("MapDataSource", int(original_source), block=True)
+      ui_state.started = original_started
+    self.addCleanup(_restore)
+
+    layout = TogglesLayoutMici()
+    toggles = dict(layout._refresh_toggles)
+    keys = ("KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled", "KoreaCameraZoneEnabled")
+
+    ui_state.started = True  # onroad is no reason to lock these
+    ui_state.params.put("MapDataSource", int(MapSource.osm), block=True)
+    self.assertFalse(any(toggles[key].enabled for key in keys))
+
+    ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
+    self.assertTrue(all(toggles[key].enabled for key in keys))

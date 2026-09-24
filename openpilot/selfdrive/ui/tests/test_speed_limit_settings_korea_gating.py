@@ -11,6 +11,8 @@ speed_limit_settings.py:_update_state() enables three action items on different 
   - _speed_bump requires MapDataSource == korea AND (longitudinal control or ICBM), since
     it ultimately drives SmartCruiseControlMap, which cannot act without one of those;
     _bump_arch_speed and _bump_trapezoid_speed additionally require KoreaSpeedBumpEnabled.
+  - the four camera kind toggles require MapDataSource == korea only -- they also filter the
+    speed limit ahead sign, which every car shows; _camera_margin also requires long or ICBM.
 Previously uncovered by any committed test. Drives the real _update_state() on a real
 constructed layout rather than reimplementing the predicate.
 """
@@ -216,6 +218,61 @@ class TestSpeedLimitSettingsKoreaGating(OpenpilotTestCase):
       ui_state.started = True
       layout._update_state()
       self.assertFalse(layout._auto_download.action_item.enabled)
+
+  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
+  def test_camera_kind_gating(self, subtests):
+    rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
+    from openpilot.system.ui.lib.application import gui_app
+    gui_app.init_window("test_speed_limit_settings_camera_kind_gating")
+    self.addCleanup(gui_app.close)
+
+    from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed_limit_settings import SpeedLimitSettingsLayout
+    from openpilot.selfdrive.ui.ui_state import ui_state
+    from openpilot.sunnypilot.mapd import MapSource
+
+    # Same process-wide-singleton hazard as the tests above.
+    params_dir = ui_state.params.get_param_path()
+    os.makedirs(params_dir, exist_ok=True)
+    self.addCleanup(shutil.rmtree, params_dir, ignore_errors=True)
+
+    original_source = ui_state.params.get("MapDataSource", return_default=True)
+    original_cp = ui_state.CP
+    original_cp_sp = ui_state.CP_SP
+    original_has_long = ui_state.has_longitudinal_control
+    original_has_icbm = ui_state.has_icbm
+
+    def _restore():
+      ui_state.params.put("MapDataSource", int(original_source), block=True)
+      ui_state.CP = original_cp
+      ui_state.CP_SP = original_cp_sp
+      ui_state.has_longitudinal_control = original_has_long
+      ui_state.has_icbm = original_has_icbm
+    self.addCleanup(_restore)
+
+    layout = SpeedLimitSettingsLayout(lambda: None)
+
+    # CP_SP stays None for the same reason as in test_speed_bump_gating.
+    ui_state.CP = SimpleNamespace()
+    ui_state.CP_SP = None
+
+    with subtests.test(case="korea + no longitudinal -> kinds enabled (they filter the HUD sign), margin disabled"):
+      ui_state.params.put("MapDataSource", int(MapSource.korea), block=True)
+      ui_state.has_longitudinal_control = False
+      ui_state.has_icbm = False
+      layout._update_state()
+      self.assertTrue(all(toggle.action_item.enabled for toggle in layout._camera_kinds))
+      self.assertFalse(layout._camera_margin.action_item.enabled)
+
+    with subtests.test(case="korea + longitudinal -> margin enabled too"):
+      ui_state.has_longitudinal_control = True
+      layout._update_state()
+      self.assertTrue(layout._camera_margin.action_item.enabled)
+
+    with subtests.test(case="osm -> everything camera-related disabled"):
+      ui_state.params.put("MapDataSource", int(MapSource.osm), block=True)
+      layout._update_state()
+      self.assertFalse(any(toggle.action_item.enabled for toggle in layout._camera_kinds))
+      self.assertFalse(layout._camera_margin.action_item.enabled)
 
   @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_bump_speed_label_converts_for_is_metric(self, subtests):

@@ -116,6 +116,42 @@ class SpeedLimitSettingsLayout(Widget):
         callback=self._edit_route_api_key,
       ))
 
+    self._camera_speed = toggle_item_sp(
+      title=lambda: tr("Speed Cameras"),
+      description=tr("Slow down for fixed cameras that enforce speed only. Turning a type off also " +
+                     "hides its cameras from the speed limit ahead sign."),
+      param="KoreaCameraSpeedEnabled")
+
+    self._camera_signal = toggle_item_sp(
+      title=lambda: tr("Signal + Speed Cameras"),
+      description=tr("Slow down for intersection cameras that enforce both red lights and speed. " +
+                     "Turning a type off also hides its cameras from the speed limit ahead sign."),
+      param="KoreaCameraSignalEnabled")
+
+    self._camera_section = toggle_item_sp(
+      title=lambda: tr("Section Enforcement"),
+      description=tr("Slow down at the start and end cameras of average-speed sections. The speed " +
+                     "between them is not held. Turning a type off also hides its cameras from the " +
+                     "speed limit ahead sign."),
+      param="KoreaCameraSectionEnabled")
+
+    self._camera_zone = toggle_item_sp(
+      title=lambda: tr("Protected Zones"),
+      description=tr("Slow down for cameras in school and senior protection zones. A camera inside a " +
+                     "zone follows this toggle whatever else it enforces. Turning a type off also " +
+                     "hides its cameras from the speed limit ahead sign."),
+      param="KoreaCameraZoneEnabled")
+
+    self._camera_kinds = (self._camera_speed, self._camera_signal, self._camera_section, self._camera_zone)
+
+    self._camera_margin = option_item_sp(
+      title=lambda: tr("Camera Arrival Margin"),
+      param="KoreaCameraMargin",
+      min_value=0, max_value=300, value_change_step=10,
+      description=tr("Reach the camera's limit about this far before the camera. Speed detectors " +
+                     "often sit tens of metres ahead of the pole."),
+      label_callback=lambda value: f"{value} m")
+
     self._speed_bump = toggle_item_sp(
       title=lambda: tr("Speed Bump Slowdown"),
       description=tr("Slow down for speed bumps from the Korean public database. Needs " +
@@ -170,6 +206,8 @@ class SpeedLimitSettingsLayout(Widget):
       self._external_nav,
       self._api_key,
       self._route_api_key,
+      *self._camera_kinds,
+      self._camera_margin,
       self._speed_bump,
       self._bump_arch_speed,
       self._bump_trapezoid_speed,
@@ -268,6 +306,13 @@ class SpeedLimitSettingsLayout(Widget):
     bump_on = bump_available and ui_state.params.get_bool("KoreaSpeedBumpEnabled")
     self._bump_arch_speed.action_item.set_enabled(bump_on)
     self._bump_trapezoid_speed.action_item.set_enabled(bump_on)
+
+    # The kind toggles are not gated on longitudinal control: a kind that is off also leaves
+    # the speed limit ahead sign, which every car shows. The margin only moves the SCC-Map
+    # slowdown, so it gets the same gate as Speed Bump Slowdown.
+    for toggle in self._camera_kinds:
+      toggle.action_item.set_enabled(is_korea)
+    self._camera_margin.action_item.set_enabled(is_korea and has_long_or_icbm)
 
     speed_limit_mode_param = ui_state.params.get("SpeedLimitMode", return_default=True)
     if ui_state.CP is not None and ui_state.CP_SP is not None:
