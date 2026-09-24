@@ -8,6 +8,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.mapd import MapSource
+from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
 from openpilot.sunnypilot.navd.helpers import coordinate_from_param, Coordinate
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
@@ -98,24 +99,24 @@ class SmartCruiseControlMap:
     return self.a_ego
 
   def _get_enabled(self) -> bool:
-    """One toggle per source, because the two sources fill this controller differently.
+    """One set of toggles per source, because the two sources fill this controller differently.
 
     OSM: the native mapd binary streams curve target velocities, gated by
-    SmartCruiseControlMap. Korea: korea_map_data writes the next speed bump and the curves
-    ahead, gated by KoreaSpeedBumpEnabled or KoreaExternalNavEnabled -- curve targets need a
-    fetched route, and KoreaExternalNavEnabled is what starts the route thread, so gating on
-    the bump toggle alone left curve targets published and silently discarded whenever a
-    driver wanted routed curve braking without also wanting speed bumps. An empty
-    MapTargetVelocities list still leaves the state machine a no-op, so enabling on external
-    nav alone costs nothing while no route is active. Neither toggle may enable the other
-    source -- the danger is a snapshot that stops advancing after a source switch, and each
-    writer is only trusted to keep its own param fresh.
+    SmartCruiseControlMap. Korea: korea_map_data writes the next speed bump, the next speed
+    camera and the curves ahead, so any Korea toggle that feeds one of them enables this:
+    KoreaSpeedBumpEnabled, the four camera kind toggles, or KoreaExternalNavEnabled -- curve
+    targets need a fetched route, and KoreaExternalNavEnabled is what starts the route
+    thread. An empty MapTargetVelocities list still leaves the state machine a no-op, so
+    enabling on a toggle whose feature has nothing ahead costs nothing. Neither source's
+    toggles may enable the other source -- the danger is a snapshot that stops advancing
+    after a source switch, and each writer is only trusted to keep its own param fresh.
     """
     source = self.params.get("MapDataSource", return_default=True)
     if source == MapSource.osm:
       return self.params.get_bool("SmartCruiseControlMap")
     if source == MapSource.korea:
-      return self.params.get_bool("KoreaSpeedBumpEnabled") or self.params.get_bool("KoreaExternalNavEnabled")
+      keys = ("KoreaSpeedBumpEnabled", "KoreaExternalNavEnabled", *CAMERA_KIND_PARAMS.values())
+      return any(self.params.get_bool(key) for key in keys)
     return False
 
   def update_params(self):

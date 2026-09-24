@@ -14,6 +14,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.mapd import MapSource
+from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import R, SmartCruiseControlMap
 from openpilot.common.test import OpenpilotTestCase
 
@@ -41,6 +42,15 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     self.params.put("LastGPSPosition", "{}", block=True)
     self.params.put("MapTargetVelocities", "{}", block=True)
 
+  # Every Korea toggle that feeds SCC-Map. On a device the camera kinds are on by default
+  # (params_keys.h, written by manager_init at boot), so a test that wants the Korea branch
+  # off turns them all off rather than trusting this test's empty params.
+  KOREA_TOGGLES = ("KoreaSpeedBumpEnabled", "KoreaExternalNavEnabled", *CAMERA_KIND_PARAMS.values())
+
+  def korea_toggles_off(self):
+    for key in self.KOREA_TOGGLES:
+      self.params.put_bool(key, False, block=True)
+
   def test_initial_state(self):
     assert self.scc_m.state == VisionState.disabled
     assert not self.scc_m.is_active
@@ -64,7 +74,7 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     mode) -- not a live GPS position. Regression test for computing a slowdown target from a
     stale, non-advancing position after a source switch."""
     self.params.put("MapDataSource", int(MapSource.korea), block=True)
-    self.params.put_bool("KoreaSpeedBumpEnabled", False, block=True)
+    self.korea_toggles_off()
     scc_m = SmartCruiseControlMap()
     assert not scc_m.enabled
 
@@ -85,8 +95,7 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
 
   def test_korea_source_is_gated_on_the_bump_toggle_not_the_osm_toggle(self):
     self.params.put("MapDataSource", int(MapSource.korea), block=True)
-    self.params.put_bool("SmartCruiseControlMap", True, block=True)
-    self.params.put_bool("KoreaSpeedBumpEnabled", False, block=True)
+    self.korea_toggles_off()
     controller = SmartCruiseControlMap()
     self.assertFalse(controller._get_enabled())
 
@@ -99,14 +108,24 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     is what starts the route thread -- so the state machine must not stay off just because
     the unrelated speed-bump toggle is off."""
     self.params.put("MapDataSource", int(MapSource.korea), block=True)
-    self.params.put_bool("KoreaSpeedBumpEnabled", False, block=True)
-    self.params.put_bool("KoreaExternalNavEnabled", False, block=True)
+    self.korea_toggles_off()
     controller = SmartCruiseControlMap()
     self.assertFalse(controller._get_enabled())
 
     self.params.put_bool("KoreaExternalNavEnabled", True, block=True)
     controller = SmartCruiseControlMap()
     self.assertTrue(controller._get_enabled())
+
+  def test_korea_source_is_also_gated_on_each_camera_kind_toggle(self):
+    """korea_map_data publishes a camera point while any kind is on; the controller must not
+    stay off just because the bump and nav toggles are."""
+    self.params.put("MapDataSource", int(MapSource.korea), block=True)
+    for key in CAMERA_KIND_PARAMS.values():
+      with self.subTest(key=key):
+        self.korea_toggles_off()
+        self.assertFalse(SmartCruiseControlMap()._get_enabled())
+        self.params.put_bool(key, True, block=True)
+        self.assertTrue(SmartCruiseControlMap()._get_enabled())
 
   def test_korea_bump_toggle_does_not_leak_into_the_osm_source(self):
     self.params.put("MapDataSource", int(MapSource.osm), block=True)
