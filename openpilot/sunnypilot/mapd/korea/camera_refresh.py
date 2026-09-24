@@ -79,32 +79,28 @@ def fetch_all(api_key: str, opener=urllib.request.urlopen) -> list[dict]:
   raise RuntimeError(f"camera api: still paging after {MAX_PAGES} pages")
 
 
-def current_row_count(path: str) -> int:
-  """How many cameras the live database holds. 0 if there is no usable database yet."""
+def _read_live(path: str, read, default):
+  """read(con) against the live database, or default when there is no usable database."""
   try:
     con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
   except sqlite3.Error:
-    return 0
+    return default
   try:
-    return con.execute("SELECT COUNT(*) FROM cameras").fetchone()[0]
+    return read(con)
   except sqlite3.Error:
-    return 0
+    return default
   finally:
     con.close()
+
+
+def current_row_count(path: str) -> int:
+  """How many cameras the live database holds. 0 if there is no usable database yet."""
+  return _read_live(path, lambda con: con.execute("SELECT COUNT(*) FROM cameras").fetchone()[0], 0)
 
 
 def current_has_kind(path: str) -> bool:
   """Whether the live database carries the kind column. False when there is no usable database."""
-  try:
-    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-  except sqlite3.Error:
-    return False
-  try:
-    return has_camera_kind(con)
-  except sqlite3.Error:
-    return False
-  finally:
-    con.close()
+  return _read_live(path, has_camera_kind, False)
 
 
 def refresh(cameras_path: str, api_key: str, opener=urllib.request.urlopen) -> int:
