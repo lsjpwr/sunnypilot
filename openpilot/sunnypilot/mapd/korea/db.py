@@ -51,6 +51,15 @@ CAMERA_SIGNAL = 1   # 신호·과속, the multi-function intersection cameras
 CAMERA_SECTION = 2  # the start or end camera of a 구간단속 section
 CAMERA_ZONE = 3     # inside a 노인/어린이 보호구역, whatever else it enforces
 
+# The toggle behind each kind, all on by default (params_keys.h). korea_map_data drops the
+# kinds that are off; map_controller keeps SCC-Map on while any of them is on.
+CAMERA_KIND_PARAMS = {
+  CAMERA_SPEED: "KoreaCameraSpeedEnabled",
+  CAMERA_SIGNAL: "KoreaCameraSignalEnabled",
+  CAMERA_SECTION: "KoreaCameraSectionEnabled",
+  CAMERA_ZONE: "KoreaCameraZoneEnabled",
+}
+
 # ~3.3 km box, then filtered down to CAMERA_MAX_DISTANCE_M
 CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.

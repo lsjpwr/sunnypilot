@@ -24,7 +24,9 @@ from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras,
                                                       insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_SPEED, Bump, Camera, Link
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_KIND_PARAMS,
+                                                 CAMERA_SECTION, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE, Bump,
+                                                 Camera, Link)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import KoreaMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -59,6 +61,8 @@ def make_data(link=None, camera=None, external=None):
   data.mem_params = StubMemParams()
   data.bump_enabled = False
   data.bump_targets = {}
+  data.camera_kinds = frozenset(CAMERA_KIND_PARAMS)
+  data.camera_margin = 50
   data.localizer_valid = True
   return data
 
@@ -82,13 +86,16 @@ class StubMemParams:
     self.values.pop(key, None)
 
 
-def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, position=None, localizer_valid=True):
+def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, position=None, localizer_valid=True,
+                   camera=None, margin=50):
   """A KoreaMapData wired only far enough to exercise publish_targets."""
   data = KoreaMapData.__new__(KoreaMapData)
   data.mem_params = StubMemParams()
   data.bump = bump
   data.bump_enabled = enabled
   data.bump_targets = {BUMP_ARCH: arch_kph * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid_kph * CV.KPH_TO_MS}
+  data.camera = camera
+  data.camera_margin = margin
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
   data.localizer_valid = localizer_valid
   data.curve_points = []
@@ -325,7 +332,7 @@ class StubDB:
   def current_link(self, lat, lon, heading_deg=None):
     return None
 
-  def next_camera(self, lat, lon, heading_deg, route=None):
+  def next_camera(self, lat, lon, heading_deg, route=None, kinds=None):
     return None
 
   def next_bump(self, lat, lon, heading_deg, route=None):
@@ -515,6 +522,7 @@ class TestTickOrdering(unittest.TestCase):
     calls = []
     data = KoreaMapData.__new__(KoreaMapData)
     data.read_bump_params = lambda: calls.append("read_bump_params")
+    data.read_camera_params = lambda: calls.append("read_camera_params")
     data.update_destination = lambda: calls.append("update_destination")
     data.sm = SimpleNamespace(update=lambda rate: calls.append("sm.update"))
     data.update_location = lambda: calls.append("update_location")
@@ -524,8 +532,8 @@ class TestTickOrdering(unittest.TestCase):
 
     data.tick()
 
-    self.assertEqual(calls, ["read_bump_params", "update_destination", "sm.update", "update_location", "publish",
-                             "publish_targets"])
+    self.assertEqual(calls, ["read_bump_params", "read_camera_params", "update_destination", "sm.update",
+                             "update_location", "publish", "publish_targets"])
 
   def test_an_early_return_in_update_location_still_clears_the_target(self):
     """update_location returns early every tick before the database opens, or before the
@@ -536,6 +544,7 @@ class TestTickOrdering(unittest.TestCase):
     data.sm = StubSM({'liveLocationKalman': messaging.new_message('liveLocationKalman').liveLocationKalman})
     data.pm = SimpleNamespace(send=lambda *a, **k: None)
     data.read_bump_params = lambda: None  # covered by TestReadBumpParams; irrelevant here
+    data.read_camera_params = lambda: None  # covered by TestReadCameraParams; irrelevant here
     data.last_bearing = None
     data.last_position = None  # db is also None -- either alone forces the early return
 
@@ -649,3 +658,99 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     data.route = [(37.5000, 127.0200)]  # a previously-held route must be dropped, not kept
     data.update_location()
     self.assertEqual(data.route, [])
+
+  def test_the_enabled_kinds_reach_next_camera(self):
+    data = make_data()
+    data.sm = SingleLocationSM(valid_llk())
+    data.last_position = Coordinate(37.5000, 127.0200)
+    data.camera_kinds = frozenset({CAMERA_ZONE})
+
+    seen = {}
+    data.db = SimpleNamespace(
+      reload_if_changed=lambda: False,
+      current_link=lambda *a, **k: None,
+      next_camera=lambda *a, **k: seen.update(kinds=k.get("kinds")),
+      next_bump=lambda *a, **k: None,
+    )
+
+    data.update_location()
+    self.assertEqual(seen["kinds"], frozenset({CAMERA_ZONE}))
+
+
+class TestReadCameraParams(OpenpilotTestCase):
+  """Round-trips the real Params keys, like TestReadBumpParams: a wrong key name or a lost
+  default only shows up here."""
+
+  def read(self):
+    data = KoreaMapData.__new__(KoreaMapData)
+    data.params = Params()
+    data.read_camera_params()
+    return data
+
+  def test_the_defaults_are_every_kind_on_and_50_m(self):
+    """get_bool does not fall back to a default -- manager_init writes the defaults into the
+    unset params at boot. So the defaults are checked here, and the read separately below."""
+    params = Params()
+    for key in CAMERA_KIND_PARAMS.values():
+      self.assertTrue(params.get_default_value(key), key)
+    self.assertEqual(params.get_default_value("KoreaCameraMargin"), 50)
+
+  def test_a_kind_that_is_off_is_left_out(self):
+    params = Params()
+    for key in CAMERA_KIND_PARAMS.values():
+      params.put_bool(key, True, block=True)
+    params.put_bool("KoreaCameraZoneEnabled", False, block=True)
+    self.assertEqual(self.read().camera_kinds, {CAMERA_SPEED, CAMERA_SIGNAL, CAMERA_SECTION})
+
+  def test_the_margin_falls_back_to_its_default_and_is_clamped(self):
+    self.assertEqual(self.read().camera_margin, 50)  # unset: get_sanitize_int_param reads the default
+    Params().put("KoreaCameraMargin", 500, block=True)
+    self.assertEqual(self.read().camera_margin, 300)
+
+
+class TestCameraTarget(unittest.TestCase):
+  """The next camera's SCC-Map point: its limit, camera_margin metres short of the camera."""
+
+  CAR = Coordinate(37.5000, 127.0200)
+  AT = Coordinate(37.5000, 127.0257)   # ~503 m east
+
+  def camera(self, at=None, limit_kph=50):
+    at = at if at is not None else self.AT
+    return Camera(lat=at.latitude, lon=at.longitude, limit_kph=limit_kph,
+                  distance_m=self.CAR.distance_to(at), section_m=0, kind=CAMERA_SPEED)
+
+  def publish(self, data):
+    data.publish_targets()
+    return json.loads(data.mem_params.values["MapTargetVelocities"])
+
+  def test_the_point_sits_the_margin_short_of_the_camera(self):
+    camera = self.camera()
+    points = self.publish(make_bump_data(camera=camera, margin=50, position=self.CAR))
+    self.assertEqual(len(points), 1)
+    point = Coordinate(points[0]["latitude"], points[0]["longitude"])
+    self.assertAlmostEqual(self.CAR.distance_to(point), camera.distance_m - 50., delta=0.5)
+    self.assertAlmostEqual(point.distance_to(self.AT), 50., delta=0.5)
+    # the camera's own limit: no speed limit offset on this path
+    self.assertAlmostEqual(points[0]["velocity"], 50 * CV.KPH_TO_MS)
+
+  def test_a_zero_margin_puts_the_point_on_the_camera(self):
+    points = self.publish(make_bump_data(camera=self.camera(), margin=0, position=self.CAR))
+    self.assertAlmostEqual(points[0]["latitude"], self.AT.latitude)
+    self.assertAlmostEqual(points[0]["longitude"], self.AT.longitude)
+
+  def test_inside_the_margin_the_point_is_the_car(self):
+    """SCC-Map keeps a point at distance zero due, so the limit holds until the camera is passed."""
+    near = Coordinate(37.5000, 127.0203)   # ~26 m east, inside a 50 m margin
+    points = self.publish(make_bump_data(camera=self.camera(at=near), margin=50, position=self.CAR))
+    self.assertAlmostEqual(points[0]["latitude"], self.CAR.latitude)
+    self.assertAlmostEqual(points[0]["longitude"], self.CAR.longitude)
+
+  def test_the_camera_joins_the_bump_and_the_curves_nearest_first(self):
+    data = make_bump_data(bump=Bump(lat=37.5000, lon=127.0217, kind=BUMP_ARCH, distance_m=150.),
+                          camera=self.camera(), position=self.CAR)
+    data.curve_points = [(37.5000, 127.0234, 12.)]
+    self.assertEqual([p["velocity"] for p in self.publish(data)], [25 * CV.KPH_TO_MS, 12., 50 * CV.KPH_TO_MS])
+
+  def test_an_invalid_localizer_drops_the_camera_too(self):
+    data = make_bump_data(camera=self.camera(), position=self.CAR, localizer_valid=False)
+    self.assertEqual(self.publish(data), [])

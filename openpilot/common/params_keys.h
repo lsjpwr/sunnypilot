@@ -275,6 +275,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RoadName", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
 
     // korea map
+    {"KoreaCameraMargin", {PERSISTENT | BACKUP, INT, "50"}},              // m, 제한속도 도달 여유 거리
+    {"KoreaCameraSectionEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},      // 구간단속 시점·종점
+    {"KoreaCameraSignalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},       // 신호·과속
+    {"KoreaCameraSpeedEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},        // 과속
+    {"KoreaCameraZoneEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},         // 노인·어린이 보호구역
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"KoreaMapApiKey", {PERSISTENT | BACKUP, STRING, ""}},
     {"KoreaMapAutoDownload", {PERSISTENT | BACKUP, BOOL, "0"}},

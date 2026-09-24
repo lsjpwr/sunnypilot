@@ -8,9 +8,12 @@ korea_map_data: fills liveMapDataSP from the Korean public datasets, replacing t
 Everything downstream -- SpeedLimitAssist, the onroad speed limit widget, DEC --
 reads liveMapDataSP and needs no change.
 
-Current speed limits come from ITS 표준노드링크 MAX_SPD. The "next" speed limit is
-the next speed camera ahead: SpeedLimitAssist already slows for speedLimitAhead at
-speedLimitAheadDistance, which is exactly what a camera calls for.
+Current speed limits come from ITS 표준노드링크 MAX_SPD. The "next" speed limit is the next
+speed camera ahead, and on liveMapDataSP it only feeds the speed-limit-ahead sign:
+SpeedLimitResolver ignores speedLimitAhead in Korea mode. The slowdown goes to
+SmartCruiseControlMap instead, as one more MapTargetVelocities point beside the bumps and
+the curves (publish_targets). SpeedLimitAssist would hold it behind a confirmation prompt
+under 80 km/h and add the speed limit offset on top.
 """
 import json
 import math
@@ -23,8 +26,8 @@ from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
-from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, Bump, Camera, KoreaMapDB, Link,
-                                                 mtime_or_none)
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_KIND_PARAMS, Bump, Camera,
+                                                 KoreaMapDB, Link, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
@@ -40,6 +43,10 @@ KOREA_BUMPS_PATH = os.path.join(KOREA_MAP_DIR, "korea_bumps.sqlite")
 # the setting would silently do nothing.
 BUMP_ARCH_SPEED_RANGE = (20, 40)
 BUMP_TRAPEZOID_SPEED_RANGE = (20, 50)
+
+# m, how far before a camera to be at its limit. Bounds, not the default -- that lives in
+# params_keys.h, like the bump speeds.
+CAMERA_MARGIN_RANGE = (0, 300)
 
 
 class KoreaMapData(BaseMapData):
@@ -72,6 +79,9 @@ class KoreaMapData(BaseMapData):
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
     self.bump_enabled = False
     self.bump_targets: dict[int, float] = {}
+    # read_camera_params overwrites both on the first tick, before anything reads them
+    self.camera_kinds: frozenset[int] = frozenset(CAMERA_KIND_PARAMS)
+    self.camera_margin = 0
 
   def _db_mtimes(self) -> tuple[float | None, ...]:
     """When each database file was last written; None for one that is not there."""
@@ -204,7 +214,7 @@ class KoreaMapData(BaseMapData):
     lat, lon = self.last_position.latitude, self.last_position.longitude
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing)
-      self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route)
+      self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds)
       self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
     except Exception:
       # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
@@ -250,8 +260,34 @@ class KoreaMapData(BaseMapData):
     # here means publish_targets would fall through to "no target" if one ever arrived.
     self.bump_targets = {BUMP_ARCH: arch * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid * CV.KPH_TO_MS}
 
+  def read_camera_params(self) -> None:
+    """Same 1 Hz as read_bump_params, for the same reason."""
+    self.camera_kinds = frozenset(kind for kind, key in CAMERA_KIND_PARAMS.items() if self.params.get_bool(key))
+    self.camera_margin = get_sanitize_int_param("KoreaCameraMargin", *CAMERA_MARGIN_RANGE, self.params)
+
+  def camera_point(self) -> tuple[float, float, float] | None:
+    """The next camera as an SCC-Map target: its limit, camera_margin metres short of it.
+
+    The point sits on the straight line from the car to the camera. SCC-Map measures
+    straight-line distance too, so the car reaches the limit about camera_margin metres
+    before the camera as the crow flies -- on a winding road that is a little early, never
+    late. Inside the margin the point is the car's own position: SCC-Map keeps treating a
+    point at distance zero as due, so the car stays near the limit until next_camera lets
+    the camera go.
+
+    No speed limit offset. SpeedLimitAssist adds one to road limits; a camera enforces its
+    own number.
+    """
+    if self.camera is None or self.last_position is None:
+      return None
+    camera, car = self.camera, self.last_position
+    share = max(0., camera.distance_m - self.camera_margin) / camera.distance_m if camera.distance_m > 0. else 0.
+    return (car.latitude + (camera.lat - car.latitude) * share,
+            car.longitude + (camera.lon - car.longitude) * share,
+            camera.limit_kph * CV.KPH_TO_MS)
+
   def publish_targets(self) -> None:
-    """Hand the next bump AND the curves ahead to SmartCruiseControlMap.
+    """Hand the next bump, the next camera AND the curves ahead to SmartCruiseControlMap.
 
     One writer, not two: SCC-Map reads the whole list from this one param, so a second
     writer would delete the first one's points every tick. The bump feature shipped first
@@ -263,9 +299,9 @@ class KoreaMapData(BaseMapData):
 
     Also requires localizer_valid: last_position/last_bearing only update while the
     localizer is valid (see update_location), so a localizer that stops updating would
-    otherwise freeze self.bump (and republish self.curve_points against a stale car
-    position) forever -- the car keeps moving, SCC-Map keeps seeing a constant distance,
-    and the slowdown never releases.
+    otherwise freeze self.bump and self.camera (and republish self.curve_points against a
+    stale car position) forever -- the car keeps moving, SCC-Map keeps seeing a constant
+    distance, and the slowdown never releases.
     """
     points: list[tuple[float, float, float]] = []
     if self.localizer_valid and self.last_position is not None:
@@ -273,6 +309,9 @@ class KoreaMapData(BaseMapData):
         target = self.bump_targets.get(self.bump.kind, 0.)
         if target > 0.:
           points.append((self.bump.lat, self.bump.lon, target))
+      camera = self.camera_point()
+      if camera is not None:
+        points.append(camera)
       points.extend(self.curve_points)
       points.sort(key=lambda p: self.last_position.distance_to(Coordinate(p[0], p[1])))
 
@@ -285,6 +324,7 @@ class KoreaMapData(BaseMapData):
     """Override rather than calling from update_location: update_location returns early on
     every tick before the database opens, and the clearing write has to happen anyway."""
     self.read_bump_params()
+    self.read_camera_params()
     self.update_destination()
     super().tick()
     self.curve_points = []
