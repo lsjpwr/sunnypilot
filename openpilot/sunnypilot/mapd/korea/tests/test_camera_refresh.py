@@ -18,14 +18,16 @@ import urllib.error
 from unittest import mock
 
 from openpilot.sunnypilot.mapd.korea import camera_refresh
-from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, insert_cameras, load_cameras_api,
-                                                      write_db)
+from openpilot.sunnypilot.mapd.korea.build_db import (CAMERA_API_KIND_FIELDS, SCHEMA_CAMERAS, insert_cameras,
+                                                      load_cameras_api, write_db)
 from openpilot.sunnypilot.mapd.korea.db import CAMERA_SPEED
+from openpilot.sunnypilot.mapd.korea.tests.test_db import drop_kind
 
 
-def api_item(lat, lon, limit, section=0):
+def api_item(lat, lon, limit, section=0, enforcement="1", position="", zone="99"):
   return {"latitude": str(lat), "longitude": str(lon), "lmttVe": str(limit),
-          "ovrspdRegltSctnLt": str(section)}
+          "ovrspdRegltSctnLt": str(section), "regltSe": enforcement,
+          "regltSctnLcSe": position, "prtcareaType": zone}
 
 
 def fake_opener(pages, result_code="00"):
@@ -161,6 +163,36 @@ class TestRefresh(unittest.TestCase):
     with self.assertLogs(camera_refresh.LOG, level="DEBUG") as captured:
       camera_refresh.refresh(self.path, "SECRET-KEY-VALUE", opener=boom)
     self.assertNotIn("SECRET-KEY-VALUE", "\n".join(captured.output))
+
+  def test_refresh_keeps_the_old_database_when_a_kind_field_disappears(self):
+    """A renamed field reads as None on every item: every camera would land in CAMERA_SPEED
+    and the kind toggles would silently stop working. Keep what we have instead."""
+    for field in CAMERA_API_KIND_FIELDS:
+      with self.subTest(field=field):
+        seed(self.path, 10)
+        items = [api_item(37.5 + i * 1e-4, 127.0, 60) for i in range(20)]
+        for item in items:
+          del item[field]
+        self.assertEqual(camera_refresh.refresh(self.path, "KEY", opener=fake_opener([items])), 0)
+        self.assertEqual(count_rows(self.path), 10)
+
+
+class TestDue(unittest.TestCase):
+  def setUp(self):
+    super().setUp()
+    self.tmp_path = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+    self.path = str(self.tmp_path / "korea_cameras.sqlite")
+
+  def test_a_fresh_database_is_not_due(self):
+    seed(self.path, 5)
+    self.assertFalse(camera_refresh.CameraRefresher(self.path)._due())
+
+  def test_a_fresh_database_without_kinds_is_due(self):
+    """Built before the kind column: every kind toggle would do nothing until the weekly
+    refresh came round. Rebuild on the next unmetered tick instead."""
+    seed(self.path, 5)
+    drop_kind(self.path)
+    self.assertTrue(camera_refresh.CameraRefresher(self.path)._due())
 
 
 class OneShotStop(threading.Event):

@@ -26,7 +26,8 @@ import time
 import urllib.parse
 import urllib.request
 
-from openpilot.sunnypilot.mapd.korea.build_db import SCHEMA_CAMERAS, insert_cameras, load_cameras_api, write_db
+from openpilot.sunnypilot.mapd.korea.build_db import CAMERA_API_KIND_FIELDS, SCHEMA_CAMERAS, insert_cameras, load_cameras_api, write_db
+from openpilot.sunnypilot.mapd.korea.db import has_camera_kind
 
 API_URL = "https://api.data.go.kr/openapi/tn_pubr_public_unmanned_traffic_camera_api"
 PAGE_SIZE = 1000
@@ -92,6 +93,20 @@ def current_row_count(path: str) -> int:
     con.close()
 
 
+def current_has_kind(path: str) -> bool:
+  """Whether the live database carries the kind column. False when there is no usable database."""
+  try:
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+  except sqlite3.Error:
+    return False
+  try:
+    return has_camera_kind(con)
+  except sqlite3.Error:
+    return False
+  finally:
+    con.close()
+
+
 def refresh(cameras_path: str, api_key: str, opener=urllib.request.urlopen) -> int:
   """Rebuild the camera database from the API. Returns the new row count, or 0 if it kept
   the old one.
@@ -105,6 +120,14 @@ def refresh(cameras_path: str, api_key: str, opener=urllib.request.urlopen) -> i
     # the api key is in no exception message we raise, and urllib puts the url only in
     # HTTPError.filename, which %s of the exception does not print
     LOG.warning("camera refresh: fetch failed, keeping the existing database", exc_info=True)
+    return 0
+
+  missing = [field for field in CAMERA_API_KIND_FIELDS if not any(field in item for item in items)]
+  if items and missing:
+    # A renamed field reads as None on every item, which files every camera under
+    # CAMERA_SPEED: a database that looks fine and ignores the kind toggles. load_cameras
+    # raises on the CSV equivalent; this path keeps the database it has instead.
+    LOG.warning("camera refresh: the api stopped sending %s -- keeping the existing database", missing)
     return 0
 
   rows = list(load_cameras_api(items))
@@ -156,7 +179,9 @@ class CameraRefresher:
       age = time.time() - os.path.getmtime(self.cameras_path)  # noqa: TID251
     except OSError:
       return True  # no database at all: fetch one
-    return age >= REFRESH_INTERVAL_S
+    # A database from before the kind column opens fine but ignores every kind toggle, so
+    # replace it on the next unmetered tick rather than whenever the week runs out.
+    return age >= REFRESH_INTERVAL_S or not current_has_kind(self.cameras_path)
 
   def _loop(self) -> None:
     # imported here so the module stays importable without the device stack, which is
