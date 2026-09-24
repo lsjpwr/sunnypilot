@@ -117,7 +117,8 @@ class TestPublishedValues(unittest.TestCase):
     self.assertEqual(data.get_current_road_name(), "테헤란로")
 
   def test_camera_becomes_the_next_speed_limit(self):
-    data = make_data(camera=Camera(limit_kph=50, distance_m=320., section_m=0))
+    data = make_data(camera=Camera(lat=37.5029, lon=127.0276, limit_kph=50, distance_m=320., section_m=0,
+                                   kind=CAMERA_SPEED))
     limit, distance = data.get_next_speed_limit_and_distance()
     self.assertAlmostEqual(limit, 50 * CV.KPH_TO_MS, places=9)
     self.assertEqual(distance, 320.)
@@ -127,7 +128,8 @@ class TestPublishedValues(unittest.TestCase):
                       next_speed_limit_distance_m=150., road_name="시장길",
                       received_at=time.monotonic())
     data = make_data(link=Link(max_spd=60, name="테헤란로"),
-                     camera=Camera(limit_kph=50, distance_m=320., section_m=0),
+                     camera=Camera(lat=37.5029, lon=127.0276, limit_kph=50, distance_m=320., section_m=0,
+                                   kind=CAMERA_SPEED),
                      external=StubExternal(nav))
     self.assertAlmostEqual(data.get_current_speed_limit(), 40 * CV.KPH_TO_MS, places=9)
     self.assertAlmostEqual(data.get_next_speed_limit_and_distance()[0], 30 * CV.KPH_TO_MS, places=9)

@@ -12,6 +12,7 @@ import math
 import os
 import sqlite3
 import struct
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, haversine, point_segment_distance
@@ -92,14 +93,23 @@ class Link:
 class Camera:
   """A speed camera ahead of us.
 
+  Carries the coordinate for the same reason Bump does: korea_map_data places the
+  SmartCruiseControlMap target on the line to it.
+
   section_m is raw provenance carried through from 과속단속구간길이, not a usable
   distance: see the cameras table's schema comment in build_db.py (only ~2.6% of rows
   populate it, units are inconsistent between submitting agencies, and 99999 is a
   sentinel, not a real value). Never feed it to a distance calculation.
+
+  kind is db.CAMERA_*, or None for a camera database built before the kind column --
+  those cameras pass every kind filter, which is how every camera behaved before.
   """
+  lat: float
+  lon: float
   limit_kph: int
   distance_m: float
-  section_m: int  # 0 for a point camera, >0 for 구간단속 -- see docstring, not metres
+  section_m: int  # raw 과속단속구간길이 -- see docstring. kind, not this, says 구간단속
+  kind: int | None
 
 
 @dataclass(frozen=True)
@@ -142,6 +152,17 @@ def _check_schema_version(con: sqlite3.Connection, path: str) -> None:
   row = con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
   if row is None or row[0] != SCHEMA_VERSION:
     raise ValueError(f"{path}: schema {row and row[0]!r} != {SCHEMA_VERSION!r}")
+
+
+def has_camera_kind(con: sqlite3.Connection) -> bool:
+  """Was this camera database built with the kind column?
+
+  SCHEMA_VERSION stays "1" for it on purpose: the version is shared with the link and bump
+  files, and bumping it would reject a 220 MB link database that did not change. So an
+  older camera file still opens, and its readers ask this instead. camera_refresh asks it
+  too, to rebuild such a file without waiting out the week.
+  """
+  return any(row[1] == "kind" for row in con.execute("PRAGMA table_info(cameras)"))
 
 
 def verify(path: str, table: str, min_rows: int) -> int:
@@ -191,6 +212,7 @@ class KoreaMapDB:
     self._links_mtime = mtime_or_none(links_path)
     self._bumps_mtime = mtime_or_none(bumps_path)
     self.cam = self._open(cameras_path)
+    self._cam_has_kind = has_camera_kind(self.cam)
     self.lnk = self._open(links_path)
     # Optional third file. A device deployed before speed bumps shipped has cameras and
     # links but no korea_bumps.sqlite, and losing speed limits over a missing comfort
@@ -257,6 +279,9 @@ class KoreaMapDB:
       old.close()
     setattr(self, con_attr, con)
     setattr(self, mtime_attr, mtime)
+    if con_attr == "cam":
+      # A refresh replaces a file from before the kind column with one that has it.
+      self._cam_has_kind = has_camera_kind(con)
     if con_attr == "lnk":
       # The builder assigns link ids by insertion order, so the same id names a different
       # road after a rebuild. Inside the tie band a surviving id would pick that road.
@@ -330,30 +355,40 @@ class KoreaMapDB:
     return Link(max_spd=max_spd, name=name)
 
   def next_camera(self, lat: float, lon: float, heading_deg: float | None,
-                  route: list[tuple[float, float]] | None = None) -> Camera | None:
+                  route: list[tuple[float, float]] | None = None,
+                  kinds: Collection[int] | None = None) -> Camera | None:
     """Nearest speed camera ahead of us, or None. Needs a heading to know what 'ahead' means.
 
     With a route, 'ahead' stops being a bearing cone and becomes the road we will actually
     drive: the cone alone accepts a camera on the far side of a fork, which is the single
     most visible wrong slowdown this database produces.
+
+    kinds, when given, is the set of db.CAMERA_* the driver has on. Other kinds are skipped
+    before the distance comparison, so a nearer camera of a kind that is off never hides a
+    farther one that is on. A camera of unknown kind (a database built before the column)
+    always passes. None means every kind.
     """
     if heading_deg is None:
       return None
 
+    kind_column = "c.kind" if self._cam_has_kind else "NULL"
     rows = self.cam.execute(
-      "SELECT c.lat, c.lon, c.limit_kph, c.section_m FROM cameras_idx i JOIN cameras c ON c.id = i.id " + _RTREE_OVERLAP,
+      f"SELECT c.lat, c.lon, c.limit_kph, c.section_m, {kind_column} FROM cameras_idx i JOIN cameras c ON c.id = i.id " +
+      _RTREE_OVERLAP,
       (lat - CAMERA_SEARCH_DEG, lat + CAMERA_SEARCH_DEG, lon - CAMERA_SEARCH_DEG, lon + CAMERA_SEARCH_DEG),
     ).fetchall()
 
     best: Camera | None = None
 
-    for clat, clon, limit_kph, section_m in rows:
+    for clat, clon, limit_kph, section_m, kind in rows:
+      if kinds is not None and kind is not None and kind not in kinds:
+        continue
       distance = haversine(lat, lon, clat, clon)
       if distance > CAMERA_MAX_DISTANCE_M or (best is not None and distance >= best.distance_m):
         continue
       if not _on_path(lat, lon, clat, clon, heading_deg, route, CAMERA_AHEAD_TOLERANCE):
         continue
-      best = Camera(limit_kph=limit_kph, distance_m=distance, section_m=section_m)
+      best = Camera(lat=clat, lon=clon, limit_kph=limit_kph, distance_m=distance, section_m=section_m, kind=kind)
 
     return best
 

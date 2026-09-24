@@ -13,7 +13,8 @@ import unittest
 
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS, SCHEMA_LINKS,
                                                       insert_bumps, insert_cameras, insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_SECTION, CAMERA_SPEED, KoreaMapDB, verify
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_SECTION, CAMERA_SPEED,
+                                                 CAMERA_ZONE, KoreaMapDB, has_camera_kind, verify)
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
 ROAD_60 = (60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])
@@ -23,6 +24,9 @@ ROAD_100 = (100, "고속화도로", [(37.5027, 127.0200), (37.5027, 127.0320)])
 CAM_AHEAD = (37.5000, 127.0257, 50, 0, CAMERA_SPEED)
 CAM_BEHIND = (37.5000, 127.0143, 30, 0, CAMERA_SPEED)
 CAM_SECTION = (37.5000, 127.0280, 80, 4200, CAMERA_SECTION)
+
+# ~200 m east on ROAD_60: nearer than CAM_AHEAD (~500 m) on the same road
+CAM_ZONE_NEAR = (37.5000, 127.0223, 30, 0, CAMERA_ZONE)
 
 # bumps along ROAD_60, which runs east from (37.5000, 127.0200)
 BUMP_AHEAD_150 = (37.5000, 127.0217, 0)   # ~150 m east, 원호형
@@ -69,6 +73,28 @@ STICKY_FAR = (100, "고속도로", [(37.53022, 127.0500), (37.53022, 127.0620)])
 # WinError 5, even for a read-only, idle connection). These tests exercise exactly that
 # guarantee, so they run on Linux, which is the device platform.
 _REPLACE_WHILE_OPEN_SKIP_REASON = "os.replace over an open sqlite file is a POSIX guarantee Windows lacks; these run on Linux, which is the device platform"
+
+
+def drop_kind(path):
+  """Turn a fresh camera database into one built before cameras carried a kind.
+
+  Not a plain `ALTER TABLE cameras DROP COLUMN kind`: SQLite's DROP COLUMN mislocates the
+  column boundary when a comma appears inside the `--` comment immediately above the
+  dropped column ("error in table cameras after drop column: incomplete input") -- and
+  SCHEMA_CAMERAS's comment right above `kind` has one. Rebuilding the table sidesteps that
+  parser bug. `id` values must survive unchanged: cameras_idx (the r-tree) references rows
+  by id, and a shifted id would silently break next_camera's join.
+  """
+  con = sqlite3.connect(path)
+  try:
+    con.execute("CREATE TABLE cameras_new(id INTEGER PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL, " +
+                "limit_kph INTEGER NOT NULL, section_m INTEGER NOT NULL)")
+    con.execute("INSERT INTO cameras_new SELECT id, lat, lon, limit_kph, section_m FROM cameras")
+    con.execute("DROP TABLE cameras")
+    con.execute("ALTER TABLE cameras_new RENAME TO cameras")
+    con.commit()
+  finally:
+    con.close()
 
 
 class KoreaMapDBTestCase(unittest.TestCase):
@@ -586,3 +612,74 @@ class TestRouteCorridorBumps(KoreaMapDBTestCase):
     db = self.open_db_with_bumps([BUMP_LATERAL_25M])
     self.assertIsNone(db.next_bump(37.5000, 127.0200, 90.))
     self.assertIsNone(db.next_bump(37.5000, 127.0200, 90., route=self.route))
+
+
+class TestCameraKindFilter(KoreaMapDBTestCase):
+  """next_camera(kinds=...): the kind toggles decide which cameras exist at all."""
+
+  def setUp(self):
+    super().setUp()
+    cams = str(self.tmp_path / "korea_cameras.sqlite")
+    links = str(self.tmp_path / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_ZONE_NEAR, CAM_AHEAD]))
+    write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [ROAD_60]))
+    self.db = self.open_db(cams, links)
+
+  def test_no_kinds_means_every_kind(self):
+    camera = self.db.next_camera(37.5000, 127.0200, 90.)
+    self.assertIsNotNone(camera)
+    self.assertEqual(camera.kind, CAMERA_ZONE)
+
+  def test_a_nearer_camera_that_is_off_does_not_hide_a_farther_one_that_is_on(self):
+    camera = self.db.next_camera(37.5000, 127.0200, 90., kinds={CAMERA_SPEED})
+    self.assertIsNotNone(camera)
+    self.assertEqual((camera.kind, camera.limit_kph), (CAMERA_SPEED, 50))
+
+  def test_every_kind_off_means_no_camera(self):
+    self.assertIsNone(self.db.next_camera(37.5000, 127.0200, 90., kinds=frozenset()))
+
+  def test_the_camera_carries_its_coordinate(self):
+    camera = self.db.next_camera(37.5000, 127.0200, 90., kinds={CAMERA_SPEED})
+    self.assertEqual((camera.lat, camera.lon), CAM_AHEAD[:2])
+
+
+class TestCameraDatabaseWithoutKind(KoreaMapDBTestCase):
+  """A camera file built before the kind column. It must work exactly as it did before."""
+
+  @staticmethod
+  def _has_kind(path):
+    con = sqlite3.connect(path)
+    try:
+      return has_camera_kind(con)
+    finally:
+      con.close()
+
+  def test_has_camera_kind_tells_the_two_apart(self):
+    cams, _ = self._make_pair()
+    self.assertTrue(self._has_kind(cams))
+    drop_kind(cams)
+    self.assertFalse(self._has_kind(cams))
+
+  def test_every_camera_passes_any_filter(self):
+    cams, links = self._make_pair()
+    drop_kind(cams)
+    camera = self.open_db(cams, links).next_camera(37.5000, 127.0200, 90., kinds=frozenset())
+    self.assertIsNotNone(camera, "an old database lost its cameras to a filter it cannot answer")
+    self.assertIsNone(camera.kind)
+    self.assertEqual(camera.limit_kph, 50)
+
+  @unittest.skipIf(sys.platform == "win32", _REPLACE_WHILE_OPEN_SKIP_REASON)
+  def test_a_reload_notices_the_new_column(self):
+    """camera_refresh rebuilds an old file within the hour. The running process must start
+    filtering then, not at the next reboot."""
+    cams, links = self._make_pair()
+    drop_kind(cams)
+    database = self.open_db(cams, links)
+    self.assertIsNotNone(database.next_camera(37.5000, 127.0200, 90., kinds={CAMERA_SPEED}))
+
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_ZONE_NEAR]))
+    stamp = os.path.getmtime(cams) + 1  # an unambiguous change on any filesystem
+    os.utime(cams, (stamp, stamp))
+
+    self.assertTrue(database.reload_if_changed())
+    self.assertIsNone(database.next_camera(37.5000, 127.0200, 90., kinds={CAMERA_SPEED}))
