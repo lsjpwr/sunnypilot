@@ -79,18 +79,28 @@ kind INTEGER NOT NULL  -- CAMERA_SPEED 0, CAMERA_SIGNAL 1, CAMERA_SECTION 2, CAM
 
 | 종류 | 조건 |
 |---|---|
-| 보호구역 | `보호구역구분`(API `prtcareaType`)이 보호구역 코드 |
-| 구간단속 | `단속구간위치구분`(API `regltSctnLcSe`)이 시점·종점 코드, 또는 `과속단속구간길이` > 0 |
-| 신호·과속 | `단속구분`(API `regltSe`)에 신호 코드 포함 |
+| 보호구역 | `보호구역구분`(API `prtcareaType`)이 1(노인) 또는 2(어린이) |
+| 구간단속 | `단속구간위치구분`(API `regltSctnLcSe`)이 1(시점) 또는 2(종점) |
+| 신호·과속 | `단속구분`(API `regltSe`)에 2(신호) 포함 |
 | 과속 | 나머지 전부 (모르는 코드 포함) |
 
-`단속구분`은 `'2'`, `'02'`, `'01+02'`, `'1+2'`, `'99'`처럼 0 채움과 조합이 섞여 있다(`build_db.py:160` 주석). `+`로 나누고 각 조각을 정수로 읽어 집합으로 비교한다. 읽을 수 없는 조각은 버린다.
+세 필드 모두 `'2'`, `'02'`, `'01+02'`, `'1+2'`처럼 0 채움과 조합이 섞여 있다(`build_db.py:160` 주석). `+`로 나누고 각 조각을 정수로 읽어 집합으로 비교한다. 읽을 수 없는 조각은 버린다.
 
-**코드 집합은 구현 첫 작업에서 실데이터로 확정한다.** 표준 문서 기준 추정은 `단속구분` 1 속도, 2 신호, 3·4 기타 위반, 99 기타이고, `단속구간위치구분`·`보호구역구분`의 코드 의미는 문서만으로 확정되지 않는다. 첫 작업은 API 전체를 받아 제한속도 > 0인 행의 `단속구분 × 단속구간위치구분 × 보호구역구분` 교차표를 뽑고, 그 결과로 세 코드 집합을 상수로 박은 뒤 종류별 행 수를 이 문서에 추가 기록한다. `단속구간위치구분`이 쓸 만하지 않으면 구간단속 판정은 `과속단속구간길이` > 0만으로 한다. API 키는 이때 사용자에게 받고 파일·로그·커밋에 남기지 않는다.
+**코드 집합은 실데이터로 확정했다 (2026-09-24, 계획 작성 중).** data.go.kr 표준 페이지에는 세 필드의 코드표가 없다. 그래서 로컬에 받아 둔 API 전체 덤프(`E:/dev/korea_map_data/cameras_raw.json`, 2026-08-19 수집, 43,347행)에서 `keep_camera`를 통과하는 33,415행의 교차표와 `설치장소` 문구로 판정했다. API 키는 쓰지 않았고, 구현에도 필요 없다.
+
+| 필드 | 값: 행 수 | 판정 근거 |
+|---|---|---|
+| `단속구분` | 2: 17,735 · 1: 11,497 · 99: 1,404 · 4: 906 · 02: 570 · 04: 503 · 01: 458 · 01+02: 321 · 1+2: 12 · 3: 7 · 03: 2 | 설치장소에 교차로·사거리·삼거리가 든 비율이 2는 45%, 1은 20%이고, 1은 학교 앞이 많다. 그래서 1은 과속, 2는 신호다. 2도 전부 제한속도가 있으므로 신호·과속 겸용 카메라다. 3·4는 제한속도가 있는 행이 10~18%뿐인 다른 위반이다. 99의 74%(1,059행)는 구간단속 시점·종점이다 |
+| `단속구간위치구분` | 빈칸: 32,314 · 2: 542 · 1: 530 · 01: 22 · 02: 7 | 설치장소에 "시점"이 든 비율이 1은 69%, "종점"이 든 비율이 2는 67%다. 1은 시점, 2는 종점이다 |
+| `보호구역구분` | 99: 15,641 · 2: 13,445 · 빈칸: 3,393 · 02: 503 · 1: 418 · 01: 15 | 2는 91%가 30 km/h이고 51%의 설치장소에 "학교"가 들어 있어 어린이보호구역이다. 1은 32%에 "노인"이 들어 있어 노인보호구역이다. 99는 해당없음이다. 3 이상의 코드는 없다 |
+
+우선순위를 적용한 종류별 행 수: 보호구역 14,381 · 신호·과속 10,659 · 과속 7,287 · 구간단속 1,088. 겹치는 행은 보호구역∩신호 7,977행, 보호구역∩구간 13행이고, 둘 다 보호구역으로 분류된다.
+
+**`과속단속구간길이` > 0 보조 규칙은 뺐다.** 위치구분은 빈칸인데 길이가 있는 116행은 모두 경기도 안성시청이 제출했다. 단속구분은 모두 1, 길이는 모두 45이고, 설치장소는 학교 앞과 교차로다. 이 116행은 구간단속이 아니라 한 기관의 입력 관행이다. 그래서 구간단속은 `단속구간위치구분`만으로 판정한다.
 
 `load_cameras`와 `load_cameras_api`는 `(lat, lon, limit_kph, section_m, kind)`를 낸다. CSV 경로는 `CAMERA_COLUMNS`에 세 컬럼(`단속구분`, `단속구간위치구분`, `보호구역구분`)을 더하고, API 경로는 `regltSe`, `regltSctnLcSe`, `prtcareaType`를 읽는다. 분류 함수 `classify_camera`는 두 경로가 함께 쓴다 — `keep_camera`와 같은 이유(두 벌은 어긋난다).
 
-**이름이 바뀐 컬럼은 조용히 넘기지 않는다.** 분류 컬럼 하나가 사라지면 `row.get()`이 `None`을 돌려주고 모든 행이 "과속"이 된다 — 방지턱 로더가 컬럼 셋을 전부 검사하는 것(`build_db.py:220`)과 같은 위험이다. CSV 경로는 헤더 검사를 위도 하나에서 분류 컬럼까지 넓혀 `KeyError`로 실패한다. API 경로는 받은 항목 중 `regltSe` 키를 가진 것이 하나도 없으면 `refresh()`가 새 DB를 쓰지 않고 기존 DB를 유지한다(경고 로그). `refresh()`의 "never raises" 약속(`camera_refresh.py:95`)은 그대로 지킨다.
+**이름이 바뀐 컬럼은 조용히 넘기지 않는다.** 분류 컬럼 하나가 사라지면 `row.get()`이 `None`을 돌려주고 모든 행이 "과속"이 된다 — 방지턱 로더가 컬럼 셋을 전부 검사하는 것(`build_db.py:220`)과 같은 위험이다. CSV 경로는 헤더 검사를 위도 하나에서 분류 컬럼까지 넓혀 `KeyError`로 실패한다. 그래서 4컬럼으로 잘라 둔 CSV(`E:/dev/korea_map_data/`에 있는 것)는 더 이상 빌드되지 않는다. data.go.kr의 원본 CSV가 필요하다. API 경로는 분류 필드 셋(`regltSe`, `regltSctnLcSe`, `prtcareaType`) 중 하나라도 받은 항목 어디에도 없으면 `refresh()`가 새 DB를 쓰지 않고 기존 DB를 유지한다(경고 로그). `refresh()`의 "never raises" 약속(`camera_refresh.py:95`)은 그대로 지킨다.
 
 **`SCHEMA_VERSION`은 올리지 않는다.** 세 DB가 같은 값(`db.py:23`)을 공유하므로, 올리면 220 MB 링크 DB와 방지턱 DB까지 거부된다. 대신 카메라 연결을 열 때 `PRAGMA table_info(cameras)`로 `kind` 유무를 보고 기억한다. `_reload_one`(`db.py:228`)이 카메라 파일을 새로 열 때도 다시 본다. `kind`가 없는 DB의 카메라는 종류 모름으로 취급해 **필터를 항상 통과**시킨다 — 즉 지금 동작 그대로다.
 
@@ -182,7 +192,7 @@ Smart Cruise Control
 | Speed Cameras | Slow down for fixed cameras that enforce speed only. |
 | Signal + Speed Cameras | Slow down for intersection cameras that enforce both red lights and speed. |
 | Section Enforcement | Slow down at the start and end cameras of average-speed sections. The speed between them is not held. |
-| Protected Zones | Slow down for cameras in school, senior and disabled protection zones. A camera inside a zone follows this toggle whatever else it enforces. |
+| Protected Zones | Slow down for cameras in school and senior protection zones. A camera inside a zone follows this toggle whatever else it enforces. |
 | Camera Arrival Margin | Reach the camera's limit about this far before the camera. Speed detectors often sit tens of metres ahead of the pole. |
 
 종류 토글 넷에는 공통으로 "Turning a type off also hides its cameras from the speed limit ahead sign."를 붙인다.
@@ -215,7 +225,7 @@ Smart Cruise Control
 - **호스트 Python (`korea/tests`)**
   - `test_build_db`: 조합 표기(`01+02`, `1+2`, `02`), 우선순위(보호구역 안 신호·과속 → 보호구역), 모르는 코드 → 과속, CSV와 API 두 경로가 같은 `kind`를 기록, 분류 컬럼이 빠진 CSV → `KeyError`.
   - `test_db`: `kinds` 필터, 가까운 꺼진 카메라가 먼 켜진 카메라를 가리지 않음, `kind` 없는 구 DB는 전부 통과, 재적재 후 `kind` 유무 재판정.
-  - `test_camera_refresh`: `kind` 없는 DB → `_due()`가 `True`, `regltSe` 없는 API 응답 → 기존 DB 유지하고 예외 없음.
+  - `test_camera_refresh`: `kind` 없는 DB → `_due()`가 `True`, 분류 필드 하나가 빠진 API 응답 → 기존 DB 유지하고 예외 없음.
 - **`sp-build` 컨테이너 (cereal 필요)**
   - `test_korea_map_data`: 파라미터 → 종류 집합과 여유 거리(범위 밖 값 잘림), 카메라 점 위치(거리 > 여유, 거리 ≤ 여유), 방지턱·커브와 병합 후 거리순 정렬, `speedLimitAhead`는 실제 거리.
   - `test_map_controller`: 한국 분기가 카메라 토글로도 켜짐.
@@ -227,7 +237,7 @@ Smart Cruise Control
 
 ## 범위 밖
 
-- **구간 유지** — 시점 통과부터 종점 통과까지 구간 제한속도를 유지하는 것. 첫 작업의 실데이터 검증 결과(`단속구간위치구분`의 시점/종점 신뢰도)를 보고 별도 스펙으로 한다.
+- **구간 유지** — 시점 통과부터 종점 통과까지 구간 제한속도를 유지하는 것. 시점(1)·종점(2) 코드는 실데이터로 확인됐다(1절의 검증 결과). 별도 스펙으로 한다.
 - **이동식 카메라** — 공공데이터에 없다. 외부 내비 앱 와이어 포맷에 카메라 종류 키를 더하는 일은 보내는 앱이 생길 때 한다.
 - **써니링크 프론트엔드의 `text` 위젯** — 이 저장소 밖(`sunnypilot/sunnylink-frontend`)의 일이다.
 - **기기 UI 재배치** — 요청 범위는 써니링크뿐이다.
