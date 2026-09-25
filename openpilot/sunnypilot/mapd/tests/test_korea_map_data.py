@@ -26,7 +26,7 @@ from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LIN
                                                       insert_links, write_db)
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_KIND_PARAMS,
                                                  CAMERA_SECTION, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE, Bump,
-                                                 Camera, Link)
+                                                 Camera, KoreaMapDB, Link)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import KoreaMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -57,6 +57,7 @@ def make_data(link=None, camera=None, external=None):
   data.curve_points = []
   data.link = link
   data.camera = camera
+  data.slowdown_camera = None
   data.bump = None
   data.mem_params = StubMemParams()
   data.bump_enabled = False
@@ -94,7 +95,7 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
   data.bump = bump
   data.bump_enabled = enabled
   data.bump_targets = {BUMP_ARCH: arch_kph * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid_kph * CV.KPH_TO_MS}
-  data.camera = camera
+  data.slowdown_camera = camera
   data.camera_margin = margin
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
   data.localizer_valid = localizer_valid
@@ -332,7 +333,7 @@ class StubDB:
   def current_link(self, lat, lon, heading_deg=None):
     return None
 
-  def next_camera(self, lat, lon, heading_deg, route=None, kinds=None):
+  def next_camera(self, lat, lon, heading_deg, route=None, kinds=None, corridor_m=None):
     return None
 
   def next_bump(self, lat, lon, heading_deg, route=None):
@@ -754,3 +755,33 @@ class TestCameraTarget(unittest.TestCase):
   def test_an_invalid_localizer_drops_the_camera_too(self):
     data = make_bump_data(camera=self.camera(), position=self.CAR, localizer_valid=False)
     self.assertEqual(self.publish(data), [])
+
+
+class TestSideRoadCamera(unittest.TestCase):
+  """The sign keeps the wide cone; the slowdown only takes cameras inside the corridor. A
+  30 km/h school-zone camera on a side street must not brake a car on the expressway."""
+
+  def publish_with(self, cameras):
+    tmp = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
+    cams, links = str(tmp / "korea_cameras.sqlite"), str(tmp / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, cameras))
+    write_db(links, SCHEMA_LINKS,
+             lambda con: insert_links(con, [(80, "올림픽대로", [(37.5000, 127.0200), (37.5000, 127.0320)])]))
+    data = make_data()
+    data.db = KoreaMapDB(cams, links)
+    self.addCleanup(data.db.close)
+    data.sm = SingleLocationSM(valid_llk(37.5000, 127.0200, heading_deg=90.))
+    data.last_position = Coordinate(37.5000, 127.0200)
+    data.update_location()
+    data.publish_targets()
+    return data
+
+  def test_a_side_street_camera_shows_on_the_sign_but_does_not_brake(self):
+    data = self.publish_with([(37.5009, 127.0228, 30, 0, CAMERA_ZONE)])  # ~250 m ahead, ~100 m north
+    self.assertAlmostEqual(data.get_next_speed_limit_and_distance()[0], 30 * CV.KPH_TO_MS)
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+
+  def test_a_camera_on_the_road_still_brakes(self):
+    data = self.publish_with([(37.5000, 127.0228, 30, 0, CAMERA_ZONE)])  # ~250 m straight ahead
+    points = json.loads(data.mem_params.values["MapTargetVelocities"])
+    self.assertEqual([p["velocity"] for p in points], [30 * CV.KPH_TO_MS])

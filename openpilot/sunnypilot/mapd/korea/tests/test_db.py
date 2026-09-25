@@ -13,8 +13,8 @@ import unittest
 
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS, SCHEMA_LINKS,
                                                       insert_bumps, insert_cameras, insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_SECTION, CAMERA_SPEED,
-                                                 CAMERA_ZONE, KoreaMapDB, has_camera_kind, verify)
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_SECTION,
+                                                 CAMERA_SPEED, CAMERA_ZONE, KoreaMapDB, has_camera_kind, verify)
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
 ROAD_60 = (60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])
@@ -565,6 +565,21 @@ class TestRouteCorridorCameras(KoreaMapDBTestCase):
   def test_a_route_running_the_other_way_rejects_everything(self):
     behind = [(37.5000, 127.0200), (37.5000, 127.0080)]
     self.assertIsNone(self.db.next_camera(37.5000, 127.0200, 90., route=behind))
+
+  def test_the_braking_corridor_rejects_the_side_road_camera(self):
+    """No route at all: the cone still offers the side-road camera for the sign, but it is
+    no slowdown target."""
+    self.assertIsNotNone(self.db.next_camera(37.5000, 127.0200, 90.))
+    self.assertIsNone(self.db.next_camera(37.5000, 127.0200, 90., corridor_m=CAMERA_CORRIDOR_M))
+
+  def test_the_braking_corridor_keeps_a_camera_on_the_road(self):
+    # A distinct path, for the same reason as test_a_camera_on_the_route_survives.
+    cams = str(self.tmp_path / "korea_cameras_on_road.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_AHEAD]))
+    db = self.open_db(cams, str(self.tmp_path / "korea_links.sqlite"))
+    camera = db.next_camera(37.5000, 127.0200, 90., corridor_m=CAMERA_CORRIDOR_M)
+    self.assertIsNotNone(camera)
+    self.assertEqual(camera.limit_kph, 50)
 
 
 # ~25 m north of the query point's road, ~150 m ahead: distance_to_route against

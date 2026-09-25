@@ -12,8 +12,9 @@ Current speed limits come from ITS 표준노드링크 MAX_SPD. The "next" speed 
 speed camera ahead, and on liveMapDataSP it only feeds the speed-limit-ahead sign:
 SpeedLimitResolver ignores speedLimitAhead in Korea mode. The slowdown goes to
 SmartCruiseControlMap instead, as one more MapTargetVelocities point beside the bumps and
-the curves (publish_targets). SpeedLimitAssist would hold it behind a confirmation prompt
-under 80 km/h and add the speed limit offset on top.
+the curves (publish_targets) -- and only for a camera within CAMERA_CORRIDOR_M of the
+heading line; the sign keeps the wider cone. SpeedLimitAssist would hold it behind a
+confirmation prompt under 80 km/h and add the speed limit offset on top.
 """
 import json
 import math
@@ -26,8 +27,8 @@ from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
-from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_KIND_PARAMS, Bump, Camera,
-                                                 KoreaMapDB, Link, mtime_or_none)
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
+                                                 Bump, Camera, KoreaMapDB, Link, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
@@ -74,6 +75,9 @@ class KoreaMapData(BaseMapData):
     self.curve_points: list[tuple[float, float, float]] = []
     self.link: Link | None = None
     self.camera: Camera | None = None
+    # The camera SCC-Map slows for: the nearest one inside CAMERA_CORRIDOR_M. self.camera is
+    # the nearest in the wider cone and only feeds the speed limit ahead sign.
+    self.slowdown_camera: Camera | None = None
     self.bump: Bump | None = None
     # SmartCruiseControlMap reads its input from /dev/shm, not from the message bus.
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
@@ -134,6 +138,7 @@ class KoreaMapData(BaseMapData):
     self.db = None
     self.link = None
     self.camera = None
+    self.slowdown_camera = None
     self.bump = None
     # The source is going away. SCC-Map polls this param every frame and has no idea who
     # last wrote it, so a point left here would be acted on by whatever runs next.
@@ -192,6 +197,7 @@ class KoreaMapData(BaseMapData):
 
     self.link = None
     self.camera = None
+    self.slowdown_camera = None
     self.bump = None
 
     # Kept apart from open_db() below on purpose: the route thread must keep tracking our
@@ -215,6 +221,10 @@ class KoreaMapData(BaseMapData):
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing)
       self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds)
+      # Twice on purpose: the sign keeps the wide cone, but only a camera inside the corridor
+      # may brake the car (CAMERA_CORRIDOR_M).
+      self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
+                                                 kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M)
       self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
     except Exception:
       # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
@@ -278,9 +288,9 @@ class KoreaMapData(BaseMapData):
     No speed limit offset. SpeedLimitAssist adds one to road limits; a camera enforces its
     own number.
     """
-    if self.camera is None or self.last_position is None:
+    if self.slowdown_camera is None or self.last_position is None:
       return None
-    camera, car = self.camera, self.last_position
+    camera, car = self.slowdown_camera, self.last_position
     share = max(0., camera.distance_m - self.camera_margin) / camera.distance_m if camera.distance_m > 0. else 0.
     return (car.latitude + (camera.lat - car.latitude) * share,
             car.longitude + (camera.lon - car.longitude) * share,
@@ -299,7 +309,7 @@ class KoreaMapData(BaseMapData):
 
     Also requires localizer_valid: last_position/last_bearing only update while the
     localizer is valid (see update_location), so a localizer that stops updating would
-    otherwise freeze self.bump and self.camera (and republish self.curve_points against a
+    otherwise freeze self.bump and self.slowdown_camera (and republish self.curve_points against a
     stale car position) forever -- the car keeps moving, SCC-Map keeps seeing a constant
     distance, and the slowdown never releases.
     """

@@ -65,6 +65,14 @@ CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.
 CAMERA_AHEAD_TOLERANCE = 60.
 
+# How far off the heading line a camera may sit and still be a slowdown target. The speed
+# limit ahead sign keeps the plain cone above -- showing a camera on a side street costs
+# nothing -- but braking for a camera on a parallel road or the opposite carriageway is a
+# phantom brake on the road the car is actually on. 30 m like ROUTE_CORRIDOR_M: wider than
+# the localizer's lateral error in an urban canyon, narrower than the gap to a typical
+# parallel road. The cost is cameras on curves, where the road bends away from the line.
+CAMERA_CORRIDOR_M = 30.
+
 # ~660 m box, then filtered down to BUMP_MAX_DISTANCE_M. Much tighter than the camera
 # horizon on purpose: a bump 2 km out is noise, and SCC-Map only needs the point once it
 # is inside braking range.
@@ -365,7 +373,8 @@ class KoreaMapDB:
 
   def next_camera(self, lat: float, lon: float, heading_deg: float | None,
                   route: list[tuple[float, float]] | None = None,
-                  kinds: Collection[int] | None = None) -> Camera | None:
+                  kinds: Collection[int] | None = None,
+                  corridor_m: float | None = None) -> Camera | None:
     """Nearest speed camera ahead of us, or None. Needs a heading to know what 'ahead' means.
 
     With a route, 'ahead' stops being a bearing cone and becomes the road we will actually
@@ -376,6 +385,10 @@ class KoreaMapDB:
     before the distance comparison, so a nearer camera of a kind that is off never hides a
     farther one that is on. A camera of unknown kind (a database built before the column)
     always passes. None means every kind.
+
+    corridor_m, when given, also rejects a camera farther than that from the heading line
+    (see _on_path). korea_map_data passes CAMERA_CORRIDOR_M for the camera it brakes for and
+    nothing for the speed limit ahead sign.
     """
     if heading_deg is None:
       return None
@@ -395,7 +408,7 @@ class KoreaMapDB:
       distance = haversine(lat, lon, clat, clon)
       if distance > CAMERA_MAX_DISTANCE_M or (best is not None and distance >= best.distance_m):
         continue
-      if not _on_path(lat, lon, clat, clon, heading_deg, route, CAMERA_AHEAD_TOLERANCE):
+      if not _on_path(lat, lon, clat, clon, heading_deg, route, CAMERA_AHEAD_TOLERANCE, corridor_m=corridor_m):
         continue
       best = Camera(lat=clat, lon=clon, limit_kph=limit_kph, distance_m=distance, section_m=section_m, kind=kind)
 
