@@ -127,7 +127,8 @@ def refresh(cameras_path: str, api_key: str, opener=urllib.request.urlopen) -> i
       LOG.warning("camera refresh: the api stopped sending %s -- keeping the existing database", missing)
       return 0
     # Nothing to keep: open_db needs a camera file, so refusing would leave the device with no
-    # Korean map data at all. Every camera is CAMERA_SPEED until the weekly refresh.
+    # Korean map data at all. Only the missing field's kind is lost until the weekly refresh --
+    # without regltSe, for one, signal cameras fall back to CAMERA_SPEED.
     LOG.warning("camera refresh: the api stopped sending %s -- building a first database without kinds", missing)
 
   rows = list(load_cameras_api(items))
