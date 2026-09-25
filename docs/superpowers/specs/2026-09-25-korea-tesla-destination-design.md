@@ -130,7 +130,7 @@ Tesla connection lost. Destinations set in the car's navigation are not received
 
 응답은 종방향 제어까지 닿는 목적지가 되므로 `external_source.py:22`의 원칙을 그대로 따른다 — 전부 untrusted다.
 
-- `active_route_latitude`/`longitude`: 숫자여야 하고(`bool` 제외), `route.in_korea`를 통과해야 한다. 아니면 "목적지 없음"이다.
+- `active_route_latitude`/`longitude`: 숫자여야 하고, `route.in_korea`를 통과해야 한다. 아니면 "목적지 없음"이다. `bool`은 파이썬에서 숫자로 통과하지만 (0, 0)이나 (1, 1)이 되어 한국 범위에서 걸러진다. 따로 검사해도 결과가 바뀌는 입력이 없어 두지 않는다(2026-09-26 Task 1 검토에서 결정).
 - `active_route_destination`: 문자열이 아니면 버리고, 64자로 자른다(`external_source.MAX_ROAD_NAME`과 같은 길이).
 - 어떤 검증 실패도 예외가 아니라 "목적지 없음"으로 떨어진다.
 
