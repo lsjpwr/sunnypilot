@@ -5,13 +5,17 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import json
+import sys
+import types
 import unittest
 import urllib.error
+from unittest import mock
 
 from openpilot.sunnypilot.mapd.korea import tesla
 from openpilot.sunnypilot.mapd.korea.route import RequestBudget
 from openpilot.sunnypilot.mapd.korea.tesla import (POLL_INTERVAL_S, TOKEN_URL, AuthRejected, TeslaDestinationSource, fetch_destination,
                                                    parse_destination, refresh_access_token)
+from openpilot.sunnypilot.mapd.korea.tests.test_camera_refresh import OneShotStop
 from openpilot.sunnypilot.mapd.korea.tests.test_route import FakeClock, FakeResponse
 
 GANGNAM = (37.4979, 127.0276)
@@ -297,6 +301,139 @@ class TestTokens(SourceTestCase):
     self.tick(source, seconds=POLL_INTERVAL_S)
     self.assertEqual(self.opener.count("token"), 1)
     self.assertEqual(self.opener.requests[-1].get_header("Authorization"), "Bearer ACCESS-2")
+
+
+class TestFailures(SourceTestCase):
+  def assert_asks_again_after(self, error, seconds):
+    source = self.source([error, car()])
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.tick(source, seconds=seconds - 1.)
+    self.assertEqual(self.opener.count("vehicle_data"), 1)
+    self.tick(source, seconds=1.)
+    self.assertEqual(self.opener.count("vehicle_data"), 2)
+    self.assertIsNotNone(self.nav())
+
+  def test_an_unavailable_car_is_asked_again_next_minute(self):
+    self.assert_asks_again_after(http_error(408), POLL_INTERVAL_S)
+
+  def test_a_server_error_is_asked_again_next_minute(self):
+    self.assert_asks_again_after(http_error(503), POLL_INTERVAL_S)
+
+  def test_a_network_error_is_asked_again_next_minute(self):
+    self.assert_asks_again_after(urllib.error.URLError("no route to host"), POLL_INTERVAL_S)
+
+  def test_too_many_requests_waits_five_minutes(self):
+    self.assert_asks_again_after(http_error(429), tesla.RATE_LIMIT_PAUSE_S)
+
+
+class TestAuth(SourceTestCase):
+  def test_a_refused_refresh_token_raises_the_alert_and_stops_asking(self):
+    source = self.source([car()], token=http_error(400))
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(self.alerts, [True])
+    self.assertEqual(self.opener.count("token"), 1)
+    self.assertEqual(self.opener.count("vehicle_data"), 0)
+
+  def test_a_new_token_from_setup_is_tried_and_clears_the_alert(self):
+    source = self.source([car()], token=http_error(400))
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.opener.token = TOKENS
+    self.params.values["KoreaTeslaRefreshToken"] = "REFRESH-FROM-SETUP"
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(self.alerts, [True, False])
+    self.assertIsNotNone(self.nav())
+
+  def test_a_grant_without_location_raises_the_alert(self):
+    """403: the owner took vehicle_location away, or never gave it. Asking again changes nothing."""
+    source = self.source([http_error(403), car()])
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(self.alerts[-1], True)
+    self.assertEqual(self.opener.count("vehicle_data"), 1)
+
+  def test_an_expired_access_token_is_refreshed_on_the_next_tick(self):
+    """Usually the first poll of a drive: waiting a minute to retry would delay the route."""
+    source = self.source([car(), http_error(401), car(*CITY_HALL)])
+    self.tick(source)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source, seconds=POLL_INTERVAL_S)
+    self.tick(source, seconds=1.)
+    self.assertEqual(self.opener.count("token"), 2)
+    self.assertEqual((self.nav()["latitude"], self.nav()["longitude"]), CITY_HALL)
+    self.assertNotIn(True, self.alerts)
+
+  def test_a_token_refused_right_after_refresh_raises_the_alert(self):
+    """A token minted this tick and refused anyway will not be accepted on a retry -- and
+    retrying every tick would spend the day's cap in five minutes."""
+    source = self.source([http_error(401), car()])
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(self.alerts[-1], True)
+    self.assertEqual(self.opener.count("vehicle_data"), 1)
+
+
+class TestLoop(unittest.TestCase):
+  def run_loop(self, step, started=True, recv_frame=1, alerts=None):
+    """_loop for one iteration, with the device stack faked through sys.modules -- the
+    technique test_camera_refresh.TestRefresherLoop uses for CameraRefresher._loop."""
+    class FakeSubMaster:
+      def __init__(self, services):
+        self.recv_frame = {'deviceState': recv_frame}
+
+      def update(self, timeout):
+        pass
+
+      def __getitem__(self, service):
+        return types.SimpleNamespace(started=started)
+
+    sink = [] if alerts is None else alerts
+    messaging = types.ModuleType("cereal.messaging")
+    messaging.SubMaster = FakeSubMaster
+    params_mod = types.ModuleType("openpilot.common.params")
+    params_mod.Params = FakeParams
+    alertmanager = types.ModuleType("openpilot.selfdrive.selfdrived.alertmanager")
+    alertmanager.set_offroad_alert = lambda *a: sink.append(a)
+    self.enterContext(mock.patch.dict(sys.modules, {
+      "cereal": types.ModuleType("cereal"),
+      "cereal.messaging": messaging,
+      "openpilot.common.params": params_mod,
+      "openpilot.selfdrive.selfdrived.alertmanager": alertmanager,
+    }))
+    source = TeslaDestinationSource()
+    source.step = step
+    source._stop = OneShotStop()
+    source._loop()
+
+  def test_started_comes_from_deviceState(self):
+    seen = []
+    self.run_loop(lambda params, started, set_alert: seen.append(started))
+    self.assertEqual(seen, [True])
+
+  def test_nothing_received_yet_is_not_a_drive(self):
+    """A SubMaster that has received nothing reads the capnp default. Here that must mean
+    "wait", never a drive that has started."""
+    seen = []
+    self.run_loop(lambda params, started, set_alert: seen.append(started), recv_frame=0)
+    self.assertEqual(seen, [False])
+
+  def test_the_alert_is_offroad_korea_tesla_auth(self):
+    alerts = []
+    self.run_loop(lambda params, started, set_alert: set_alert(True), alerts=alerts)
+    self.assertEqual(alerts, [("Offroad_KoreaTeslaAuth", True)])
+
+  def test_the_thread_survives_an_unexpected_error(self):
+    """No supervisor: anything escaping _loop ends destinations from the car until the
+    process restarts."""
+    def boom(params, started, set_alert):
+      raise RuntimeError("boom")
+    with self.assertLogs(tesla.LOG, level="ERROR"):
+      self.run_loop(boom)
 
 
 if __name__ == "__main__":

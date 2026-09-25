@@ -16,6 +16,7 @@ interpreter -- same rule as route.py. Only _loop imports the device stack.
 """
 import json
 import logging
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -36,6 +37,7 @@ VEHICLE_DATA_QUERY = urllib.parse.urlencode({"endpoints": "drive_state;location_
 MAX_PLACE_NAME = 64  # same cut as external_source.MAX_ROAD_NAME
 
 POLL_INTERVAL_S = 60.
+RATE_LIMIT_PAUSE_S = 300.
 # Five hours of driving at one request a minute. Tesla bills 500 data requests per $1 and
 # takes $10 a month off, so this guards against a runaway, not against normal use.
 DAILY_REQUEST_CAP = 300
@@ -120,10 +122,10 @@ def _is_ours(raw, written: tuple[float, float]) -> bool:
 
 
 class TeslaDestinationSource:
-  """Copies the car's navigation destination into NavDestination while the car is on.
+  """Background thread that copies the car's navigation destination into NavDestination.
 
-  step() makes every decision and gets the device state as arguments, so the tests drive
-  it with no device stack.
+  Same start/stop shape as RouteSource. step() makes every decision and gets the device
+  state as arguments, so the tests drive it with no device stack; _loop only feeds it.
   """
 
   def __init__(self, opener=urllib.request.urlopen, clock=time.monotonic):
@@ -133,8 +135,24 @@ class TeslaDestinationSource:
     self._access_token: str | None = None
     # What this thread last wrote, so the car repeating it is not another write.
     self._written: tuple[float, float] | None = None
+    # The refresh token Tesla refused. Polling waits for tesla_setup to write another one.
+    self._rejected: str | None = None
     self._next_poll = 0.
     self._was_started = False
+    self._stop = threading.Event()
+    self._thread: threading.Thread | None = None
+
+  def start(self) -> None:
+    if self._thread is not None:
+      return
+    self._thread = threading.Thread(target=self._loop, daemon=True)
+    self._thread.start()
+
+  def stop(self) -> None:
+    self._stop.set()
+    if self._thread is not None:
+      self._thread.join(timeout=2.)
+      self._thread = None
 
   def step(self, params, started: bool, set_alert) -> None:
     """One tick. set_alert(bool) shows or clears Offroad_KoreaTeslaAuth."""
@@ -156,17 +174,51 @@ class TeslaDestinationSource:
     # Without the TMAP key a destination buys no route, only a bill.
     if not (client_id and refresh_token and vin and params.get("KoreaRouteApiKey")):
       return
+    if refresh_token == self._rejected:
+      return
     if not self.budget.allow():
       LOG.warning("tesla: daily request cap reached")
       return
 
-    if self._access_token is None:
-      self._access_token, refresh_token = refresh_access_token(client_id, refresh_token, self._opener)
-      # Single use: Tesla retired the old token the moment it answered. Save the new one
-      # before anything else can fail, or nothing that works is left on the device.
-      params.put("KoreaTeslaRefreshToken", refresh_token)
-    self.budget.spend()
-    self._apply(params, fetch_destination(self._access_token, vin, self._opener))
+    fresh = self._access_token is None
+    try:
+      if fresh:
+        self._access_token, refresh_token = refresh_access_token(client_id, refresh_token, self._opener)
+        # Single use: Tesla retired the old token the moment it answered. Save the new one
+        # before anything else can fail, or nothing that works is left on the device.
+        params.put("KoreaTeslaRefreshToken", refresh_token)
+        set_alert(False)
+      self.budget.spend()
+      destination = fetch_destination(self._access_token, vin, self._opener)
+    except AuthRejected:
+      LOG.warning("tesla: refresh token rejected, run tesla_setup again")
+      self._reject(refresh_token, set_alert)
+      return
+    except urllib.error.HTTPError as e:
+      LOG.warning("tesla: request failed: HTTP %d", e.code)
+      if e.code == 401 and not fresh:
+        # The access token outlived its hours. Refresh on the next tick rather than a minute
+        # from now -- this is usually the first poll of a drive.
+        self._access_token = None
+        self._next_poll = now
+      elif e.code in (401, 403):
+        # A token minted this tick and refused anyway, or a grant without vehicle_location:
+        # asking again changes neither, and retrying every tick would spend the day's cap.
+        self._reject(refresh_token, set_alert)
+      elif e.code == 429:
+        self._next_poll = now + RATE_LIMIT_PAUSE_S
+      return
+    except Exception as e:
+      # The network, a timeout, a body that is not JSON: all "ask again next minute". Only the
+      # type is logged -- a message can carry the URL, and a body the car's position.
+      LOG.warning("tesla: request failed: %s", type(e).__name__)
+      return
+    self._apply(params, destination)
+
+  def _reject(self, refresh_token: str, set_alert) -> None:
+    self._rejected = refresh_token
+    self._access_token = None
+    set_alert(True)
 
   def _apply(self, params, destination: tuple[float, float, str] | None) -> None:
     if destination is None:
@@ -184,3 +236,28 @@ class TeslaDestinationSource:
     params.put("NavDestination", json.dumps({"latitude": lat, "longitude": lon,
                                              "place_name": name or None, "place_details": None}))
     self._written = (lat, lon)
+
+  def _loop(self) -> None:
+    # imported here so the module stays importable without the device stack, which is what
+    # lets the tests run under a bare interpreter -- same as RouteSource._loop
+    import cereal.messaging as messaging
+    from openpilot.common.params import Params
+    from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
+
+    params = Params()
+    sm = messaging.SubMaster(['deviceState'])
+
+    def set_alert(show: bool) -> None:
+      set_offroad_alert("Offroad_KoreaTeslaAuth", show)
+
+    while not self._stop.is_set():
+      try:
+        sm.update(0)
+        # A SubMaster that has received nothing reads the capnp default, started=False --
+        # "not yet", which is the safe answer here.
+        self.step(params, bool(sm.recv_frame['deviceState']) and sm['deviceState'].started, set_alert)
+      except Exception:
+        # No supervisor: dying here ends destinations from the car until the process
+        # restarts. Keep going and try again next second.
+        LOG.exception("tesla: source loop error")
+      self._stop.wait(1.)
