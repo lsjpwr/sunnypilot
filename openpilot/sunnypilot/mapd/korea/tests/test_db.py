@@ -675,13 +675,20 @@ class TestCameraDatabaseWithoutKind(KoreaMapDBTestCase):
     drop_kind(cams)
     self.assertFalse(self._has_kind(cams))
 
-  def test_every_camera_passes_any_filter(self):
+  def test_every_camera_passes_a_non_empty_filter(self):
     cams, links = self._make_pair()
     drop_kind(cams)
-    camera = self.open_db(cams, links).next_camera(37.5000, 127.0200, 90., kinds=frozenset())
+    camera = self.open_db(cams, links).next_camera(37.5000, 127.0200, 90., kinds={CAMERA_ZONE})
     self.assertIsNotNone(camera, "an old database lost its cameras to a filter it cannot answer")
     self.assertIsNone(camera.kind)
     self.assertEqual(camera.limit_kph, 50)
+
+  def test_every_kind_off_means_no_camera_even_from_an_old_database(self):
+    """Turning all four kinds off is how a driver switches camera slowdown off. It has to work
+    before the old file is rebuilt too -- on a device without an API key, that is forever."""
+    cams, links = self._make_pair()
+    drop_kind(cams)
+    self.assertIsNone(self.open_db(cams, links).next_camera(37.5000, 127.0200, 90., kinds=frozenset()))
 
   @unittest.skipIf(sys.platform == "win32", _REPLACE_WHILE_OPEN_SKIP_REASON)
   def test_a_reload_notices_the_new_column(self):

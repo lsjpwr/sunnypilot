@@ -230,6 +230,11 @@ class KoreaMapDB:
     self._bumps_mtime = mtime_or_none(bumps_path)
     self.cam = self._open(cameras_path)
     self._cam_has_kind = has_camera_kind(self.cam)
+    if not self._cam_has_kind:
+      # camera_refresh rebuilds such a file on the next unmetered connection; a device with
+      # no API key keeps it until the file is replaced by hand.
+      logging.getLogger(__name__).warning(
+        "korea db: %s has no camera kinds -- only turning every kind off takes effect until it is rebuilt", cameras_path)
     self.lnk = self._open(links_path)
     # Optional third file. A device deployed before speed bumps shipped has cameras and
     # links but no korea_bumps.sqlite, and losing speed limits over a missing comfort
@@ -282,9 +287,13 @@ class KoreaMapDB:
     if mtime == getattr(self, mtime_attr):
       return False
 
+    con = None
     try:
       con = self._open(path)
+      cam_has_kind = has_camera_kind(con) if con_attr == "cam" else None
     except (sqlite3.Error, ValueError):
+      if con is not None:
+        con.close()
       # stdlib logging on purpose: openpilot's cloudlog pulls in zmq, and this module has
       # to stay importable under a bare interpreter so its tests run without the device stack.
       logging.getLogger(__name__).exception("korea db: keeping the old %s database", con_attr)
@@ -298,7 +307,7 @@ class KoreaMapDB:
     setattr(self, mtime_attr, mtime)
     if con_attr == "cam":
       # A refresh replaces a file from before the kind column with one that has it.
-      self._cam_has_kind = has_camera_kind(con)
+      self._cam_has_kind = cam_has_kind
     if con_attr == "lnk":
       # The builder assigns link ids by insertion order, so the same id names a different
       # road after a rebuild. Inside the tie band a surviving id would pick that road.
@@ -384,7 +393,8 @@ class KoreaMapDB:
     kinds, when given, is the set of db.CAMERA_* the driver has on. Other kinds are skipped
     before the distance comparison, so a nearer camera of a kind that is off never hides a
     farther one that is on. A camera of unknown kind (a database built before the column)
-    always passes. None means every kind.
+    passes any non-empty set. None means every kind; an empty set means no camera at all,
+    which is how a driver turns camera slowdown off.
 
     corridor_m, when given, also rejects a camera farther than that from the heading line
     (see _on_path). korea_map_data passes CAMERA_CORRIDOR_M for the camera it brakes for and
@@ -392,6 +402,8 @@ class KoreaMapDB:
     """
     if heading_deg is None:
       return None
+    if kinds is not None and not kinds:
+      return None  # every kind off: no camera at all, an old kind-less database included
 
     kind_column = "c.kind" if self._cam_has_kind else "NULL"
     rows = self.cam.execute(
