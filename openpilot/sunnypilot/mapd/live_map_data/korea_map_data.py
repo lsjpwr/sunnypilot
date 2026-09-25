@@ -78,6 +78,8 @@ class KoreaMapData(BaseMapData):
     # The camera SCC-Map slows for: the nearest one inside CAMERA_CORRIDOR_M. self.camera is
     # the nearest in the wider cone and only feeds the speed limit ahead sign.
     self.slowdown_camera: Camera | None = None
+    # ((camera lat, camera lon, margin), (point lat, point lon)) -- see camera_point
+    self._camera_anchor: tuple[tuple[float, float, int], tuple[float, float]] | None = None
     self.bump: Bump | None = None
     # SmartCruiseControlMap reads its input from /dev/shm, not from the message bus.
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
@@ -139,6 +141,7 @@ class KoreaMapData(BaseMapData):
     self.link = None
     self.camera = None
     self.slowdown_camera = None
+    self._camera_anchor = None
     self.bump = None
     # The source is going away. SCC-Map polls this param every frame and has no idea who
     # last wrote it, so a point left here would be acted on by whatever runs next.
@@ -276,25 +279,39 @@ class KoreaMapData(BaseMapData):
     self.camera_margin = get_sanitize_int_param("KoreaCameraMargin", *CAMERA_MARGIN_RANGE, self.params)
 
   def camera_point(self) -> tuple[float, float, float] | None:
-    """The next camera as an SCC-Map target: its limit, camera_margin metres short of it.
+    """The slowdown camera as an SCC-Map target: its limit, camera_margin metres short of it.
 
-    The point sits on the straight line from the car to the camera. SCC-Map measures
-    straight-line distance too, so the car reaches the limit about camera_margin metres
-    before the camera as the crow flies -- on a winding road that is a little early, never
-    late. Inside the margin the point is the car's own position: SCC-Map keeps treating a
-    point at distance zero as due, so the car stays near the limit until next_camera lets
-    the camera go.
+    The point is placed once per camera, on the straight line from where the car was when it
+    first took that camera, and then stays put: SCC-Map holds a target only while a point with
+    the same lat/lon/velocity is still in the list (map_controller.update_calculations), and a
+    point recomputed from the moving car every tick would drop that hold each second. SCC-Map
+    measures straight-line distance too, so the car reaches the limit about camera_margin
+    metres before the camera as the crow flies -- on a winding road that is a little early,
+    never late.
+
+    Inside the margin the point is the car's own position instead: SCC-Map keeps treating a
+    point at distance zero as due, so the car stays near the limit until next_camera lets the
+    camera go. The anchor is dropped when the camera goes, so the same camera met again from
+    the other direction is placed anew.
 
     No speed limit offset. SpeedLimitAssist adds one to road limits; a camera enforces its
     own number.
     """
-    if self.slowdown_camera is None or self.last_position is None:
+    camera = self.slowdown_camera
+    if camera is None or self.last_position is None:
+      self._camera_anchor = None
       return None
-    camera, car = self.slowdown_camera, self.last_position
-    share = max(0., camera.distance_m - self.camera_margin) / camera.distance_m if camera.distance_m > 0. else 0.
-    return (car.latitude + (camera.lat - car.latitude) * share,
-            car.longitude + (camera.lon - car.longitude) * share,
-            camera.limit_kph * CV.KPH_TO_MS)
+    car = self.last_position
+    velocity = camera.limit_kph * CV.KPH_TO_MS
+    if camera.distance_m <= self.camera_margin:
+      return car.latitude, car.longitude, velocity
+    key = (camera.lat, camera.lon, self.camera_margin)
+    if self._camera_anchor is None or self._camera_anchor[0] != key:
+      share = (camera.distance_m - self.camera_margin) / camera.distance_m
+      self._camera_anchor = (key, (car.latitude + (camera.lat - car.latitude) * share,
+                                   car.longitude + (camera.lon - car.longitude) * share))
+    lat, lon = self._camera_anchor[1]
+    return lat, lon, velocity
 
   def publish_targets(self) -> None:
     """Hand the next bump, the next camera AND the curves ahead to SmartCruiseControlMap.

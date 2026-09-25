@@ -58,6 +58,7 @@ def make_data(link=None, camera=None, external=None):
   data.link = link
   data.camera = camera
   data.slowdown_camera = None
+  data._camera_anchor = None
   data.bump = None
   data.mem_params = StubMemParams()
   data.bump_enabled = False
@@ -96,6 +97,7 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
   data.bump_enabled = enabled
   data.bump_targets = {BUMP_ARCH: arch_kph * CV.KPH_TO_MS, BUMP_TRAPEZOID: trapezoid_kph * CV.KPH_TO_MS}
   data.slowdown_camera = camera
+  data._camera_anchor = None
   data.camera_margin = margin
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
   data.localizer_valid = localizer_valid
@@ -715,10 +717,11 @@ class TestCameraTarget(unittest.TestCase):
   CAR = Coordinate(37.5000, 127.0200)
   AT = Coordinate(37.5000, 127.0257)   # ~503 m east
 
-  def camera(self, at=None, limit_kph=50):
+  def camera(self, at=None, limit_kph=50, car=None):
     at = at if at is not None else self.AT
+    car = car if car is not None else self.CAR
     return Camera(lat=at.latitude, lon=at.longitude, limit_kph=limit_kph,
-                  distance_m=self.CAR.distance_to(at), section_m=0, kind=CAMERA_SPEED)
+                  distance_m=car.distance_to(at), section_m=0, kind=CAMERA_SPEED)
 
   def publish(self, data):
     data.publish_targets()
@@ -755,6 +758,31 @@ class TestCameraTarget(unittest.TestCase):
   def test_an_invalid_localizer_drops_the_camera_too(self):
     data = make_bump_data(camera=self.camera(), position=self.CAR, localizer_valid=False)
     self.assertEqual(self.publish(data), [])
+
+  def test_the_point_stays_put_while_the_car_approaches(self):
+    """SCC-Map holds a target only while the same lat/lon/velocity is still in the list; a
+    point recomputed from the moving car would drop that hold every tick."""
+    data = make_bump_data(camera=self.camera(), margin=50, position=self.CAR)
+    first = self.publish(data)[0]
+    closer = Coordinate(37.5000, 127.0220)  # ~177 m further east, still outside the margin
+    data.last_position = closer
+    data.slowdown_camera = self.camera(car=closer)
+    second = self.publish(data)[0]
+    self.assertEqual((second["latitude"], second["longitude"]), (first["latitude"], first["longitude"]))
+
+  def test_a_camera_met_again_from_the_other_side_is_placed_anew(self):
+    """Without dropping the anchor when the camera goes, a return trip would reuse a point on
+    the far side of the camera and reach the limit only after passing it."""
+    data = make_bump_data(camera=self.camera(), margin=50, position=self.CAR)
+    self.publish(data)                      # placed ~50 m west of the camera
+    data.slowdown_camera = None
+    self.publish(data)                      # the camera went
+    east = Coordinate(37.5000, 127.0314)    # ~503 m east of the camera, driving west
+    data.last_position = east
+    data.slowdown_camera = self.camera(car=east)
+    point = self.publish(data)[0]
+    self.assertLess(point["longitude"], east.longitude)
+    self.assertGreater(point["longitude"], self.AT.longitude)  # between the car and the camera
 
 
 class TestSideRoadCamera(unittest.TestCase):
