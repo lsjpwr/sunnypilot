@@ -120,11 +120,15 @@ def refresh(cameras_path: str, api_key: str, opener=urllib.request.urlopen) -> i
 
   missing = [field for field in CAMERA_API_KIND_FIELDS if not any(field in item for item in items)]
   if items and missing:
-    # A renamed field reads as None on every item, which files every camera under
-    # CAMERA_SPEED: a database that looks fine and ignores the kind toggles. load_cameras
-    # raises on the CSV equivalent; this path keeps the database it has instead.
-    LOG.warning("camera refresh: the api stopped sending %s -- keeping the existing database", missing)
-    return 0
+    if current_row_count(cameras_path) > 0:
+      # A renamed field reads as None on every item, which files every camera under
+      # CAMERA_SPEED: a database that looks fine and ignores the kind toggles. load_cameras
+      # raises on the CSV equivalent; this path keeps the database it has instead.
+      LOG.warning("camera refresh: the api stopped sending %s -- keeping the existing database", missing)
+      return 0
+    # Nothing to keep: open_db needs a camera file, so refusing would leave the device with no
+    # Korean map data at all. Every camera is CAMERA_SPEED until the weekly refresh.
+    LOG.warning("camera refresh: the api stopped sending %s -- building a first database without kinds", missing)
 
   rows = list(load_cameras_api(items))
   floor = int(current_row_count(cameras_path) * MIN_KEEP_RATIO)

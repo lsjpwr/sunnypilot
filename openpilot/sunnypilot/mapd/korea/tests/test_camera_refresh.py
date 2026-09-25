@@ -176,6 +176,15 @@ class TestRefresh(unittest.TestCase):
         self.assertEqual(camera_refresh.refresh(self.path, "KEY", opener=fake_opener([items])), 0)
         self.assertEqual(count_rows(self.path), 10)
 
+  def test_refresh_builds_a_first_database_even_without_a_kind_field(self):
+    """With no database to keep, refusing would leave the device with no Korean map data at
+    all -- open_db needs the camera file."""
+    items = [api_item(37.5 + i * 1e-4, 127.0, 60) for i in range(20)]
+    for item in items:
+      del item["regltSe"]
+    self.assertEqual(camera_refresh.refresh(self.path, "KEY", opener=fake_opener([items])), 20)
+    self.assertEqual(count_rows(self.path), 20)
+
 
 class TestDue(unittest.TestCase):
   def setUp(self):
