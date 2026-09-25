@@ -16,11 +16,13 @@ interpreter -- same rule as route.py. Only _loop imports the device stack.
 """
 import json
 import logging
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
-from openpilot.sunnypilot.mapd.korea.route import in_korea
+from openpilot.sunnypilot.mapd.korea.geo import haversine
+from openpilot.sunnypilot.mapd.korea.route import RequestBudget, in_korea
 
 LOG = logging.getLogger(__name__)
 
@@ -32,6 +34,14 @@ HTTP_TIMEOUT_S = 10.
 # active_route_destination alone (teslamotors/fleet-telemetry#392).
 VEHICLE_DATA_QUERY = urllib.parse.urlencode({"endpoints": "drive_state;location_data"})
 MAX_PLACE_NAME = 64  # same cut as external_source.MAX_ROAD_NAME
+
+POLL_INTERVAL_S = 60.
+# Five hours of driving at one request a minute. Tesla bills 500 data requests per $1 and
+# takes $10 a month off, so this guards against a runaway, not against normal use.
+DAILY_REQUEST_CAP = 300
+# Closer than this is the same destination. Rewriting one that only jittered would have
+# RouteSource drop its route and ask TMAP again (route.py:402).
+SAME_DESTINATION_M = 50.
 
 
 class AuthRejected(Exception):
@@ -97,3 +107,80 @@ def fetch_destination(access_token: str, vin: str, opener=urllib.request.urlopen
   what the caller does next."""
   path = f"/api/1/vehicles/{urllib.parse.quote(vin, safe='')}/vehicle_data?{VEHICLE_DATA_QUERY}"
   return parse_destination(_read_json(api_request(access_token, path), opener))
+
+
+def _is_ours(raw, written: tuple[float, float]) -> bool:
+  """Does NavDestination still hold exactly what this thread wrote? json round-trips a
+  float exactly, so equality is right here -- unlike between two readings of the car."""
+  try:
+    dest = json.loads(raw)
+    return (float(dest["latitude"]), float(dest["longitude"])) == written
+  except (TypeError, ValueError, KeyError):
+    return False
+
+
+class TeslaDestinationSource:
+  """Copies the car's navigation destination into NavDestination while the car is on.
+
+  step() makes every decision and gets the device state as arguments, so the tests drive
+  it with no device stack.
+  """
+
+  def __init__(self, opener=urllib.request.urlopen, clock=time.monotonic):
+    self._opener = opener
+    self._clock = clock
+    self.budget = RequestBudget(cap=DAILY_REQUEST_CAP)
+    self._access_token: str | None = None
+    # What this thread last wrote, so the car repeating it is not another write.
+    self._written: tuple[float, float] | None = None
+    self._next_poll = 0.
+    self._was_started = False
+
+  def step(self, params, started: bool, set_alert) -> None:
+    """One tick. set_alert(bool) shows or clears Offroad_KoreaTeslaAuth."""
+    now = self._clock()
+    if started and not self._was_started:
+      # A new drive. The offroad transition cleared NavDestination, so what this thread wrote
+      # last drive is no reason to skip it now -- and the first poll of a drive does not wait
+      # out the last drive's minute.
+      self._written = None
+      self._next_poll = now
+    self._was_started = started
+    if not started or now < self._next_poll:
+      return
+    self._next_poll = now + POLL_INTERVAL_S
+
+    client_id = params.get("KoreaTeslaClientId")
+    refresh_token = params.get("KoreaTeslaRefreshToken")
+    vin = params.get("KoreaTeslaVin")
+    # Without the TMAP key a destination buys no route, only a bill.
+    if not (client_id and refresh_token and vin and params.get("KoreaRouteApiKey")):
+      return
+    if not self.budget.allow():
+      LOG.warning("tesla: daily request cap reached")
+      return
+
+    if self._access_token is None:
+      self._access_token, refresh_token = refresh_access_token(client_id, refresh_token, self._opener)
+      # Single use: Tesla retired the old token the moment it answered. Save the new one
+      # before anything else can fail, or nothing that works is left on the device.
+      params.put("KoreaTeslaRefreshToken", refresh_token)
+    self.budget.spend()
+    self._apply(params, fetch_destination(self._access_token, vin, self._opener))
+
+  def _apply(self, params, destination: tuple[float, float, str] | None) -> None:
+    if destination is None:
+      # Guidance ended in the car. Clear only what this thread wrote: a destination from the
+      # UDP socket or athenad is not the car's to cancel.
+      if self._written is not None and _is_ours(params.get("NavDestination"), self._written):
+        params.remove("NavDestination")
+      self._written = None
+      return
+    lat, lon, name = destination
+    if self._written is not None and haversine(lat, lon, *self._written) <= SAME_DESTINATION_M:
+      # Also the case after RouteSource cleared it on arrival: writing it back would only
+      # have RouteSource clear it again, every minute, for as long as the car is parked there.
+      return
+    params.put("NavDestination", json.dumps({"latitude": lat, "longitude": lon,
+                                             "place_name": name or None, "place_details": None}))
+    self._written = (lat, lon)
