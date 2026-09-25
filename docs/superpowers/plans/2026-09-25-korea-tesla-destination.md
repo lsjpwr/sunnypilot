@@ -17,7 +17,7 @@
 - Python 들여쓰기 2칸, ruff line-length 160. 신규 파일은 sunnypilot MIT 헤더로 시작한다.
 - 새 파라미터는 `params_keys.h`에 등록하고 컨테이너에서 `scons -j8 openpilot/common`으로 재빌드해야 `Params().get()`이 동작한다.
 - 실제 `client_id`, `client_secret`, 토큰, VIN은 저장소·문서·로그·커밋 어디에도 넣지 않는다. 테스트는 `CLIENT`, `REFRESH-1`, `ACCESS-2`, `VIN123` 같은 눈에 띄는 가짜 값만 쓴다.
-- 비밀값은 HTTP 헤더와 POST 본문에만 싣고 URL에는 넣지 않는다. 로그에는 HTTP 상태코드나 예외 타입만 남긴다. 토큰, 응답 본문, 위치는 남기지 않는다.
+- 비밀값은 HTTP 헤더와 POST 본문에만 싣고 URL에는 넣지 않는다. 토큰, 응답 본문, 위치는 로그에 남기지 않는다. 테슬라 요청이 실패하면 HTTP 상태코드나 예외 타입만 남긴다(`_loop`의 최후 방어 `LOG.exception`은 `RouteSource._loop`과 같은 패턴이고, 요청 데이터를 담지 않는다).
 - 테슬라 엔드포인트(한국이 속한 지역): API `https://fleet-api.prd.na.vn.cloud.tesla.com`, 토큰 `https://fleet-auth.prd.vn.cloud.tesla.com/oauth2/v3/token`, 로그인 `https://auth.tesla.com/oauth2/v3/authorize`.
 - 권한: `openid offline_access vehicle_device_data vehicle_location`. 명령 권한은 요청하지 않는다.
 - 값: `POLL_INTERVAL_S = 60.`, `RATE_LIMIT_PAUSE_S = 300.`, `DAILY_REQUEST_CAP = 300`, `SAME_DESTINATION_M = 50.`, `MAX_PLACE_NAME = 64`.
