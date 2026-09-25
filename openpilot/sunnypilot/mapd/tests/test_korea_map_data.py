@@ -787,15 +787,23 @@ class TestCameraTarget(unittest.TestCase):
 
 class TestSideRoadCamera(unittest.TestCase):
   """The sign keeps the wide cone; the slowdown only takes cameras inside the corridor. A
-  30 km/h school-zone camera on a side street must not brake a car on the expressway."""
+  30 km/h school-zone camera on a side street must not brake a car on the expressway. On a
+  route, the route's own corridor takes the heading line's place -- only while the car is on it."""
 
-  def publish_with(self, cameras):
+  # Straight east for ~265 m, then bending north-east. The last-but-one vertex is ~100 m
+  # north of the car's heading line: far outside CAMERA_CORRIDOR_M, but on the road.
+  BEND = [(37.5000, 127.0200), (37.5000, 127.0230), (37.5003, 127.0245), (37.5009, 127.0260),
+          (37.5018, 127.0270)]
+
+  def publish_with(self, cameras, route=None):
     tmp = pathlib.Path(self.enterContext(tempfile.TemporaryDirectory()))
     cams, links = str(tmp / "korea_cameras.sqlite"), str(tmp / "korea_links.sqlite")
     write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, cameras))
     write_db(links, SCHEMA_LINKS,
              lambda con: insert_links(con, [(80, "올림픽대로", [(37.5000, 127.0200), (37.5000, 127.0320)])]))
     data = make_data()
+    if route is not None:
+      data.route_source = SimpleNamespace(latest=lambda: route, set_position=lambda lat, lon: None)
     data.db = KoreaMapDB(cams, links)
     self.addCleanup(data.db.close)
     data.sm = SingleLocationSM(valid_llk(37.5000, 127.0200, heading_deg=90.))
@@ -813,3 +821,21 @@ class TestSideRoadCamera(unittest.TestCase):
     data = self.publish_with([(37.5000, 127.0228, 30, 0, CAMERA_ZONE)])  # ~250 m straight ahead
     points = json.loads(data.mem_params.values["MapTargetVelocities"])
     self.assertEqual([p["velocity"] for p in points], [30 * CV.KPH_TO_MS])
+
+  def test_on_the_route_a_camera_round_the_bend_brakes(self):
+    data = self.publish_with([(37.5009, 127.0260, 30, 0, CAMERA_ZONE)], route=self.BEND)
+    points = json.loads(data.mem_params.values["MapTargetVelocities"])
+    self.assertEqual([p["velocity"] for p in points], [30 * CV.KPH_TO_MS])
+
+  def test_on_the_route_a_side_street_camera_still_does_not_brake(self):
+    straight = [(37.5000, 127.0200), (37.5000, 127.0320)]
+    data = self.publish_with([(37.5009, 127.0228, 30, 0, CAMERA_ZONE)], route=straight)
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+
+  def test_off_the_route_a_camera_on_the_road_we_left_does_not_brake(self):
+    """RouteSource keeps the old polyline until a reroute succeeds, which with no signal is
+    minutes. Here the car has left it for a road ~100 m south: the old road's camera is on
+    that route but not on ours."""
+    left_behind = [(37.5009, 127.0200), (37.5009, 127.0320)]
+    data = self.publish_with([(37.5009, 127.0228, 30, 0, CAMERA_ZONE)], route=left_behind)
+    self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])

@@ -70,7 +70,9 @@ CAMERA_AHEAD_TOLERANCE = 60.
 # nothing -- but braking for a camera on a parallel road or the opposite carriageway is a
 # phantom brake on the road the car is actually on. 30 m like ROUTE_CORRIDOR_M: wider than
 # the localizer's lateral error in an urban canyon, narrower than the gap to a typical
-# parallel road. The cost is cameras on curves, where the road bends away from the line.
+# parallel road. The cost is cameras on curves, where the road bends away from the line --
+# which is why korea_map_data drops it while the car is on a route: ROUTE_CORRIDOR_M bends
+# with the road.
 CAMERA_CORRIDOR_M = 30.
 
 # ~660 m box, then filtered down to BUMP_MAX_DISTANCE_M. Much tighter than the camera
@@ -397,8 +399,8 @@ class KoreaMapDB:
     which is how a driver turns camera slowdown off.
 
     corridor_m, when given, also rejects a camera farther than that from the heading line
-    (see _on_path). korea_map_data passes CAMERA_CORRIDOR_M for the camera it brakes for and
-    nothing for the speed limit ahead sign.
+    (see _on_path). korea_map_data passes CAMERA_CORRIDOR_M for the camera it brakes for when
+    the car is not on a route, and nothing for the speed limit ahead sign.
     """
     if heading_deg is None:
       return None

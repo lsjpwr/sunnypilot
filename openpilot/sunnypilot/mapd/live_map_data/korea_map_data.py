@@ -12,7 +12,8 @@ Current speed limits come from ITS 표준노드링크 MAX_SPD. The "next" speed 
 speed camera ahead, and on liveMapDataSP it only feeds the speed-limit-ahead sign:
 SpeedLimitResolver ignores speedLimitAhead in Korea mode. The slowdown goes to
 SmartCruiseControlMap instead, as one more MapTargetVelocities point beside the bumps and
-the curves (publish_targets) -- and only for a camera within CAMERA_CORRIDOR_M of the
+the curves (publish_targets) -- and only for a camera on the car's road: within
+ROUTE_CORRIDOR_M of the route while the car is on one, else within CAMERA_CORRIDOR_M of the
 heading line; the sign keeps the wider cone. SpeedLimitAssist would hold it behind a
 confirmation prompt under 80 km/h and add the speed limit offset on top.
 """
@@ -28,9 +29,9 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
-                                                 Bump, Camera, KoreaMapDB, Link, mtime_or_none)
+                                                 ROUTE_CORRIDOR_M, Bump, Camera, KoreaMapDB, Link, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
-from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets
+from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
@@ -75,8 +76,9 @@ class KoreaMapData(BaseMapData):
     self.curve_points: list[tuple[float, float, float]] = []
     self.link: Link | None = None
     self.camera: Camera | None = None
-    # The camera SCC-Map slows for: the nearest one inside CAMERA_CORRIDOR_M. self.camera is
-    # the nearest in the wider cone and only feeds the speed limit ahead sign.
+    # The camera SCC-Map slows for: self.camera while the car is on the route, else the
+    # nearest one inside CAMERA_CORRIDOR_M (update_location). Off a route, self.camera is the
+    # nearest in the wider cone and only feeds the speed limit ahead sign.
     self.slowdown_camera: Camera | None = None
     # ((camera lat, camera lon, margin), (point lat, point lon)) -- see camera_point
     self._camera_anchor: tuple[tuple[float, float, int], tuple[float, float]] | None = None
@@ -224,10 +226,17 @@ class KoreaMapData(BaseMapData):
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing)
       self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds)
-      # Twice on purpose: the sign keeps the wide cone, but only a camera inside the corridor
-      # may brake the car (CAMERA_CORRIDOR_M).
-      self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
-                                                 kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M)
+      # The sign keeps the wide cone, but only a camera on our road may brake the car. While
+      # the car is on the route, next_camera has already held the sign's camera to
+      # ROUTE_CORRIDOR_M of the polyline, which bends with the road -- the heading line would
+      # only drop the cameras round a bend. Off it, or with no route (distance_to_route is
+      # inf), the heading line decides: RouteSource keeps a polyline the car has left until a
+      # reroute succeeds, and that road's cameras are not on ours.
+      if distance_to_route(self.route, lat, lon) <= ROUTE_CORRIDOR_M:
+        self.slowdown_camera = self.camera
+      else:
+        self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
+                                                   kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M)
       self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
     except Exception:
       # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
