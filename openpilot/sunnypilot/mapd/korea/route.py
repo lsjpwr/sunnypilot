@@ -369,7 +369,7 @@ class RouteSource:
       return self.state.route
 
   def _destination(self, params) -> tuple[float, float] | None:
-    """The destination athenad's setNavDestination RPC and the UDP socket both write."""
+    """The destination athenad's setNavDestination RPC, the UDP socket and korea/tesla.py write."""
     raw = params.get("NavDestination")
     if not raw:
       return None

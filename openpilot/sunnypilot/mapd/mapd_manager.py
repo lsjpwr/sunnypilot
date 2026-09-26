@@ -24,6 +24,7 @@ from openpilot.sunnypilot.mapd.korea.camera_refresh import CameraRefresher
 from openpilot.sunnypilot.mapd.korea.map_download import MapDownloader
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNavSource
 from openpilot.sunnypilot.mapd.korea.route import RouteSource
+from openpilot.sunnypilot.mapd.korea.tesla import TeslaDestinationSource
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KOREA_CAMERAS_PATH, KOREA_LINKS_PATH,
                                                                     KOREA_MAP_DIR, KoreaMapData)
 from openpilot.sunnypilot.mapd.live_map_data.osm_map_data import OsmMapData
@@ -193,6 +194,7 @@ def korea_main() -> None:
   downloader = None
   live_map_sp = None
   route_source = None
+  tesla_source = None
 
   try:
     if external_nav:
@@ -214,6 +216,10 @@ def korea_main() -> None:
     if external_nav:
       route_source = RouteSource()
       route_source.start()
+      # It feeds the route thread above, so it follows the same toggle. Until tesla_setup has
+      # written its credentials it asks Tesla nothing.
+      tesla_source = TeslaDestinationSource()
+      tesla_source.start()
 
     live_map_sp = KoreaMapData(external=external, route_source=route_source)
 
@@ -257,6 +263,8 @@ def korea_main() -> None:
       external.stop()
     if route_source is not None:
       route_source.stop()
+    if tesla_source is not None:
+      tesla_source.stop()
     if refresher is not None:
       refresher.stop()
     if downloader is not None:

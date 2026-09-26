@@ -254,9 +254,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Mapd_ClearCache", {CLEAR_ON_MANAGER_START, BOOL}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
-    // Written by athenad's setNavDestination RPC and by the Korean external nav socket;
-    // read by mapd. Cleared on manager start and when the drive ends, so a destination
-    // never carries into a later drive.
+    // Written by athenad's setNavDestination RPC, the Korean external nav socket and the
+    // Tesla destination thread (korea/tesla.py); read by mapd. Cleared on manager start and
+    // when the drive ends, so a destination never carries into a later drive.
     {"NavDestination", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
@@ -287,7 +287,14 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"KoreaSpeedBumpArchSpeed", {PERSISTENT | BACKUP, INT, "25"}},        // km/h, 원호형
     {"KoreaSpeedBumpEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"KoreaSpeedBumpTrapezoidSpeed", {PERSISTENT | BACKUP, INT, "35"}},   // km/h, 사다리꼴형
+    // Written by tesla_setup from the PC, read by korea/tesla.py. Not BACKUP: the refresh
+    // token changes on every use, so a restored copy is dead, and a backup only ships a
+    // credential off the device.
+    {"KoreaTeslaClientId", {PERSISTENT, STRING, ""}},
+    {"KoreaTeslaRefreshToken", {PERSISTENT, STRING, ""}},
+    {"KoreaTeslaVin", {PERSISTENT, STRING, ""}},
     {"Offroad_KoreaMapMissing", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_KoreaTeslaAuth", {CLEAR_ON_MANAGER_START, JSON}},
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // Speed Limit

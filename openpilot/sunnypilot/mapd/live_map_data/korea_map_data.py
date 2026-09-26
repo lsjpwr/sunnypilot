@@ -156,9 +156,9 @@ class KoreaMapData(BaseMapData):
     """Copy a destination from the socket into the param the route thread reads.
 
     The socket's TTL is 5 s (external_source.py:35, checked at :124) and a destination is
-    sent once, so it cannot live there. The param is the one place both writers -- this
-    socket and athenad's setNavDestination RPC -- agree on, which is why the JSON shape is
-    athenad's.
+    sent once, so it cannot live there. The param is the one place every writer -- this
+    socket, athenad's setNavDestination RPC and korea/tesla.py -- agrees on, which is why the
+    JSON shape is athenad's.
 
     Written when it changes (or when the param has been cleared out from under this object --
     see _last_written_destination above), and removed only on an explicit end-of-guidance

@@ -41,6 +41,10 @@
     "text": "Korean map database not found. Speed limit assist and road name display are unavailable until it is copied to the device.\n\n%1",
     "severity": 0
   },
+  "Offroad_KoreaTeslaAuth": {
+    "text": "Tesla connection lost. Destinations set in the car's navigation are not received until tesla_setup is run again.",
+    "severity": 0
+  },
   "Offroad_DriverMonitoringUncertain": {
     "text": "Poor visibility detected for driver monitoring. Ensure the device has a clear view of the driver. This can be checked in the device settings. Extreme lighting conditions and/or unconventional mounting positions may also trigger this alert.",
     "severity": 0

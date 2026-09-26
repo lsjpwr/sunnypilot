@@ -193,6 +193,7 @@ class MapdSourceTestCase(unittest.TestCase):
       "get_files_for_cleanup": list,  # nothing to clean up, so no OSM update alert
       "ExternalNavSource": _record(built, "external", FakeExternal),
       "RouteSource": _record(built, "route_source", FakeRouteSource),
+      "TeslaDestinationSource": _record(built, "tesla_source", FakeRouteSource),  # same start/stop shape
       "CameraRefresher": _record(built, "refresher", FakeRefresher),
       "KoreaMapData": _record(built, "map_data", FakeMapData),
       "OsmMapData": _record(built, "map_data", FakeMapData),
@@ -276,6 +277,19 @@ class TestSourceLoops(MapdSourceTestCase):
     self.assertTrue(built["refresher"].stopped,
                     "the camera refresh thread outlives the source that started it")
     self.assertTrue(built["map_data"].closed, "the sqlite handles stay open")
+
+  def test_the_korea_loop_polls_the_car_only_with_external_nav(self):
+    """The Tesla thread feeds the route thread, so it follows the same toggle -- and is
+    released with everything else when the loop ends, or it keeps polling (and billing)
+    for a source that is gone."""
+    params = FakeParams(MapSource.korea, KoreaExternalNavEnabled=True)
+    built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))
+    self.assertTrue(built["tesla_source"].started)
+    self.assertTrue(built["tesla_source"].stopped, "the Tesla thread outlives the source that started it")
+
+    params = FakeParams(MapSource.korea)
+    built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))
+    self.assertNotIn("tesla_source", built)
 
   def test_the_korea_loop_returns_when_external_nav_is_toggled(self):
     """The UDP socket binds once at startup, so this toggle only takes effect by ending the
