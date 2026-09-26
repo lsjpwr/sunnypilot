@@ -240,7 +240,7 @@ class TeslaDestinationSource:
   def _loop(self) -> None:
     # imported here so the module stays importable without the device stack, which is what
     # lets the tests run under a bare interpreter -- same as RouteSource._loop
-    import cereal.messaging as messaging
+    from openpilot.cereal import messaging
     from openpilot.common.params import Params
     from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert
 

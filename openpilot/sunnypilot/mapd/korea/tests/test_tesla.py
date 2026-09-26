@@ -380,8 +380,8 @@ class TestAuth(SourceTestCase):
 
 class TestLoop(unittest.TestCase):
   def run_loop(self, step, started=True, recv_frame=1, alerts=None):
-    """_loop for one iteration, with the device stack faked through sys.modules -- the
-    technique test_camera_refresh.TestRefresherLoop uses for CameraRefresher._loop."""
+    """_loop for one iteration, with the device stack faked through sys.modules under the
+    fork's openpilot.cereal path -- the technique test_camera_refresh.TestRefresherLoop uses for CameraRefresher._loop."""
     class FakeSubMaster:
       def __init__(self, services):
         self.recv_frame = {'deviceState': recv_frame}
@@ -393,15 +393,17 @@ class TestLoop(unittest.TestCase):
         return types.SimpleNamespace(started=started)
 
     sink = [] if alerts is None else alerts
-    messaging = types.ModuleType("cereal.messaging")
+    messaging = types.ModuleType("openpilot.cereal.messaging")
     messaging.SubMaster = FakeSubMaster
+    cereal = types.ModuleType("openpilot.cereal")
+    cereal.messaging = messaging
     params_mod = types.ModuleType("openpilot.common.params")
     params_mod.Params = FakeParams
     alertmanager = types.ModuleType("openpilot.selfdrive.selfdrived.alertmanager")
     alertmanager.set_offroad_alert = lambda *a: sink.append(a)
     self.enterContext(mock.patch.dict(sys.modules, {
-      "cereal": types.ModuleType("cereal"),
-      "cereal.messaging": messaging,
+      "openpilot.cereal": cereal,
+      "openpilot.cereal.messaging": messaging,
       "openpilot.common.params": params_mod,
       "openpilot.selfdrive.selfdrived.alertmanager": alertmanager,
     }))
