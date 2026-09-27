@@ -58,7 +58,7 @@ owner:
 ### 2. owner 요청
 
 - 갱신: `POST https://auth.tesla.com/oauth2/v3/token`, `Content-Type: application/json`, 본문 `{"grant_type": "refresh_token", "client_id": "ownerapi", "refresh_token": ..., "scope": "openid email offline_access"}`. NaviToTesla가 2026-09에 쓰는 형식 그대로다. 400·401은 `AuthRejected`다.
-- owner 요청은 전부 `minimum_version = TLSv1_3`인 SSL 컨텍스트로 보낸다. 갱신 요청이 TLS 1.2로 가면 owner API가 거부하는 토큰이 나온다.
+- 갱신 요청은 `minimum_version = TLSv1_3`인 SSL 컨텍스트로 보낸다. 갱신 요청이 TLS 1.2로 가면 owner API가 거부하는 토큰이 나온다. 토큰 종류는 갱신 때 정해지므로 `products`와 `vehicle_data`는 기본 컨텍스트를 쓴다. 강제해도 얻는 게 없고, 서버 쪽 TLS 변경에 실패할 경로만 는다(2026-09-27 계획 작성 중 좁힘).
 - 차량 id: 새 접근 토큰마다 `GET /api/1/products`를 한 번 부른다. `vin`이 `KoreaTeslaVin`과 같은 항목의 `id`를 쓴다. `id`는 정수여야 하고, 경로에 넣을 때 `quote`한다(응답은 untrusted). 그 VIN이 없으면 오래가는 실패다.
 - 목적지: `GET /api/1/vehicles/{id}/vehicle_data?endpoints=drive_state;location_data`, `Authorization: Bearer`. 응답 해석은 `parse_destination` 그대로다.
 - 하루 상한(`DAILY_REQUEST_CAP` = 300)은 `vehicle_data`에만 적용한다. owner API는 요금이 없지만 상한은 폭주 방지로 남긴다. `products`는 접근 토큰마다(약 8시간) 한 번이라 세지 않는다.
