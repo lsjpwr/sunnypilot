@@ -66,14 +66,15 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 
 스크립트는 토큰을 화면에 출력하지 않고, PC에 저장하지도 않는다.
 
-## owner 모드 (PC 없이, 비공식)
+## owner 모드 (개발자 등록 없이, 비공식)
 
-1~4단계 대신 폰만으로 쓰는 방법이다. 위 표의 권한·수명 차이를 알고 쓴다. 기기 SSH 접속(Termius), `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey`, 이 기능이 들어간 빌드는 Fleet과 똑같이 필요하다.
+Fleet 설정 1~4단계 대신 쓰는 방법이다. 기기 설정은 폰 Termius로 끝나지만, 토큰 발급 도구에 따라 PC가 한 번 필요할 수 있다(예: tesla_auth는 PC 프로그램이다). 위 표의 권한·수명 차이를 알고 쓴다. 기기 SSH 접속(Termius), `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey`, owner 토큰을 아는 빌드(커밋 `298cfc95d` 이후)가 필요하다. 그 전 빌드는 시작할 때 owner 토큰 파일을 지운다.
 
 **주의**
 - **NaviToTesla에 넣은 토큰을 복사하지 않는다.** 갱신 토큰은 한 번 쓰면 무효가 되어, 기기와 NaviToTesla가 서로를 끊는다. 기기용은 새로 로그인해 따로 받는다.
 - 2026-04에 테슬라가 로그인 방식을 바꿔 예전 토큰 발급 도구 대부분이 `redirect_uri` 오류로 막혔다. 그 뒤에 갱신된 도구(예: tesla_auth 포크)를 쓴다.
 - 이 토큰은 계정 전체 권한이다. 채팅·메모·스크린샷에 남기지 않는다.
+- 토큰을 붙여넣은 뒤에는 폰 클립보드 기록에서 지운다.
 
 1. 토큰 발급 도구로 테슬라에 새로 로그인해 **Refresh Token**을 받고 폰에 복사해 둔다.
 2. Termius로 기기에 접속해 토큰을 넣는다. 붙여넣은 입력이 화면에 안 보이는 게 정상이다:
@@ -91,9 +92,9 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 
 두 명령은 Termius **Snippets**에 저장해 두면 탭 한 번으로 실행된다. 명령 안에 토큰이 없어서 저장해도 안전하다.
 
-**나중에 Fleet으로 옮기기:** 1~4단계를 하면 기기가 다음 조회부터 Fleet을 쓴다. 그다음 owner 토큰을 지운다:
+**나중에 Fleet으로 옮기기:** Fleet 설정 1~4단계를 하면 기기가 다음 조회부터 Fleet을 쓴다. 그다음 기기 셸(Termius)에서 owner 토큰을 지운다:
 ```bash
-ssh comma@<기기IP> rm /data/params/d/KoreaTeslaOwnerRefreshToken
+rm /data/params/d/KoreaTeslaOwnerRefreshToken
 ```
 
 ## 확인 (다음 주행)
@@ -104,7 +105,7 @@ ssh comma@<기기IP> rm /data/params/d/KoreaTeslaOwnerRefreshToken
    ssh comma@<기기IP> cat /data/params/d/NavDestination
    ```
 3. 테슬라에서 안내를 취소하면 1분 안에 비워진다.
-4. 첫 주행이 끝나면 토큰이 새것으로 바뀌었는지 본다. 설정한 시각보다 늦은 시각이 나오면 토큰 교체가 정상이다:
+4. 첫 주행이 끝나면 토큰이 새것으로 바뀌었는지 본다. 설정한 시각보다 늦은 시각이 나오면 토큰 교체가 정상이다(owner 모드면 파일 이름이 `KoreaTeslaOwnerRefreshToken`이다):
    ```bash
    ssh comma@<기기IP> stat -c %y /data/params/d/KoreaTeslaRefreshToken
    ```
@@ -118,9 +119,9 @@ ssh comma@<기기IP> rm /data/params/d/KoreaTeslaOwnerRefreshToken
 | 스크립트가 `WARNING: Tesla answered without the car's location` | 동의 화면에서 위치 권한이 빠졌다 | 4단계를 다시 실행하고 위치를 허용 |
 | 스크립트가 `Tesla answered HTTP 4xx`로 멈춤 | 2단계 공개키가 안 보이거나, 도메인이 앱 설정과 다르다 | 2단계 4번의 주소가 열리는지 본다 |
 | 목적지가 안 들어오고 알림도 없음 | `KoreaExternalNavEnabled`가 꺼졌거나 `KoreaRouteApiKey`가 없다 | 설정에서 켜고 키를 넣는다 |
-| 설정을 마쳤는데 목적지가 안 들어오고 알림도 없음 | 기기가 이전 빌드여서 토큰 파일을 지웠다 | `ssh comma@<기기IP> ls /data/params/d/KoreaTesla*`에 파일 3개가 보여야 한다. 없으면 기기를 업데이트하고 4단계를 다시 실행 |
+| 설정을 마쳤는데 목적지가 안 들어오고 알림도 없음 | 기기가 이전 빌드여서 토큰 파일을 지웠다 | `ssh comma@<기기IP> ls -l /data/params/d/KoreaTesla*`에서 넣은 파일의 크기가 0이 아니어야 한다(기기는 등록된 키마다 빈 파일을 만든다). 0이면 기기를 업데이트하고 4단계(owner 모드면 owner 모드 2~3번)를 다시 한다 |
 | 설정 후 3개월이 안 됐는데 "Tesla connection lost" | 테슬라가 다른 이유로 앱을 계속 거부한다(결제, 계정에서 차량 삭제, 앱 등록) | developer.tesla.com에서 앱과 결제 상태를 확인하고 4단계를 다시 실행 |
-| owner 모드에서 "Tesla connection lost" | 토큰이 이미 쓰였거나(NaviToTesla와 같은 토큰) 폐기됐다. 또는 VIN이 그 계정에 없다 | VIN을 확인하고, 토큰을 새로 발급해 owner 모드 2번을 다시 한다 |
+| owner 모드에서 "Tesla connection lost" | 토큰이 이미 쓰였거나(NaviToTesla와 같은 토큰) 폐기됐다. 또는 VIN이 그 계정에 없다 | VIN이 틀렸으면 owner 모드 3번으로 VIN만 다시 넣는다(재시작 없이 다음 조회에서 다시 시도한다). VIN이 맞으면 토큰을 새로 발급해 owner 모드 2번을 다시 한다 |
 | owner 모드에서 새 토큰을 넣어도 곧바로 다시 알림 | 이 계정에서 owner API가 막혔다(403) | Fleet 설정(1~4단계)으로 옮긴다 |
 
 ## 비용
@@ -137,11 +138,11 @@ ssh comma@<기기IP> rm /data/params/d/KoreaTeslaOwnerRefreshToken
 ## 끄기
 
 - 잠시 끄기: 설정에서 `KoreaExternalNavEnabled`를 끈다. 경로 기능 전체가 함께 꺼진다.
-- 완전히 끄기: 기기의 토큰을 지우고, 테슬라 계정 설정의 서드파티 앱 관리에서 이 앱의 접근도 끊는다.
+- 완전히 끄기: 기기의 두 토큰을 모두 지우고, 테슬라 계정 설정의 서드파티 앱 관리에서 이 앱의 접근도 끊는다. owner 토큰이 남아 있으면 Fleet 토큰을 지운 뒤에도 owner 모드로 계속 읽는다.
   ```bash
-  ssh comma@<기기IP> rm /data/params/d/KoreaTeslaRefreshToken
+  ssh comma@<기기IP> rm -f /data/params/d/KoreaTeslaRefreshToken /data/params/d/KoreaTeslaOwnerRefreshToken
   ```
-- owner 모드 끄기: 기기의 owner 토큰을 지운다. 테슬라 쪽 토큰까지 끊으려면 계정 비밀번호를 바꾸는데, 그러면 NaviToTesla 같은 다른 앱도 다시 로그인해야 한다.
+- owner 모드 끄기: 기기의 owner 토큰을 지운다(Termius로 접속한 기기 셸에서). 테슬라 쪽 토큰까지 끊으려면 계정 비밀번호를 바꾸는데, 그러면 NaviToTesla 같은 다른 앱도 다시 로그인해야 한다.
   ```bash
-  ssh comma@<기기IP> rm /data/params/d/KoreaTeslaOwnerRefreshToken
+  rm /data/params/d/KoreaTeslaOwnerRefreshToken
   ```
