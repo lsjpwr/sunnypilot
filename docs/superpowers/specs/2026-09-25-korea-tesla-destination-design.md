@@ -112,10 +112,12 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 
 | 키 | 플래그 | 이유 |
 |---|---|---|
-| `KoreaTeslaClientId` | `PERSISTENT, STRING, ""` | |
-| `KoreaTeslaRefreshToken` | `PERSISTENT, STRING, ""` | `BACKUP` 제외. 토큰이 쓸 때마다 바뀌어 백업본은 복원해도 무효이고, 인증값을 클라우드로 내보내기만 한다 |
-| `KoreaTeslaVin` | `PERSISTENT, STRING, ""` | 셋은 함께 쓰일 때만 의미가 있으므로 셋 다 `BACKUP` 제외 |
+| `KoreaTeslaClientId` | `PERSISTENT, DONT_LOG, STRING, ""` | |
+| `KoreaTeslaRefreshToken` | `PERSISTENT, DONT_LOG, STRING, ""` | `BACKUP` 제외. 토큰이 쓸 때마다 바뀌어 백업본은 복원해도 무효이고, 인증값을 클라우드로 내보내기만 한다 |
+| `KoreaTeslaVin` | `PERSISTENT, DONT_LOG, STRING, ""` | 셋은 함께 쓰일 때만 의미가 있으므로 셋 다 `BACKUP` 제외 |
 | `Offroad_KoreaTeslaAuth` | `CLEAR_ON_MANAGER_START, JSON` | 연결 끊김 알림. `Offroad_KoreaMapMissing`(`params_keys.h:290`)과 같은 모양 |
+
+셋 다 `DONT_LOG`다. loggerd는 `DONT_LOG`가 없는 파라미터 값을 모두 `initData`(모든 부트 로그와 qlog의 첫 기록)에 싣고, 그 로그는 업로드된다. 같은 이유로 `KoreaMapApiKey`·`KoreaRouteApiKey`도 `DONT_LOG`다(2026-09-28 owner 모드 최종 검토).
 
 sunnylink의 `getParams`는 등록된 키라면 값을 원격으로 돌려준다. 갱신 토큰은 3개월 동안 차의 위치를 읽을 수 있으므로, `sunnylinkd.py`의 `REMOTE_READ_DENYLIST`로 `KoreaTeslaRefreshToken`만 보내지 않는다.
 

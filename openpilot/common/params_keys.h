@@ -281,9 +281,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"KoreaCameraSpeedEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},        // 과속
     {"KoreaCameraZoneEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},         // 노인·어린이 보호구역
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},
-    {"KoreaMapApiKey", {PERSISTENT | BACKUP, STRING, ""}},
+    {"KoreaMapApiKey", {PERSISTENT | BACKUP | DONT_LOG, STRING, ""}},   // DONT_LOG: 업로드되는 로그(initData)에 키를 싣지 않는다
     {"KoreaMapAutoDownload", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"KoreaRouteApiKey", {PERSISTENT | BACKUP, STRING, ""}},
+    {"KoreaRouteApiKey", {PERSISTENT | BACKUP | DONT_LOG, STRING, ""}}, // DONT_LOG: 업로드되는 로그(initData)에 키를 싣지 않는다
     {"KoreaSpeedBumpArchSpeed", {PERSISTENT | BACKUP, INT, "25"}},        // km/h, 원호형
     {"KoreaSpeedBumpEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"KoreaSpeedBumpTrapezoidSpeed", {PERSISTENT | BACKUP, INT, "35"}},   // km/h, 사다리꼴형
@@ -291,11 +291,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // by korea/tesla.py. Not BACKUP: a refresh token changes on every use, so a restored copy
     // is dead, and a backup only ships a credential off the device. For the same reason
     // sunnylink's getParams refuses to send either refresh token (REMOTE_READ_DENYLIST in
-    // sunnylinkd.py).
-    {"KoreaTeslaClientId", {PERSISTENT, STRING, ""}},
-    {"KoreaTeslaOwnerRefreshToken", {PERSISTENT, STRING, ""}},
-    {"KoreaTeslaRefreshToken", {PERSISTENT, STRING, ""}},
-    {"KoreaTeslaVin", {PERSISTENT, STRING, ""}},
+    // sunnylinkd.py). DONT_LOG on all four: loggerd copies every other param's value into
+    // initData, the first record of every boot log and qlog, and both are uploaded.
+    {"KoreaTeslaClientId", {PERSISTENT | DONT_LOG, STRING, ""}},
+    {"KoreaTeslaOwnerRefreshToken", {PERSISTENT | DONT_LOG, STRING, ""}},
+    {"KoreaTeslaRefreshToken", {PERSISTENT | DONT_LOG, STRING, ""}},
+    {"KoreaTeslaVin", {PERSISTENT | DONT_LOG, STRING, ""}},
     {"Offroad_KoreaMapMissing", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_KoreaTeslaAuth", {CLEAR_ON_MANAGER_START, JSON}},
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},

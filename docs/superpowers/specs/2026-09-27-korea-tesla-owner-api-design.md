@@ -47,7 +47,7 @@ owner:
 
 | 키 | 플래그 | 이유 |
 |---|---|---|
-| `KoreaTeslaOwnerRefreshToken` | `PERSISTENT, STRING, ""` | 신규. `BACKUP` 제외, sunnylink `getParams` 차단(`REMOTE_READ_DENYLIST`). 계정 전체 권한 토큰이라 Fleet 토큰보다 더 조심한다 |
+| `KoreaTeslaOwnerRefreshToken` | `PERSISTENT, DONT_LOG, STRING, ""` | 신규. `DONT_LOG`(업로드되는 로그에 싣지 않음), `BACKUP` 제외, sunnylink `getParams` 차단(`REMOTE_READ_DENYLIST`). 계정 전체 권한 토큰이라 Fleet 토큰보다 더 조심한다 |
 | `KoreaTeslaVin` | 기존 | 두 모드가 같이 쓴다 |
 
 - 모드는 폴링 주기마다 다시 고른다. 운전자가 나중에 `tesla_setup`을 돌리면 재시작 없이 다음 주기부터 Fleet이 된다.
@@ -91,7 +91,7 @@ Tesla connection lost. Destinations set in the car's navigation are not received
 ## 신뢰 경계와 보안
 
 - owner 토큰은 테슬라 앱 로그인과 같은 계정 권한이다. 새면 위치 추적과, 차종에 따라 명령까지 가능하다. 기존 설계의 "읽기 전용이라 새도 차를 못 움직인다"는 owner 모드에서는 성립하지 않는다. 안내 문서 첫머리에 적는다.
-- 그래서 Fleet 토큰과 같은 규칙을 모두 지킨다: 로그·URL에 싣지 않는다, `BACKUP` 제외, sunnylink `getParams` 차단, 실패 로그는 HTTP 상태나 예외 타입만.
+- 그래서 Fleet 토큰과 같은 규칙을 모두 지킨다: 로그·URL에 싣지 않는다, `DONT_LOG`(loggerd의 `initData`에 싣지 않음), `BACKUP` 제외, sunnylink `getParams` 차단, 실패 로그는 HTTP 상태나 예외 타입만.
 - `products` 응답의 `id`와 `vehicle_data` 응답은 untrusted다. `id`는 정수만 받고 `quote`해서 경로에 넣는다.
 
 ---
