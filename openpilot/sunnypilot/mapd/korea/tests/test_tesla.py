@@ -77,6 +77,7 @@ class ScriptedOpener:
 
 CREDENTIALS = {"KoreaTeslaClientId": "CLIENT", "KoreaTeslaRefreshToken": "REFRESH-1", "KoreaTeslaVin": "VIN123",
                "KoreaRouteApiKey": "TMAP"}
+OWNER_CREDENTIALS = {"KoreaTeslaOwnerRefreshToken": "OWNER-1", "KoreaTeslaVin": "VIN123", "KoreaRouteApiKey": "TMAP"}
 
 
 class FakeParams:
@@ -246,8 +247,8 @@ class SourceTestCase(unittest.TestCase):
     self.params = FakeParams(events=self.events)
     self.alerts = []
 
-  def source(self, answers=(), token=TOKENS):
-    self.opener = ScriptedOpener(answers, token, self.events)
+  def source(self, answers=(), token=TOKENS, products=PRODUCTS):
+    self.opener = ScriptedOpener(answers, token, self.events, products)
     return TeslaDestinationSource(opener=self.opener, clock=self.clock)
 
   def tick(self, source, started=True, seconds=0.):
@@ -468,6 +469,95 @@ class TestAuth(SourceTestCase):
         self.tick(source, seconds=POLL_INTERVAL_S)
         self.assertEqual(self.opener.count("vehicle_data"), 1)
         self.assertIs(self.alerts[-1], True)
+
+
+class TestOwnerMode(SourceTestCase):
+  def setUp(self):
+    super().setUp()
+    self.params = FakeParams(OWNER_CREDENTIALS, self.events)
+
+  def test_an_owner_token_and_vin_read_the_car_through_the_owner_api(self):
+    source = self.source([car()], token=OWNER_TOKENS)
+    self.tick(source)
+    self.assertEqual([r.full_url for r in self.opener.requests],
+                     [OWNER_TOKEN_URL, OWNER_API_URL + "/api/1/products",
+                      f"{OWNER_API_URL}/api/1/vehicles/{OWNER_ID}/vehicle_data?endpoints=drive_state%3Blocation_data"])
+    self.assertEqual(self.nav()["place_name"], "강남역")
+
+  def test_the_new_owner_refresh_token_is_saved_before_anything_else_is_asked(self):
+    source = self.source([car()], token=OWNER_TOKENS)
+    self.tick(source)
+    self.assertEqual(self.params.values["KoreaTeslaOwnerRefreshToken"], "OWNER-2")
+    self.assertIn("KoreaTeslaOwnerRefreshToken", self.params.blocking)
+    self.assertLess(self.events.index("put KoreaTeslaOwnerRefreshToken"), self.events.index("products"))
+
+  def test_the_car_is_looked_up_once_per_access_token(self):
+    source = self.source([car(), car()], token=OWNER_TOKENS)
+    self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(self.opener.count("products"), 1)
+    self.assertEqual(self.opener.count("vehicle_data"), 2)
+
+  def test_no_vin_asks_nothing(self):
+    self.params.values.pop("KoreaTeslaVin")
+    source = self.source([car()], token=OWNER_TOKENS)
+    self.tick(source)
+    self.assertEqual(self.opener.requests, [])
+
+  def test_a_vin_not_on_the_account_raises_the_alert_and_stops_asking(self):
+    self.params.values["KoreaTeslaVin"] = "VIN999"
+    source = self.source([car()], token=OWNER_TOKENS)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertIs(self.alerts[-1], True)
+    self.assertEqual(self.opener.count("products"), 1)
+    self.assertEqual(self.opener.count("vehicle_data"), 0)
+
+  def test_fixing_only_the_vin_asks_again(self):
+    """Refused credentials are remembered as a whole, so a VIN fixed by hand over ssh is tried
+    on the next poll -- no restart, no new token."""
+    self.params.values["KoreaTeslaVin"] = "VIN999"
+    source = self.source([car()], token=OWNER_TOKENS)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.params.values["KoreaTeslaVin"] = "VIN123"
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertIsNotNone(self.nav())
+    self.assertIs(self.alerts[-1], False)
+
+  def test_owner_api_403_raises_the_alert(self):
+    """The account is off the owner API, or auth.tesla.com minted a Fleet token anyway."""
+    source = self.source([http_error(403), car()], token=OWNER_TOKENS)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertIs(self.alerts[-1], True)
+    self.assertEqual(self.opener.count("vehicle_data"), 1)
+
+
+class TestModeChoice(SourceTestCase):
+  def test_fleet_wins_when_both_are_set(self):
+    """Official, and its grant cannot command the car. Passes before Task 2 too: it pins the
+    order once the owner mode exists."""
+    self.params.values["KoreaTeslaOwnerRefreshToken"] = "OWNER-1"
+    source = self.source([car()])
+    self.tick(source)
+    self.assertEqual(self.opener.requests[0].full_url, TOKEN_URL)
+    self.assertTrue(self.opener.requests[-1].full_url.startswith(tesla.FLEET_API_URL))
+    self.assertEqual(self.params.values["KoreaTeslaOwnerRefreshToken"], "OWNER-1")
+
+  def test_setting_up_fleet_later_drops_the_owner_access_token(self):
+    """The two APIs do not take each other's tokens."""
+    self.params = FakeParams(OWNER_CREDENTIALS, self.events)
+    source = self.source([car(), car()], token=OWNER_TOKENS)
+    self.tick(source)
+    self.assertEqual(self.opener.count("products"), 1)
+    self.params.values.update({"KoreaTeslaClientId": "CLIENT", "KoreaTeslaRefreshToken": "REFRESH-1"})  # tesla_setup ran
+    self.opener.token = TOKENS
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(self.opener.requests[-2].full_url, TOKEN_URL)
+    self.assertEqual(self.opener.requests[-1].get_header("Authorization"), "Bearer ACCESS-2")
 
 
 class TestLoop(unittest.TestCase):

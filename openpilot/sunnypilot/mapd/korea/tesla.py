@@ -4,12 +4,17 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-tesla: reads the destination the car's own navigation is guiding to, through the Tesla
-Fleet API, and hands it to RouteSource through NavDestination.
+tesla: reads the destination the car's own navigation is guiding to, through Tesla's
+servers, and hands it to RouteSource through NavDestination.
 
 The driver already sends every destination to the car (NaviToTesla on the phone), so the
 car is the one place that always has it -- reading it back beats a patched phone app
-sending it a second time. The grant is read-only: nothing here can command the car.
+sending it a second time. Nothing here commands the car.
+
+Two ways in. The Fleet API is official and its grant is read-only; tesla_setup sets it up
+from a PC. The owner API is the Tesla app's own, unofficial one: an owner token put on the
+device by hand over ssh, no developer app, but the token is the whole account. Fleet wins
+when both are set.
 
 Deliberately free of openpilot imports at module level so it runs under a bare Python
 interpreter -- same rule as route.py. Only _loop imports the device stack.
@@ -58,6 +63,9 @@ DAILY_REQUEST_CAP = 300
 # Closer than this is the same destination. Rewriting one that only jittered would have
 # RouteSource drop its route and ask TMAP again (route.py:402).
 SAME_DESTINATION_M = 50.
+FLEET, OWNER = "fleet", "owner"
+# Where each mode keeps its single-use refresh token.
+REFRESH_TOKEN_KEYS = {FLEET: "KoreaTeslaRefreshToken", OWNER: "KoreaTeslaOwnerRefreshToken"}
 
 
 class AuthRejected(Exception):
@@ -188,10 +196,15 @@ class TeslaDestinationSource:
     self._clock = clock
     self.budget = RequestBudget(cap=DAILY_REQUEST_CAP)
     self._access_token: str | None = None
+    # Which API the access token belongs to. The two do not take each other's tokens.
+    self._mode: str | None = None
+    # (VIN, id) of the car the owner API answered for, looked up once per access token.
+    self._owner_vehicle: tuple[str, str] | None = None
     # What this thread last wrote, so the car repeating it is not another write.
     self._written: tuple[float, float] | None = None
-    # The refresh token Tesla refused. Polling waits for tesla_setup to write another one.
-    self._rejected: str | None = None
+    # The credentials Tesla refused: (mode, client id, refresh token, VIN). Polling waits for
+    # any of them to change -- tesla_setup writing new ones, or a VIN fixed by hand over ssh.
+    self._rejected: tuple | None = None
     self._next_poll = 0.
     self._was_started = False
     self._stop = threading.Event()
@@ -227,13 +240,23 @@ class TeslaDestinationSource:
       return
     self._next_poll = now + POLL_INTERVAL_S
 
-    client_id = params.get("KoreaTeslaClientId")
-    refresh_token = params.get("KoreaTeslaRefreshToken")
-    vin = params.get("KoreaTeslaVin")
     # Without the TMAP key a destination buys no route, only a bill.
-    if not (client_id and refresh_token and vin and params.get("KoreaRouteApiKey")):
+    if not params.get("KoreaRouteApiKey"):
       return
-    if refresh_token == self._rejected:
+    client_id, vin = params.get("KoreaTeslaClientId"), params.get("KoreaTeslaVin")
+    fleet_token, owner_token = params.get("KoreaTeslaRefreshToken"), params.get("KoreaTeslaOwnerRefreshToken")
+    # Fleet first when both are set: it is official, and its grant cannot command the car. The
+    # owner API is for owners without a Tesla developer app. No fallback either way.
+    if client_id and fleet_token and vin:
+      mode, refresh_token = FLEET, fleet_token
+    elif owner_token and vin:
+      mode, refresh_token = OWNER, owner_token
+    else:
+      return
+    if mode != self._mode:
+      self._mode, self._access_token = mode, None
+    credentials = (mode, client_id, refresh_token, vin)
+    if credentials == self._rejected:
       return
     if not self.budget.allow():
       LOG.warning("tesla: daily request cap reached")
@@ -242,18 +265,26 @@ class TeslaDestinationSource:
     fresh = self._access_token is None
     try:
       if fresh:
-        self._access_token, refresh_token = refresh_access_token(client_id, refresh_token, self._opener)
+        if mode == FLEET:
+          self._access_token, refresh_token = refresh_access_token(client_id, refresh_token, self._opener)
+        else:
+          self._access_token, refresh_token = owner_refresh_access_token(refresh_token, self._opener)
+        credentials = (mode, client_id, refresh_token, vin)
+        self._owner_vehicle = None
         # Single use: Tesla retired the old token the moment it answered. Save the new one
         # before anything else can fail, or nothing that works is left on the device. Params.put
         # only queues the write here unless block=True, and this is the one write that must be
         # on flash before the token is used.
-        params.put("KoreaTeslaRefreshToken", refresh_token, block=True)
+        params.put(REFRESH_TOKEN_KEYS[mode], refresh_token, block=True)
         set_alert(False)
-      self.budget.spend()
-      destination = fetch_destination(self._access_token, vin, self._opener)
+      destination = self._fetch(mode, vin)
     except AuthRejected:
-      LOG.warning("tesla: refresh token rejected, run tesla_setup again")
-      self._reject(refresh_token, set_alert)
+      LOG.warning("tesla: refresh token rejected, set up the Tesla login again")
+      self._reject(credentials, set_alert)
+      return
+    except VehicleNotFound:
+      LOG.warning("tesla: no car with KoreaTeslaVin on the owner account")
+      self._reject(credentials, set_alert)
       return
     except urllib.error.HTTPError as e:
       LOG.warning("tesla: request failed: HTTP %d", e.code)
@@ -267,9 +298,10 @@ class TeslaDestinationSource:
       elif 400 <= e.code < 500 and e.code != 408:
         # A token refused right after its refresh, a grant without vehicle_location, a VIN the
         # account no longer has, a missing partner registration, the wrong region, unpaid
-        # billing: none of it changes by asking again, and every ask is billed. 408 (the car is
-        # asleep) and 5xx stay "ask again next minute".
-        self._reject(refresh_token, set_alert)
+        # billing, an account the owner API no longer serves: none of it changes by asking
+        # again, and on Fleet every ask is billed. 408 (the car is asleep) and 5xx stay "ask
+        # again next minute".
+        self._reject(credentials, set_alert)
       return
     except Exception as e:
       # The network, a timeout, a body that is not JSON: all "ask again next minute". Only the
@@ -278,8 +310,16 @@ class TeslaDestinationSource:
       return
     self._apply(params, destination)
 
-  def _reject(self, refresh_token: str, set_alert) -> None:
-    self._rejected = refresh_token
+  def _fetch(self, mode: str, vin: str) -> tuple[float, float, str] | None:
+    if mode == OWNER and (self._owner_vehicle is None or self._owner_vehicle[0] != vin):
+      self._owner_vehicle = (vin, owner_vehicle_id(self._access_token, vin, self._opener))
+    self.budget.spend()
+    if mode == FLEET:
+      return fetch_destination(self._access_token, vin, self._opener)
+    return owner_fetch_destination(self._access_token, self._owner_vehicle[1], self._opener)
+
+  def _reject(self, credentials: tuple, set_alert) -> None:
+    self._rejected = credentials
     self._access_token = None
     set_alert(True)
 
