@@ -289,7 +289,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"KoreaSpeedBumpTrapezoidSpeed", {PERSISTENT | BACKUP, INT, "35"}},   // km/h, 사다리꼴형
     // Written by tesla_setup from the PC, read by korea/tesla.py. Not BACKUP: the refresh
     // token changes on every use, so a restored copy is dead, and a backup only ships a
-    // credential off the device.
+    // credential off the device. For the same reason sunnylink's getParams refuses to send
+    // the refresh token (REMOTE_READ_DENYLIST in sunnylinkd.py).
     {"KoreaTeslaClientId", {PERSISTENT, STRING, ""}},
     {"KoreaTeslaRefreshToken", {PERSISTENT, STRING, ""}},
     {"KoreaTeslaVin", {PERSISTENT, STRING, ""}},

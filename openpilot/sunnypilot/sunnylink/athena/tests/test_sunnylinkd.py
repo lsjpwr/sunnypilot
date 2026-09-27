@@ -4,8 +4,10 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import json
 from unittest.mock import MagicMock, patch
 
+from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.sunnylink.athena import sunnylinkd
 
@@ -157,3 +159,15 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
     })
 
     self.assertEqual(len(self.saved_params), 7)
+
+
+class TestGetParams(OpenpilotTestCase):
+  def test_the_tesla_refresh_token_never_leaves_the_device(self):
+    """It reads the car's location for three months (korea/tesla.py)."""
+    Params().put("KoreaTeslaRefreshToken", "REFRESH-1", block=True)
+    Params().put("KoreaRouteApiKey", "TMAP", block=True)
+
+    response = sunnylinkd.getParams(["KoreaTeslaRefreshToken", "KoreaRouteApiKey"])
+
+    self.assertNotIn("KoreaTeslaRefreshToken", response)
+    self.assertEqual([p["key"] for p in json.loads(response["params"])], ["KoreaRouteApiKey"])

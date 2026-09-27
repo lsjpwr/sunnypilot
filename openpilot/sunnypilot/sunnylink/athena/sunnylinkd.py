@@ -87,6 +87,12 @@ SENSITIVE_PARAMS = {
   "AccessToken",
 }
 
+# Parameters getParams never sends off the device, however it is asked. Keep them out of BACKUP
+# in params_keys.h too.
+REMOTE_READ_DENYLIST = {
+  "KoreaTeslaRefreshToken",  # reads the car's location for three months (korea/tesla.py)
+}
+
 
 
 def handle_long_poll(ws: WebSocket, exit_event: threading.Event | None) -> None:
@@ -238,7 +244,7 @@ def getParams(params_keys: list[str], compression: bool = False) -> str | dict[s
       ParamKeyType.BYTES.value: b"",
     }
 
-    param_keys_validated = [key for key in params_keys if key in available_keys]
+    param_keys_validated = [key for key in params_keys if key in available_keys and key not in REMOTE_READ_DENYLIST]
     params_dict: dict[str, list[dict[str, str | bool | int]]] = {"params": []}
     for key in param_keys_validated:
       value = get_param_as_byte(key)
