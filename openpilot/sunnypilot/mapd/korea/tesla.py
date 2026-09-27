@@ -16,6 +16,7 @@ interpreter -- same rule as route.py. Only _loop imports the device stack.
 """
 import json
 import logging
+import ssl
 import threading
 import time
 import urllib.error
@@ -36,6 +37,19 @@ HTTP_TIMEOUT_S = 10.
 VEHICLE_DATA_QUERY = urllib.parse.urlencode({"endpoints": "drive_state;location_data"})
 MAX_PLACE_NAME = 64  # same cut as external_source.MAX_ROAD_NAME
 
+# The owner API is the Tesla app's own, unofficial one -- NaviToTesla uses it. It needs no
+# developer app and bills nothing, but its token is the whole account, which is why Fleet
+# wins when both are set (TeslaDestinationSource.step).
+OWNER_API_URL = "https://owner-api.teslamotors.com"
+OWNER_TOKEN_URL = "https://auth.tesla.com/oauth2/v3/token"
+OWNER_CLIENT_ID = "ownerapi"
+OWNER_SCOPE = "openid email offline_access"
+# auth.tesla.com picks the kind of token by the TLS version of the refresh: below 1.3 it mints
+# a Fleet token, which owner-api refuses with 403 (snowake.dev, 2026-06). Only the refresh
+# needs it -- the token's kind is settled there -- so the API calls keep the default context.
+OWNER_TLS = ssl.create_default_context()
+OWNER_TLS.minimum_version = ssl.TLSVersion.TLSv1_3
+
 POLL_INTERVAL_S = 60.
 RATE_LIMIT_PAUSE_S = 300.
 # Five hours of driving at one request a minute. Tesla bills 500 data requests per $1 and
@@ -48,6 +62,10 @@ SAME_DESTINATION_M = 50.
 
 class AuthRejected(Exception):
   """Tesla refused the refresh token. Only tesla_setup can get a new one."""
+
+
+class VehicleNotFound(Exception):
+  """The owner account has no car with KoreaTeslaVin. Only fixing the VIN helps."""
 
 
 def parse_destination(payload) -> tuple[float, float, str] | None:
@@ -65,8 +83,8 @@ def parse_destination(payload) -> tuple[float, float, str] | None:
   return float(lat), float(lon), name[:MAX_PLACE_NAME] if isinstance(name, str) else ""
 
 
-def _read_json(request: urllib.request.Request, opener) -> dict:
-  with opener(request, timeout=HTTP_TIMEOUT_S) as response:
+def _read_json(request: urllib.request.Request, opener, context: ssl.SSLContext | None = None) -> dict:
+  with opener(request, timeout=HTTP_TIMEOUT_S, context=context) as response:
     payload = json.loads(response.read())
   if not isinstance(payload, dict):
     raise ValueError("answer is not a JSON object")
@@ -80,24 +98,23 @@ def token_request(fields: dict[str, str]) -> urllib.request.Request:
                                 headers={"Content-Type": "application/x-www-form-urlencoded"}, method="POST")
 
 
-def api_request(access_token: str, path: str) -> urllib.request.Request:
-  return urllib.request.Request(FLEET_API_URL + path, headers={"Authorization": f"Bearer {access_token}"})
+def api_request(access_token: str, path: str, base: str = FLEET_API_URL) -> urllib.request.Request:
+  return urllib.request.Request(base + path, headers={"Authorization": f"Bearer {access_token}"})
 
 
 def vehicle_data_request(access_token: str, vin: str) -> urllib.request.Request:
   return api_request(access_token, f"/api/1/vehicles/{urllib.parse.quote(vin, safe='')}/vehicle_data?{VEHICLE_DATA_QUERY}")
 
 
-def refresh_access_token(client_id: str, refresh_token: str, opener=urllib.request.urlopen) -> tuple[str, str]:
-  """(access token, the refresh token that replaces this one).
+def _refresh(request: urllib.request.Request, opener, context: ssl.SSLContext | None = None) -> tuple[str, str]:
+  """(access token, the refresh token that replaces the one in `request`).
 
   Tesla's refresh tokens are single use, so the caller must save the second value before
   anything else can fail. AuthRejected when Tesla refuses the token; any other failure is
   raised as it is -- a 5xx says nothing about the token.
   """
-  request = token_request({"grant_type": "refresh_token", "client_id": client_id, "refresh_token": refresh_token})
   try:
-    payload = _read_json(request, opener)
+    payload = _read_json(request, opener, context)
   except urllib.error.HTTPError as e:
     if e.code in (400, 401):
       raise AuthRejected(f"HTTP {e.code}") from None
@@ -108,10 +125,45 @@ def refresh_access_token(client_id: str, refresh_token: str, opener=urllib.reque
   return access, replacement
 
 
+def refresh_access_token(client_id: str, refresh_token: str, opener=urllib.request.urlopen) -> tuple[str, str]:
+  """Fleet: a refresh needs only the client id, never the secret."""
+  return _refresh(token_request({"grant_type": "refresh_token", "client_id": client_id, "refresh_token": refresh_token}), opener)
+
+
 def fetch_destination(access_token: str, vin: str, opener=urllib.request.urlopen) -> tuple[float, float, str] | None:
   """One billed vehicle_data request. An HTTPError is raised as it is: its status decides
   what the caller does next."""
   return parse_destination(_read_json(vehicle_data_request(access_token, vin), opener))
+
+
+def owner_token_request(refresh_token: str) -> urllib.request.Request:
+  """The refresh the way the Tesla app's own client makes it; NaviToTesla sends this same JSON
+  (2026-09). The token rides the body, never the URL -- same promise as token_request."""
+  body = {"grant_type": "refresh_token", "client_id": OWNER_CLIENT_ID, "refresh_token": refresh_token, "scope": OWNER_SCOPE}
+  return urllib.request.Request(OWNER_TOKEN_URL, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"},
+                                method="POST")
+
+
+def owner_refresh_access_token(refresh_token: str, opener=urllib.request.urlopen) -> tuple[str, str]:
+  """refresh_access_token for an owner token, over TLS 1.3. Single use as well."""
+  return _refresh(owner_token_request(refresh_token), opener, OWNER_TLS)
+
+
+def owner_vehicle_id(access_token: str, vin: str, opener=urllib.request.urlopen) -> str:
+  """The owner API addresses a car by its id in /api/1/products, not by VIN -- NaviToTesla
+  does the same. The answer is untrusted and the id goes into a path, so only an int is
+  taken (bool, an int subclass, is not)."""
+  products = _read_json(api_request(access_token, "/api/1/products", OWNER_API_URL), opener).get("response")
+  for product in products if isinstance(products, list) else []:
+    if isinstance(product, dict) and product.get("vin") == vin and type(product.get("id")) is int:
+      return str(product["id"])
+  raise VehicleNotFound("no car with this VIN on the account")
+
+
+def owner_fetch_destination(access_token: str, vehicle_id: str, opener=urllib.request.urlopen) -> tuple[float, float, str] | None:
+  """fetch_destination through the owner API."""
+  path = f"/api/1/vehicles/{urllib.parse.quote(vehicle_id, safe='')}/vehicle_data?{VEHICLE_DATA_QUERY}"
+  return parse_destination(_read_json(api_request(access_token, path, OWNER_API_URL), opener))
 
 
 def _is_ours(raw, written: tuple[float, float]) -> bool:

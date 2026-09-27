@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import json
+import ssl
 import sys
 import types
 import unittest
@@ -13,8 +14,9 @@ from unittest import mock
 
 from openpilot.sunnypilot.mapd.korea import tesla
 from openpilot.sunnypilot.mapd.korea.route import RequestBudget
-from openpilot.sunnypilot.mapd.korea.tesla import (POLL_INTERVAL_S, TOKEN_URL, AuthRejected, TeslaDestinationSource, fetch_destination,
-                                                   parse_destination, refresh_access_token)
+from openpilot.sunnypilot.mapd.korea.tesla import (OWNER_API_URL, OWNER_TOKEN_URL, POLL_INTERVAL_S, TOKEN_URL, AuthRejected, TeslaDestinationSource,
+                                                   VehicleNotFound, fetch_destination, owner_fetch_destination, owner_refresh_access_token,
+                                                   owner_vehicle_id, parse_destination, refresh_access_token)
 from openpilot.sunnypilot.mapd.korea.tests.test_camera_refresh import OneShotStop
 from openpilot.sunnypilot.mapd.korea.tests.test_route import FakeClock, FakeResponse
 
@@ -30,6 +32,11 @@ def car(lat=GANGNAM[0], lon=GANGNAM[1], name="강남역"):
 
 NO_ROUTE = {"response": {"drive_state": {"shift_state": "D"}}}
 TOKENS = {"access_token": "ACCESS-2", "refresh_token": "REFRESH-2", "expires_in": 28800, "token_type": "Bearer"}
+OWNER_TOKENS = {"access_token": "OWNER-ACCESS-2", "refresh_token": "OWNER-2", "expires_in": 28800, "token_type": "Bearer"}
+OWNER_ID = 1492931520123456
+# /api/1/products the way the owner API answers it: energy products carry no VIN.
+PRODUCTS = {"response": [{"energy_site_id": 7, "resource_type": "battery"},
+                         {"id": OWNER_ID, "vehicle_id": 99, "vin": "VIN123", "display_name": "Y"}], "count": 2}
 
 
 def http_error(code):
@@ -37,21 +44,29 @@ def http_error(code):
 
 
 class ScriptedOpener:
-  """urlopen stand-in. A token request gets `token`; a vehicle_data request gets the next of
-  `answers`. An exception in either place is raised instead of answered. `events` can be
-  shared with a FakeParams so a test can tell which happened first."""
+  """urlopen stand-in. A token request (either API) gets `token`; /api/1/products gets
+  `products`; a vehicle_data request gets the next of `answers`. An exception in any place is
+  raised instead of answered. `events` can be shared with a FakeParams so a test can tell
+  which happened first; `contexts` records the TLS context each request asked for."""
 
-  def __init__(self, answers=(), token=TOKENS, events=None):
+  def __init__(self, answers=(), token=TOKENS, events=None, products=PRODUCTS):
     self.answers = list(answers)
     self.token = token
+    self.products = products
     self.events = [] if events is None else events
     self.requests = []
+    self.contexts = []
 
-  def __call__(self, request, timeout=None):
+  def __call__(self, request, timeout=None, context=None):
     self.requests.append(request)
-    is_token = request.full_url == TOKEN_URL
-    self.events.append("token" if is_token else "vehicle_data")
-    answer = self.token if is_token else self.answers.pop(0)
+    self.contexts.append(context)
+    if request.full_url in (TOKEN_URL, OWNER_TOKEN_URL):
+      kind, answer = "token", self.token
+    elif request.full_url.endswith("/api/1/products"):
+      kind, answer = "products", self.products
+    else:
+      kind, answer = "vehicle_data", self.answers.pop(0)
+    self.events.append(kind)
     if isinstance(answer, Exception):
       raise answer
     return FakeResponse(answer)
@@ -160,6 +175,65 @@ class TestFetchDestination(unittest.TestCase):
   def test_an_http_error_reaches_the_caller(self):
     with self.assertRaises(urllib.error.HTTPError):
       fetch_destination("ACCESS-2", "VIN123", ScriptedOpener([http_error(408)]))
+
+
+class TestOwnerRefresh(unittest.TestCase):
+  def test_refreshes_the_way_the_tesla_app_does(self):
+    """NaviToTesla's refresh (2026-09): JSON to auth.tesla.com as the ownerapi client."""
+    opener = ScriptedOpener(token=OWNER_TOKENS)
+    self.assertEqual(owner_refresh_access_token("OWNER-1", opener), ("OWNER-ACCESS-2", "OWNER-2"))
+    request = opener.requests[0]
+    self.assertEqual(request.full_url, OWNER_TOKEN_URL)
+    self.assertEqual(request.get_method(), "POST")
+    self.assertEqual(request.get_header("Content-type"), "application/json")
+    self.assertEqual(json.loads(request.data), {"grant_type": "refresh_token", "client_id": "ownerapi",
+                                                "refresh_token": "OWNER-1", "scope": "openid email offline_access"})
+    self.assertNotIn("OWNER-1", request.full_url)
+
+  def test_the_refresh_goes_over_tls_1_3(self):
+    """Below 1.3 auth.tesla.com mints a Fleet token, which owner-api refuses with 403."""
+    opener = ScriptedOpener(token=OWNER_TOKENS)
+    owner_refresh_access_token("OWNER-1", opener)
+    self.assertEqual(opener.contexts[0].minimum_version, ssl.TLSVersion.TLSv1_3)
+
+  def test_a_refused_owner_token_is_auth_rejected(self):
+    """Used already -- by NaviToTesla, if the two share one -- or revoked."""
+    for code in (400, 401):
+      with self.subTest(code=code), self.assertRaises(AuthRejected):
+        owner_refresh_access_token("OWNER-1", ScriptedOpener(token=http_error(code)))
+
+
+class TestOwnerVehicleId(unittest.TestCase):
+  def test_finds_the_car_by_vin(self):
+    opener = ScriptedOpener()
+    self.assertEqual(owner_vehicle_id("OWNER-ACCESS-2", "VIN123", opener), str(OWNER_ID))
+    request = opener.requests[0]
+    self.assertEqual(request.full_url, OWNER_API_URL + "/api/1/products")
+    self.assertEqual(request.get_header("Authorization"), "Bearer OWNER-ACCESS-2")
+
+  def test_a_vin_not_on_the_account_is_vehicle_not_found(self):
+    with self.assertRaises(VehicleNotFound):
+      owner_vehicle_id("OWNER-ACCESS-2", "VIN999", ScriptedOpener())
+
+  def test_an_id_that_is_not_an_integer_is_never_used(self):
+    """The id goes into a URL path, and the answer is untrusted."""
+    for bad in ("1/../2", 1.5, True, None):
+      with self.subTest(id=bad), self.assertRaises(VehicleNotFound):
+        owner_vehicle_id("OWNER-ACCESS-2", "VIN123", ScriptedOpener(products={"response": [{"id": bad, "vin": "VIN123"}]}))
+
+  def test_an_answer_of_the_wrong_shape_is_vehicle_not_found(self):
+    for products in ({"response": None}, {"response": ["x"]}, {}):
+      with self.subTest(products=products), self.assertRaises(VehicleNotFound):
+        owner_vehicle_id("OWNER-ACCESS-2", "VIN123", ScriptedOpener(products=products))
+
+
+class TestOwnerFetchDestination(unittest.TestCase):
+  def test_reads_the_destination_from_owner_api_by_id(self):
+    opener = ScriptedOpener([car()])
+    self.assertEqual(owner_fetch_destination("OWNER-ACCESS-2", str(OWNER_ID), opener), (GANGNAM[0], GANGNAM[1], "강남역"))
+    request = opener.requests[0]
+    self.assertEqual(request.full_url, f"{OWNER_API_URL}/api/1/vehicles/{OWNER_ID}/vehicle_data?endpoints=drive_state%3Blocation_data")
+    self.assertEqual(request.get_header("Authorization"), "Bearer OWNER-ACCESS-2")
 
 
 class SourceTestCase(unittest.TestCase):
