@@ -514,8 +514,10 @@ class TestDownloaderLoop(MapDownloadTestCase):
       def __getitem__(self, service):
         return types.SimpleNamespace(networkMetered=metered, started=started)
 
-    messaging = types.ModuleType("cereal.messaging")
+    messaging = types.ModuleType("openpilot.cereal.messaging")
     messaging.SubMaster = lambda services: FakeSubMaster()
+    cereal = types.ModuleType("openpilot.cereal")
+    cereal.messaging = messaging
     params_mod = types.ModuleType("openpilot.common.params")
     # Keyed on the name, not just on the value: a fake that answers every key the same way
     # cannot tell a downloader reading the wrong param from one reading the right one, and
@@ -524,8 +526,8 @@ class TestDownloaderLoop(MapDownloadTestCase):
       get_bool=lambda key: enabled if key == "KoreaMapAutoDownload" else False)
 
     self.enterContext(mock.patch.dict(sys.modules, {
-      "cereal": types.ModuleType("cereal"),
-      "cereal.messaging": messaging,
+      "openpilot.cereal": cereal,
+      "openpilot.cereal.messaging": messaging,
       "openpilot.common.params": params_mod,
     }))
 

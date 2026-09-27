@@ -283,7 +283,7 @@ class MapDownloader:
   def _loop(self) -> None:
     # imported here so the module stays importable without the device stack, which is what
     # lets the tests run under a bare interpreter. Same pattern as CameraRefresher._loop.
-    import cereal.messaging as messaging
+    from openpilot.cereal import messaging
     from openpilot.common.params import Params
 
     params = Params()

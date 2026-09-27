@@ -216,9 +216,10 @@ class TestRefresherLoop(unittest.TestCase):
   def run_one_iteration(self, *, recv_frame, metered, api_key="a-key"):
     """Drives CameraRefresher._loop once with the device stack faked out.
 
-    _loop imports cereal.messaging and Params inside the function so the module stays
-    importable under a bare interpreter. Injecting into sys.modules keeps that property --
-    a real SubMaster here would drag the whole device stack into this test file.
+    _loop imports openpilot.cereal.messaging and Params inside the function so the module
+    stays importable under a bare interpreter. Injecting into sys.modules keeps that property --
+    a real SubMaster here would drag the whole device stack into this test file. The fake sits
+    at the fork's path: faking a top-level `cereal` hid a thread that died on the device.
     """
     class FakeSubMaster:
       def __init__(self):
@@ -232,14 +233,16 @@ class TestRefresherLoop(unittest.TestCase):
 
     sm = FakeSubMaster()
 
-    messaging = types.ModuleType("cereal.messaging")
+    messaging = types.ModuleType("openpilot.cereal.messaging")
     messaging.SubMaster = lambda services: sm
+    cereal = types.ModuleType("openpilot.cereal")
+    cereal.messaging = messaging
     params_mod = types.ModuleType("openpilot.common.params")
     params_mod.Params = lambda: types.SimpleNamespace(get=lambda k, return_default=False: api_key)
 
     self.enterContext(mock.patch.dict(sys.modules, {
-      "cereal": types.ModuleType("cereal"),
-      "cereal.messaging": messaging,
+      "openpilot.cereal": cereal,
+      "openpilot.cereal.messaging": messaging,
       "openpilot.common.params": params_mod,
     }))
 

@@ -187,7 +187,7 @@ class CameraRefresher:
   def _loop(self) -> None:
     # imported here so the module stays importable without the device stack, which is
     # what lets the tests above run under a bare interpreter
-    import cereal.messaging as messaging
+    from openpilot.cereal import messaging
     from openpilot.common.params import Params
 
     params = Params()
