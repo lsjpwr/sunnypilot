@@ -84,6 +84,10 @@ def api_request(access_token: str, path: str) -> urllib.request.Request:
   return urllib.request.Request(FLEET_API_URL + path, headers={"Authorization": f"Bearer {access_token}"})
 
 
+def vehicle_data_request(access_token: str, vin: str) -> urllib.request.Request:
+  return api_request(access_token, f"/api/1/vehicles/{urllib.parse.quote(vin, safe='')}/vehicle_data?{VEHICLE_DATA_QUERY}")
+
+
 def refresh_access_token(client_id: str, refresh_token: str, opener=urllib.request.urlopen) -> tuple[str, str]:
   """(access token, the refresh token that replaces this one).
 
@@ -107,8 +111,7 @@ def refresh_access_token(client_id: str, refresh_token: str, opener=urllib.reque
 def fetch_destination(access_token: str, vin: str, opener=urllib.request.urlopen) -> tuple[float, float, str] | None:
   """One billed vehicle_data request. An HTTPError is raised as it is: its status decides
   what the caller does next."""
-  path = f"/api/1/vehicles/{urllib.parse.quote(vin, safe='')}/vehicle_data?{VEHICLE_DATA_QUERY}"
-  return parse_destination(_read_json(api_request(access_token, path), opener))
+  return parse_destination(_read_json(vehicle_data_request(access_token, vin), opener))
 
 
 def _is_ours(raw, written: tuple[float, float]) -> bool:
@@ -151,6 +154,10 @@ class TeslaDestinationSource:
   def stop(self) -> None:
     self._stop.set()
     if self._thread is not None:
+      # ponytail: join gives up after 2 s while a request can take 10 s, so a korea_main restart
+      # in the middle of a token refresh can let two threads spend the same single-use token.
+      # Normally that is one spurious alert healed on the next minute, unless Tesla revokes the
+      # whole token family on reuse. RouteSource shares the limit; join longer if it is ever seen.
       self._thread.join(timeout=2.)
       self._thread = None
 
@@ -185,8 +192,10 @@ class TeslaDestinationSource:
       if fresh:
         self._access_token, refresh_token = refresh_access_token(client_id, refresh_token, self._opener)
         # Single use: Tesla retired the old token the moment it answered. Save the new one
-        # before anything else can fail, or nothing that works is left on the device.
-        params.put("KoreaTeslaRefreshToken", refresh_token)
+        # before anything else can fail, or nothing that works is left on the device. Params.put
+        # only queues the write here unless block=True, and this is the one write that must be
+        # on flash before the token is used.
+        params.put("KoreaTeslaRefreshToken", refresh_token, block=True)
         set_alert(False)
       self.budget.spend()
       destination = fetch_destination(self._access_token, vin, self._opener)
@@ -201,12 +210,14 @@ class TeslaDestinationSource:
         # from now -- this is usually the first poll of a drive.
         self._access_token = None
         self._next_poll = now
-      elif e.code in (401, 403):
-        # A token minted this tick and refused anyway, or a grant without vehicle_location:
-        # asking again changes neither, and retrying every tick would spend the day's cap.
-        self._reject(refresh_token, set_alert)
       elif e.code == 429:
         self._next_poll = now + RATE_LIMIT_PAUSE_S
+      elif 400 <= e.code < 500 and e.code != 408:
+        # A token refused right after its refresh, a grant without vehicle_location, a VIN the
+        # account no longer has, a missing partner registration, the wrong region, unpaid
+        # billing: none of it changes by asking again, and every ask is billed. 408 (the car is
+        # asleep) and 5xx stay "ask again next minute".
+        self._reject(refresh_token, set_alert)
       return
     except Exception as e:
       # The network, a timeout, a body that is not JSON: all "ask again next minute". Only the
@@ -255,7 +266,7 @@ class TeslaDestinationSource:
         sm.update(0)
         # A SubMaster that has received nothing reads the capnp default, started=False --
         # "not yet", which is the safe answer here.
-        self.step(params, bool(sm.recv_frame['deviceState']) and sm['deviceState'].started, set_alert)
+        self.step(params, sm['deviceState'].started, set_alert)
       except Exception:
         # No supervisor: dying here ends destinations from the car until the process
         # restarts. Keep going and try again next second.

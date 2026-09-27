@@ -71,12 +71,15 @@ class FakeParams:
   def __init__(self, values=None, events=None):
     self.values = dict(CREDENTIALS if values is None else values)
     self.events = [] if events is None else events
+    self.blocking = set()  # keys written with block=True, i.e. on flash when put() returns
 
   def get(self, key, return_default=False):
     return self.values.get(key)
 
-  def put(self, key, value):
+  def put(self, key, value, block=False):
     self.events.append(f"put {key}")
+    if block:
+      self.blocking.add(key)
     self.values[key] = value
 
   def remove(self, key):
@@ -294,6 +297,8 @@ class TestTokens(SourceTestCase):
     self.tick(source)
     self.assertEqual(self.params.values["KoreaTeslaRefreshToken"], "REFRESH-2")
     self.assertLess(self.events.index("put KoreaTeslaRefreshToken"), self.events.index("vehicle_data"))
+    # Params.put only queues the write unless block=True, so "before" must mean on flash.
+    self.assertIn("KoreaTeslaRefreshToken", self.params.blocking)
 
   def test_the_access_token_is_kept_between_polls(self):
     source = self.source([car(), car()])
@@ -377,14 +382,27 @@ class TestAuth(SourceTestCase):
     self.assertEqual(self.alerts[-1], True)
     self.assertEqual(self.opener.count("vehicle_data"), 1)
 
+  def test_any_other_lasting_4xx_raises_the_alert_and_stops_asking(self):
+    """No VIN on the account, no partner registration, the wrong region, unpaid billing:
+    none of it changes by asking again, and every ask is billed."""
+    for code in (400, 402, 404, 412, 421):
+      with self.subTest(code=code):
+        self.setUp()
+        source = self.source([http_error(code), car()])
+        with self.assertLogs(tesla.LOG, level="WARNING"):
+          self.tick(source)
+        self.tick(source, seconds=POLL_INTERVAL_S)
+        self.assertEqual(self.opener.count("vehicle_data"), 1)
+        self.assertIs(self.alerts[-1], True)
+
 
 class TestLoop(unittest.TestCase):
-  def run_loop(self, step, started=True, recv_frame=1, alerts=None):
+  def run_loop(self, step, started=True, alerts=None):
     """_loop for one iteration, with the device stack faked through sys.modules under the
     fork's openpilot.cereal path -- the technique test_camera_refresh.TestRefresherLoop uses for CameraRefresher._loop."""
     class FakeSubMaster:
       def __init__(self, services):
-        self.recv_frame = {'deviceState': recv_frame}
+        pass
 
       def update(self, timeout):
         pass
@@ -416,13 +434,6 @@ class TestLoop(unittest.TestCase):
     seen = []
     self.run_loop(lambda params, started, set_alert: seen.append(started))
     self.assertEqual(seen, [True])
-
-  def test_nothing_received_yet_is_not_a_drive(self):
-    """A SubMaster that has received nothing reads the capnp default. Here that must mean
-    "wait", never a drive that has started."""
-    seen = []
-    self.run_loop(lambda params, started, set_alert: seen.append(started), recv_frame=0)
-    self.assertEqual(seen, [False])
 
   def test_the_alert_is_offroad_korea_tesla_auth(self):
     alerts = []
