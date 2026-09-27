@@ -227,6 +227,12 @@ class TestOwnerVehicleId(unittest.TestCase):
       with self.subTest(products=products), self.assertRaises(VehicleNotFound):
         owner_vehicle_id("OWNER-ACCESS-2", "VIN123", ScriptedOpener(products=products))
 
+  def test_a_hand_typed_vin_matches_in_any_case(self):
+    """Typed on a phone: a terminal keyboard does not capitalize, and a paste can carry a space."""
+    for vin in ("vin123", " VIN123 "):
+      with self.subTest(vin=vin):
+        self.assertEqual(owner_vehicle_id("OWNER-ACCESS-2", vin, ScriptedOpener()), str(OWNER_ID))
+
 
 class TestOwnerFetchDestination(unittest.TestCase):
   def test_reads_the_destination_from_owner_api_by_id(self):
@@ -535,6 +541,18 @@ class TestOwnerMode(SourceTestCase):
     self.assertIs(self.alerts[-1], True)
     self.assertEqual(self.opener.count("vehicle_data"), 1)
 
+  def test_new_credentials_are_never_judged_by_the_old_access_token(self):
+    """Another account's token and VIN written within the old access token's hours: refresh
+    first, or the new VIN is looked up under the old account and refused."""
+    source = self.source([car(), car()], token=OWNER_TOKENS)
+    self.tick(source)
+    self.params.values.update({"KoreaTeslaOwnerRefreshToken": "OWNER-OTHER", "KoreaTeslaVin": "VIN456"})
+    self.opener.products = {"response": [{"id": 7, "vin": "VIN456"}]}
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(self.opener.count("token"), 2)
+    self.assertEqual(self.opener.requests[-1].full_url, f"{OWNER_API_URL}/api/1/vehicles/7/vehicle_data?endpoints=drive_state%3Blocation_data")
+    self.assertNotIn(True, self.alerts)
+
 
 class TestModeChoice(SourceTestCase):
   def test_fleet_wins_when_both_are_set(self):
@@ -558,6 +576,15 @@ class TestModeChoice(SourceTestCase):
     self.tick(source, seconds=POLL_INTERVAL_S)
     self.assertEqual(self.opener.requests[-2].full_url, TOKEN_URL)
     self.assertEqual(self.opener.requests[-1].get_header("Authorization"), "Bearer ACCESS-2")
+
+  def test_a_refused_fleet_login_never_falls_back_to_the_owner_api(self):
+    self.params.values["KoreaTeslaOwnerRefreshToken"] = "OWNER-1"
+    source = self.source([car()], token=http_error(400))
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertNotIn(OWNER_TOKEN_URL, [r.full_url for r in self.opener.requests])
+    self.assertIs(self.alerts[-1], True)
 
 
 class TestLoop(unittest.TestCase):

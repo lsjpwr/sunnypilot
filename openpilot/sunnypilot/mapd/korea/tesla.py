@@ -69,7 +69,7 @@ REFRESH_TOKEN_KEYS = {FLEET: "KoreaTeslaRefreshToken", OWNER: "KoreaTeslaOwnerRe
 
 
 class AuthRejected(Exception):
-  """Tesla refused the refresh token. Only tesla_setup can get a new one."""
+  """Tesla refused the refresh token. Only a new login replaces it: tesla_setup for Fleet, a token tool for the owner API."""
 
 
 class VehicleNotFound(Exception):
@@ -160,10 +160,11 @@ def owner_refresh_access_token(refresh_token: str, opener=urllib.request.urlopen
 def owner_vehicle_id(access_token: str, vin: str, opener=urllib.request.urlopen) -> str:
   """The owner API addresses a car by its id in /api/1/products, not by VIN -- NaviToTesla
   does the same. The answer is untrusted and the id goes into a path, so only an int is
-  taken (bool, an int subclass, is not)."""
+  taken (bool, an int subclass, is not). A VIN typed by hand on a phone may be lower case or
+  padded, so it is compared without either."""
   products = _read_json(api_request(access_token, "/api/1/products", OWNER_API_URL), opener).get("response")
   for product in products if isinstance(products, list) else []:
-    if isinstance(product, dict) and product.get("vin") == vin and type(product.get("id")) is int:
+    if isinstance(product, dict) and str(product.get("vin")).upper() == vin.strip().upper() and type(product.get("id")) is int:
       return str(product["id"])
   raise VehicleNotFound("no car with this VIN on the account")
 
@@ -196,10 +197,12 @@ class TeslaDestinationSource:
     self._clock = clock
     self.budget = RequestBudget(cap=DAILY_REQUEST_CAP)
     self._access_token: str | None = None
-    # Which API the access token belongs to. The two do not take each other's tokens.
-    self._mode: str | None = None
-    # (VIN, id) of the car the owner API answered for, looked up once per access token.
-    self._owner_vehicle: tuple[str, str] | None = None
+    # The credentials the access token was minted under. Any change -- the other mode, tesla_setup,
+    # a token or VIN written by hand -- must not be judged by it: the two APIs do not take each
+    # other's tokens, and another account's VIN is not on this one.
+    self._minted_for: tuple | None = None
+    # The owner API's id for the car, looked up once per access token.
+    self._owner_vehicle: str | None = None
     # What this thread last wrote, so the car repeating it is not another write.
     self._written: tuple[float, float] | None = None
     # The credentials Tesla refused: (mode, client id, refresh token, VIN). Polling waits for
@@ -253,11 +256,11 @@ class TeslaDestinationSource:
       mode, refresh_token = OWNER, owner_token
     else:
       return
-    if mode != self._mode:
-      self._mode, self._access_token = mode, None
     credentials = (mode, client_id, refresh_token, vin)
     if credentials == self._rejected:
       return
+    if credentials != self._minted_for:
+      self._access_token = None
     if not self.budget.allow():
       LOG.warning("tesla: daily request cap reached")
       return
@@ -269,7 +272,7 @@ class TeslaDestinationSource:
           self._access_token, refresh_token = refresh_access_token(client_id, refresh_token, self._opener)
         else:
           self._access_token, refresh_token = owner_refresh_access_token(refresh_token, self._opener)
-        credentials = (mode, client_id, refresh_token, vin)
+        credentials = self._minted_for = (mode, client_id, refresh_token, vin)
         self._owner_vehicle = None
         # Single use: Tesla retired the old token the moment it answered. Save the new one
         # before anything else can fail, or nothing that works is left on the device. Params.put
@@ -311,12 +314,12 @@ class TeslaDestinationSource:
     self._apply(params, destination)
 
   def _fetch(self, mode: str, vin: str) -> tuple[float, float, str] | None:
-    if mode == OWNER and (self._owner_vehicle is None or self._owner_vehicle[0] != vin):
-      self._owner_vehicle = (vin, owner_vehicle_id(self._access_token, vin, self._opener))
+    if mode == OWNER and self._owner_vehicle is None:
+      self._owner_vehicle = owner_vehicle_id(self._access_token, vin, self._opener)
     self.budget.spend()
     if mode == FLEET:
       return fetch_destination(self._access_token, vin, self._opener)
-    return owner_fetch_destination(self._access_token, self._owner_vehicle[1], self._opener)
+    return owner_fetch_destination(self._access_token, self._owner_vehicle, self._opener)
 
   def _reject(self, credentials: tuple, set_alert) -> None:
     self._rejected = credentials
