@@ -26,8 +26,8 @@ import urllib.parse
 import urllib.request
 import webbrowser
 
-from openpilot.sunnypilot.mapd.korea.tesla import (FLEET_API_URL, HTTP_TIMEOUT_S, VEHICLE_DATA_QUERY, api_request,
-                                                   parse_destination, token_request)
+from openpilot.sunnypilot.mapd.korea.tesla import (FLEET_API_URL, HTTP_TIMEOUT_S, api_request, parse_destination, token_request,
+                                                   vehicle_data_request)
 
 AUTHORIZE_URL = "https://auth.tesla.com/oauth2/v3/authorize"
 # Read-only on purpose: nothing on the device may command the car.
@@ -64,7 +64,21 @@ def choose_vin(vehicles: list) -> str:
     return vehicles[0]["vin"]
   for i, vehicle in enumerate(vehicles, 1):
     print(f"  {i}. {vehicle.get('display_name') or '(no name)'}  {vehicle['vin']}")
-  return vehicles[int(input("Which car? ")) - 1]["vin"]
+  number = int(input("Which car? "))
+  if not 1 <= number <= len(vehicles):
+    raise ValueError(f"pick a number from 1 to {len(vehicles)}")
+  return vehicles[number - 1]["vin"]
+
+
+def check_device(host: str) -> None:
+  """Fail before the Tesla login rather than after it: a login thrown away because ssh
+  cannot reach the device has to be redone from the start."""
+  try:
+    result = subprocess.run(["ssh", host, f"test -d {DEVICE_PARAMS_DIR}"])
+  except FileNotFoundError:
+    raise ValueError("ssh is not installed on this PC") from None
+  if result.returncode != 0:
+    raise ValueError(f"cannot reach {host} over ssh, or it has no {DEVICE_PARAMS_DIR}")
 
 
 def push_param(host: str, key: str, value: str) -> None:
@@ -94,7 +108,7 @@ def _register_domain(partner_token: str, domain: str) -> None:
 def _check(access_token: str, vin: str) -> None:
   """One real read, so a missing location grant shows up now instead of on the road."""
   try:
-    data = _send(api_request(access_token, f"/api/1/vehicles/{urllib.parse.quote(vin, safe='')}/vehicle_data?{VEHICLE_DATA_QUERY}"))
+    data = _send(vehicle_data_request(access_token, vin))
   except urllib.error.HTTPError as e:
     if e.code != 408:
       raise
@@ -111,6 +125,10 @@ def main() -> None:
   parser = argparse.ArgumentParser(description="One-time Tesla setup so the device can read the car's navigation destination.")
   parser.add_argument("--host", required=True, help="ssh target, e.g. comma@192.168.1.50")
   args = parser.parse_args()
+  try:
+    check_device(args.host)
+  except ValueError as e:
+    sys.exit(f"Setup stopped before login: {e}")
 
   client_id = input("Tesla app Client ID: ").strip()
   client_secret = getpass.getpass("Tesla app Client Secret (not shown): ").strip()

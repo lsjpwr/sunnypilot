@@ -7,9 +7,10 @@
 **필요한 것**
 - GitHub 계정
 - 차량 소유자의 테슬라 계정
-- 이 저장소가 있는 PC(Git Bash의 `openssl`, `ssh`)
+- 이 저장소가 있는 PC(Git Bash의 `openssl`, PowerShell에서 되는 `ssh`)
 - 기기 SSH 접속(`ssh comma@<기기IP>`가 되는 상태)
 - 기기 설정: `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey` 입력됨
+- 기기에 이 기능이 들어간 빌드가 먼저 설치되어 있을 것. 기기는 시작할 때마다 자기가 모르는 파라미터 파일을 지우므로, 이전 빌드에 넣은 토큰은 사라진다.
 
 ## 1. 공개키 만들기 (2분)
 
@@ -40,11 +41,13 @@ openssl ec -in tesla-private.pem -pubout -out com.tesla.3p.public-key.pem
 
 ## 4. 설정 스크립트 실행 (5분)
 
-먼저 테슬라 앱을 열어 차를 깨워 둔다(연결 확인용). 그다음 PC의 저장소 루트에서:
+먼저 테슬라 앱을 열어 차를 깨워 둔다(연결 확인용). 그다음 PowerShell이나 Windows Terminal을 열고 PC의 저장소 루트에서 실행한다. Git Bash 창에서는 Client Secret 입력이 멈추거나 화면에 보일 수 있다.
 
-```bash
+```powershell
 python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 ```
+
+스크립트는 테슬라 로그인 전에 기기 SSH 접속부터 확인한다. 여기서 멈추면 `ssh comma@<기기IP>`가 되는지 먼저 본다.
 
 1. Client ID, Client Secret(입력이 화면에 보이지 않는다), 도메인(`<아이디>.github.io`)을 입력한다. Redirect URI는 Enter로 기본값을 쓴다.
 2. 브라우저가 열리면 테슬라에 로그인하고 동의한다.
@@ -62,6 +65,10 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
    ssh comma@<기기IP> cat /data/params/d/NavDestination
    ```
 3. 테슬라에서 안내를 취소하면 1분 안에 비워진다.
+4. 첫 주행이 끝나면 토큰이 새것으로 바뀌었는지 본다. 설정한 시각보다 늦은 시각이 나오면 토큰 교체가 정상이다:
+   ```bash
+   ssh comma@<기기IP> stat -c %y /data/params/d/KoreaTeslaRefreshToken
+   ```
 
 ## 문제 해결
 
@@ -71,6 +78,8 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 | 스크립트가 `WARNING: Tesla answered without the car's location` | 동의 화면에서 위치 권한이 빠졌다 | 4단계를 다시 실행하고 위치를 허용 |
 | 스크립트가 `Tesla answered HTTP 4xx`로 멈춤 | 2단계 공개키가 안 보이거나, 도메인이 앱 설정과 다르다 | 2단계 4번의 주소가 열리는지 본다 |
 | 목적지가 안 들어오고 알림도 없음 | `KoreaExternalNavEnabled`가 꺼졌거나 `KoreaRouteApiKey`가 없다 | 설정에서 켜고 키를 넣는다 |
+| 설정을 마쳤는데 목적지가 안 들어오고 알림도 없음 | 기기가 이전 빌드여서 토큰 파일을 지웠다 | `ssh comma@<기기IP> ls /data/params/d/KoreaTesla*`에 파일 3개가 보여야 한다. 없으면 기기를 업데이트하고 4단계를 다시 실행 |
+| 설정 후 3개월이 안 됐는데 "Tesla connection lost" | 테슬라가 다른 이유로 앱을 계속 거부한다(결제, 계정에서 차량 삭제, 앱 등록) | developer.tesla.com에서 앱과 결제 상태를 확인하고 4단계를 다시 실행 |
 
 ## 비용
 

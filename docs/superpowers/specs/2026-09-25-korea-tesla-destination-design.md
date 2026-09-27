@@ -84,7 +84,7 @@
 
 - 요청 권한은 `openid offline_access vehicle_device_data vehicle_location`이다. 차에 명령하는 권한(`vehicle_cmds` 등)은 요청하지 않는다. 토큰이 새도 차를 움직일 수 없다.
 - 접근 토큰은 메모리에만 둔다. 없거나 `vehicle_data`가 401을 주면 갱신한다.
-- 갱신 토큰은 1회용이다(테슬라 문서: "The refresh token is single use only and expires after 3 months"). 갱신 응답의 새 갱신 토큰을 **접근 토큰을 쓰기 전에** `KoreaTeslaRefreshToken`에 저장한다. 저장이 늦어져 그 사이 프로세스가 죽으면 토큰 사슬이 끊긴다.
+- 갱신 토큰은 1회용이다(테슬라 문서: "The refresh token is single use only and expires after 3 months"). 갱신 응답의 새 갱신 토큰을 **접근 토큰을 쓰기 전에** `KoreaTeslaRefreshToken`에 저장한다. 저장이 늦어져 그 사이 프로세스가 죽으면 토큰 사슬이 끊긴다. 이 포크의 `Params.put`은 기본이 비동기(쓰기를 백그라운드 스레드에 맡김)라서 이 저장만 `block=True`로 한다(2026-09-26 최종 검토).
 - 갱신에는 `client_id`와 갱신 토큰만 필요하다. `client_secret`은 기기에 두지 않는다.
 - 비밀값은 헤더와 POST 본문에만 싣고 URL에는 넣지 않는다. urllib은 URL을 예외 메시지에 넣고 그것이 cloudlog로 간다(`route.py:125`와 같은 약속). 토큰, 응답 본문, 위치는 로그에 남기지 않는다.
 
@@ -96,6 +96,7 @@ PC에서 한 번 실행한다. 기존 `deploy`처럼 PC에서 돌고 SSH로 기�
 python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 ```
 
+0. 로그인 전에 `ssh <host> test -d /data/params/d`로 기기 접속부터 확인한다. 로그인 뒤에야 SSH가 안 되는 걸 알면 로그인을 처음부터 다시 해야 한다.
 1. `client_id`(입력), `client_secret`(`getpass`, 화면에 안 보임), 도메인(예: `lsjpwr.github.io`)을 묻는다. 리디렉트 URI 기본값은 `https://<도메인>/callback`이다.
 2. 파트너 토큰(`client_credentials`)을 받아 도메인을 등록한다(`POST /api/1/partner_accounts`). 지역당 한 번이면 되고, 다시 해도 해롭지 않다.
 3. 로그인 주소를 출력하고 브라우저로 연다. `state`는 난수다. 운전자가 로그인하고 동의하면, 넘어간 페이지의 주소창 주소를 복사해 붙여넣는다(없는 페이지라 404가 떠도 주소에 코드가 들어 있다). `state`가 다르면 중단한다.
@@ -115,6 +116,8 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 | `KoreaTeslaRefreshToken` | `PERSISTENT, STRING, ""` | `BACKUP` 제외. 토큰이 쓸 때마다 바뀌어 백업본은 복원해도 무효이고, 인증값을 클라우드로 내보내기만 한다 |
 | `KoreaTeslaVin` | `PERSISTENT, STRING, ""` | 셋은 함께 쓰일 때만 의미가 있으므로 셋 다 `BACKUP` 제외 |
 | `Offroad_KoreaTeslaAuth` | `CLEAR_ON_MANAGER_START, JSON` | 연결 끊김 알림. `Offroad_KoreaMapMissing`(`params_keys.h:290`)과 같은 모양 |
+
+sunnylink의 `getParams`는 등록된 키라면 값을 원격으로 돌려준다. 갱신 토큰은 3개월 동안 차의 위치를 읽을 수 있으므로, `sunnylinkd.py`의 `REMOTE_READ_DENYLIST`로 `KoreaTeslaRefreshToken`만 보내지 않는다.
 
 `alerts_offroad.json`에 `Offroad_KoreaTeslaAuth`를 더한다(`severity` 0):
 
@@ -145,6 +148,7 @@ Tesla connection lost. Destinations set in the car's navigation are not received
 | `vehicle_data` 401, 오래된 접근 토큰 | 다음 틱(1초 뒤)에 갱신해 다시 묻는다. 보통 주행의 첫 요청이라, 1분을 기다리면 경로가 그만큼 늦는다 |
 | `vehicle_data` 401, 방금 갱신한 토큰 | 갱신 거부와 같이 처리한다. 새 토큰도 거부됐으면 다시 물어도 같고, 매 틱 재시도하면 하루 상한을 5분 만에 쓴다 |
 | 갱신 거부 (토큰 엔드포인트 400·401) 또는 `vehicle_data` 403 | 조회 중단, `Offroad_KoreaTeslaAuth` 켬. 기기의 갱신 토큰 값이 바뀌면(설정 재실행) 재시작 없이 다시 시도하고, 갱신이 성공하면 알림을 끈다 |
+| 그 밖의 4xx (402, 404, 412, 421 등. 408·429 제외) | 갱신 거부와 같이 처리한다(조회 중단 + 알림). 결제, 계정에서 빠진 차, 파트너 등록, 지역 같은 원인은 다시 물어도 바뀌지 않고, 묻는 요청마다 요금이 든다(2026-09-26 최종 검토) |
 | 408 (차 응답 없음) | 다음 주기에 다시 |
 | 429 | 5분 쉰다 |
 | 5xx, 네트워크 오류, 깨진 JSON | 다음 주기에 다시 |
@@ -174,12 +178,12 @@ Tesla connection lost. Destinations set in the car's navigation are not received
 - 응답 읽기: 목적지 있음 / 필드 없음 / `null` / 한국 밖 / `bool` 좌표 / 긴 이름 자르기
 - 쓰기 규칙: 새 목적지는 쓴다 / 같은 목적지는 도착으로 지워진 뒤에도 안 쓴다 / 50 m 이내 흔들림은 같은 목적지다 / 바뀐 목적지는 쓴다 / 차 안내가 끝나면 내 값만 지운다 / 남이 쓴 값은 남긴다 / 주행 시작마다 기억을 비운다
 - 토큰: 401 → 갱신 → 새 갱신 토큰이 접근 토큰보다 먼저 저장된다 / 갱신 거부 → 알림 켜짐, 조회 중단 / 토큰 값이 바뀌면 재시도, 성공하면 알림 꺼짐 / 오래된 토큰의 401은 다음 틱에 갱신 / 방금 갱신한 토큰의 401은 알림
-- 408·429·5xx 처리, 일일 상한, 주차 중 요청 0회, 인증값·TMap 키 없으면 요청 0회
+- 408·429·5xx 처리, 그 밖의 4xx는 알림과 조회 중단, 일일 상한, 주차 중 요청 0회, 인증값·TMap 키 없으면 요청 0회
 - 비밀값이 URL에 없다 (요청 객체 검사)
 
 ### `tesla_setup.py`
 
-로그인 주소 만들기와, 붙여넣은 주소에서 코드 뽑기·`state` 검증은 순수 함수로 떼어 테스트한다. 대화형 흐름 자체는 실제 설정으로 확인한다.
+로그인 주소 만들기와, 붙여넣은 주소에서 코드 뽑기·`state` 검증, 차량 번호 범위, SSH 사전 확인은 떼어 테스트한다. 대화형 흐름 자체는 실제 설정으로 확인한다.
 
 ### 실차 확인
 
@@ -221,6 +225,7 @@ Tesla connection lost. Destinations set in the car's navigation are not received
 - **차량 여러 대.** 설정 때 고른 VIN 하나만 본다.
 - **설정 화면의 연결 상태 표시.** 실패는 오프로드 알림으로만 알린다.
 - **목적지를 받은 뒤 폴링 간격 늘리기.** 월 83시간까지 비용 0이라 지금은 이득이 없다.
+- **목적지 100 m 안을 지난 뒤 되돌아가는 주행.** 알려진 한계다. `RouteSource`가 도착(`ARRIVED_M` = 100 m)으로 보고 목적지를 지웠는데, 차가 같은 목적지를 계속 보고하는 동안 이 스레드는 다시 쓰지 않는다. 그 안내가 끝날 때까지 경로가 없다.
 
 ---
 
