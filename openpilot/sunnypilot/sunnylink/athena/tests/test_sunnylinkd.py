@@ -162,12 +162,15 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
 
 
 class TestGetParams(OpenpilotTestCase):
-  def test_the_tesla_refresh_token_never_leaves_the_device(self):
-    """It reads the car's location for three months (korea/tesla.py)."""
+  def test_tesla_refresh_tokens_never_leave_the_device(self):
+    """The Fleet token reads the car's location for three months; the owner token is the whole
+    Tesla account (korea/tesla.py)."""
     Params().put("KoreaTeslaRefreshToken", "REFRESH-1", block=True)
+    Params().put("KoreaTeslaOwnerRefreshToken", "OWNER-1", block=True)
     Params().put("KoreaRouteApiKey", "TMAP", block=True)
 
-    response = sunnylinkd.getParams(["KoreaTeslaRefreshToken", "KoreaRouteApiKey"])
+    response = sunnylinkd.getParams(["KoreaTeslaRefreshToken", "KoreaTeslaOwnerRefreshToken", "KoreaRouteApiKey"])
 
     self.assertNotIn("KoreaTeslaRefreshToken", response)
+    self.assertNotIn("KoreaTeslaOwnerRefreshToken", response)
     self.assertEqual([p["key"] for p in json.loads(response["params"])], ["KoreaRouteApiKey"])

@@ -91,6 +91,7 @@ SENSITIVE_PARAMS = {
 # in params_keys.h too.
 REMOTE_READ_DENYLIST = {
   "KoreaTeslaRefreshToken",  # reads the car's location for three months (korea/tesla.py)
+  "KoreaTeslaOwnerRefreshToken",  # the Tesla app's own login: the whole account (korea/tesla.py)
 }
 
 

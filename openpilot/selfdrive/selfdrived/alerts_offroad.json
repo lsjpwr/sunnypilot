@@ -42,7 +42,7 @@
     "severity": 0
   },
   "Offroad_KoreaTeslaAuth": {
-    "text": "Tesla connection lost. Destinations set in the car's navigation are not received until tesla_setup is run again.",
+    "text": "Tesla connection lost. Destinations set in the car's navigation are not received until the Tesla login is set up again.",
     "severity": 0
   },
   "Offroad_DriverMonitoringUncertain": {
