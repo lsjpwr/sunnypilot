@@ -2,9 +2,18 @@
 
 폰에서 NaviToTesla로 테슬라에 보낸 목적지를 콤마 기기가 테슬라 서버에서 읽어 온다. 한 번 설정하면 운전할 때마다 할 일은 없다. 설계: `docs/superpowers/specs/2026-09-25-korea-tesla-destination-design.md`.
 
+**방법은 두 가지다.** 둘 다 설정돼 있으면 기기는 Fleet을 쓴다.
+
+| | Fleet (추천) | owner (비공식) |
+|---|---|---|
+| 설정 | PC에서 아래 1~4단계, 약 1시간 | 폰 Termius로 명령 두 줄, 약 10분 (아래 "owner 모드" 절) |
+| 토큰 권한 | 읽기 전용. 새도 차를 움직일 수 없다 | 테슬라 앱 로그인과 같은 계정 전체 권한 |
+| 요금 | 월 $10 공제 안에서 0원(결제 정보 등록 필요) | 없음 |
+| 수명 | 테슬라 공식 API | 테슬라가 2026년에 단계적으로 닫는 중이라 언제 막힐지 모른다 |
+
 **걸리는 시간:** 약 1시간. 대부분은 테슬라 개발자 사이트 입력이다.
 
-**필요한 것**
+**필요한 것 (Fleet 방법)**
 - GitHub 계정
 - 차량 소유자의 테슬라 계정
 - 이 저장소가 있는 PC(Git Bash의 `openssl`, PowerShell에서 되는 `ssh`)
@@ -57,6 +66,36 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 
 스크립트는 토큰을 화면에 출력하지 않고, PC에 저장하지도 않는다.
 
+## owner 모드 (PC 없이, 비공식)
+
+1~4단계 대신 폰만으로 쓰는 방법이다. 위 표의 권한·수명 차이를 알고 쓴다. 기기 SSH 접속(Termius), `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey`, 이 기능이 들어간 빌드는 Fleet과 똑같이 필요하다.
+
+**주의**
+- **NaviToTesla에 넣은 토큰을 복사하지 않는다.** 갱신 토큰은 한 번 쓰면 무효가 되어, 기기와 NaviToTesla가 서로를 끊는다. 기기용은 새로 로그인해 따로 받는다.
+- 2026-04에 테슬라가 로그인 방식을 바꿔 예전 토큰 발급 도구 대부분이 `redirect_uri` 오류로 막혔다. 그 뒤에 갱신된 도구(예: tesla_auth 포크)를 쓴다.
+- 이 토큰은 계정 전체 권한이다. 채팅·메모·스크린샷에 남기지 않는다.
+
+1. 토큰 발급 도구로 테슬라에 새로 로그인해 **Refresh Token**을 받고 폰에 복사해 둔다.
+2. Termius로 기기에 접속해 토큰을 넣는다. 붙여넣은 입력이 화면에 안 보이는 게 정상이다:
+   ```bash
+   read -rs V && printf '%s' "$V" > /data/params/d/.KoreaTeslaOwnerRefreshToken.tmp && mv -f /data/params/d/.KoreaTeslaOwnerRefreshToken.tmp /data/params/d/KoreaTeslaOwnerRefreshToken && unset V
+   ```
+3. VIN(17자리, 차 화면 컨트롤 → 소프트웨어)을 넣는다:
+   ```bash
+   read -r V && printf '%s' "$V" > /data/params/d/KoreaTeslaVin && unset V
+   ```
+4. 두 값이 들어갔는지 본다. 값 대신 글자 수만 나오고, 둘 다 0이 아니면 된다. 재부팅은 필요 없다:
+   ```bash
+   wc -c /data/params/d/KoreaTeslaOwnerRefreshToken /data/params/d/KoreaTeslaVin
+   ```
+
+두 명령은 Termius **Snippets**에 저장해 두면 탭 한 번으로 실행된다. 명령 안에 토큰이 없어서 저장해도 안전하다.
+
+**나중에 Fleet으로 옮기기:** 1~4단계를 하면 기기가 다음 조회부터 Fleet을 쓴다. 그다음 owner 토큰을 지운다:
+```bash
+ssh comma@<기기IP> rm /data/params/d/KoreaTeslaOwnerRefreshToken
+```
+
 ## 확인 (다음 주행)
 
 1. 주행을 시작하고 NaviToTesla로 목적지를 보낸다.
@@ -69,6 +108,7 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
    ```bash
    ssh comma@<기기IP> stat -c %y /data/params/d/KoreaTeslaRefreshToken
    ```
+5. owner 모드라면 NaviToTesla로 목적지를 보낸 뒤에도 NaviToTesla가 계속 동작하는지 본다. 끊기면 두 곳이 같은 토큰을 쓰고 있는 것이다.
 
 ## 문제 해결
 
@@ -80,6 +120,8 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 | 목적지가 안 들어오고 알림도 없음 | `KoreaExternalNavEnabled`가 꺼졌거나 `KoreaRouteApiKey`가 없다 | 설정에서 켜고 키를 넣는다 |
 | 설정을 마쳤는데 목적지가 안 들어오고 알림도 없음 | 기기가 이전 빌드여서 토큰 파일을 지웠다 | `ssh comma@<기기IP> ls /data/params/d/KoreaTesla*`에 파일 3개가 보여야 한다. 없으면 기기를 업데이트하고 4단계를 다시 실행 |
 | 설정 후 3개월이 안 됐는데 "Tesla connection lost" | 테슬라가 다른 이유로 앱을 계속 거부한다(결제, 계정에서 차량 삭제, 앱 등록) | developer.tesla.com에서 앱과 결제 상태를 확인하고 4단계를 다시 실행 |
+| owner 모드에서 "Tesla connection lost" | 토큰이 이미 쓰였거나(NaviToTesla와 같은 토큰) 폐기됐다. 또는 VIN이 그 계정에 없다 | VIN을 확인하고, 토큰을 새로 발급해 owner 모드 2번을 다시 한다 |
+| owner 모드에서 새 토큰을 넣어도 곧바로 다시 알림 | 이 계정에서 owner API가 막혔다(403) | Fleet 설정(1~4단계)으로 옮긴다 |
 
 ## 비용
 
@@ -98,4 +140,8 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 - 완전히 끄기: 기기의 토큰을 지우고, 테슬라 계정 설정의 서드파티 앱 관리에서 이 앱의 접근도 끊는다.
   ```bash
   ssh comma@<기기IP> rm /data/params/d/KoreaTeslaRefreshToken
+  ```
+- owner 모드 끄기: 기기의 owner 토큰을 지운다. 테슬라 쪽 토큰까지 끊으려면 계정 비밀번호를 바꾸는데, 그러면 NaviToTesla 같은 다른 앱도 다시 로그인해야 한다.
+  ```bash
+  ssh comma@<기기IP> rm /data/params/d/KoreaTeslaOwnerRefreshToken
   ```

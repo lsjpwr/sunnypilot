@@ -122,8 +122,9 @@ sunnylink의 `getParams`는 등록된 키라면 값을 원격으로 돌려준다
 `alerts_offroad.json`에 `Offroad_KoreaTeslaAuth`를 더한다(`severity` 0):
 
 ```
-Tesla connection lost. Destinations set in the car's navigation are not received until tesla_setup is run again.
+Tesla connection lost. Destinations set in the car's navigation are not received until the Tesla login is set up again.
 ```
+(2026-09-27 owner 모드 설계에서 문구를 바꿨다. owner 모드는 tesla_setup을 쓰지 않는다.)
 
 설정 화면(raylib UI, mici, sunnylink YAML)에는 넣지 않는다. 경로 설계(`2026-09-18-korea-route-nav-design.md`)의 "사용자가 만질 파라미터는 설정 화면 셋 모두에 노출한다"는 규칙의 예외다 — 이 값들은 사람이 아니라 설정 스크립트가 쓰고, 갱신 토큰은 쓸 때마다 바뀌어 화면 입력이 의미가 없다.
 
