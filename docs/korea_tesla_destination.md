@@ -6,7 +6,7 @@
 
 | | Fleet (추천) | owner (비공식) |
 |---|---|---|
-| 설정 | PC에서 아래 1~4단계, 약 1시간 | 폰 Termius로 명령 두 줄, 약 10분 (아래 "owner 모드" 절) |
+| 설정 | PC에서 아래 1~4단계, 약 1시간 | PC에서 토큰 발급, 폰 Termius로 명령 두 줄, 약 10분 (아래 "owner 모드" 절) |
 | 토큰 권한 | 읽기 전용. 새도 차를 움직일 수 없다 | 테슬라 앱 로그인과 같은 계정 전체 권한 |
 | 요금 | 월 $10 공제 안에서 0원(결제 정보 등록 필요) | 없음 |
 | 수명 | 테슬라 공식 API | 테슬라가 2026년에 단계적으로 닫는 중이라 언제 막힐지 모른다 |
@@ -19,7 +19,7 @@
 - 이 저장소가 있는 PC(Git Bash의 `openssl`, PowerShell에서 되는 `ssh`)
 - 기기 SSH 접속(`ssh comma@<기기IP>`가 되는 상태)
 - 기기 설정: `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey` 입력됨
-- 기기에 이 기능이 들어간 빌드가 먼저 설치되어 있을 것. 기기는 시작할 때마다 자기가 모르는 파라미터 파일을 지우므로, 이전 빌드에 넣은 토큰은 사라진다.
+- 기기에 커밋 `1eecaa7c2` 이후 빌드가 먼저 설치되어 있을 것. 이 기능이 없는 빌드는 시작할 때 자기가 모르는 파라미터 파일을 지워 토큰이 사라지고, 그 커밋 전 빌드는 토큰을 업로드되는 로그에 남긴다.
 
 ## 1. 공개키 만들기 (2분)
 
@@ -68,16 +68,16 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 
 ## owner 모드 (개발자 등록 없이, 비공식)
 
-Fleet 설정 1~4단계 대신 쓰는 방법이다. 기기 설정은 폰 Termius로 끝나지만, 토큰 발급 도구에 따라 PC가 한 번 필요할 수 있다(예: tesla_auth는 PC 프로그램이다). 위 표의 권한·수명 차이를 알고 쓴다. 기기 SSH 접속(Termius), `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey`, owner 토큰을 아는 빌드(커밋 `298cfc95d` 이후)가 필요하다. 그 전 빌드는 시작할 때 owner 토큰 파일을 지운다.
+Fleet 설정 1~4단계 대신 쓰는 방법이다. 토큰 발급(tesla_auth)에 PC가 한 번 필요하고, 기기 설정은 폰 Termius로 끝난다. 위 표의 권한·수명 차이를 알고 쓴다. 기기 SSH 접속(Termius), `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey`, 커밋 `1eecaa7c2` 이후 빌드가 필요하다. 그 전 빌드는 시작할 때 owner 토큰 파일을 지우거나, 토큰을 업로드되는 로그에 남긴다.
 
 **주의**
 - **NaviToTesla에 넣은 토큰을 복사하지 않는다.** 갱신 토큰은 한 번 쓰면 무효가 되어, 기기와 NaviToTesla가 서로를 끊는다. 기기용은 새로 로그인해 따로 받는다.
-- 2026-04에 테슬라가 로그인 방식을 바꿔 예전 토큰 발급 도구 대부분이 `redirect_uri` 오류로 막혔다. 그 뒤에 갱신된 도구(예: tesla_auth 포크)를 쓴다.
+- 2026-04에 테슬라가 로그인 방식을 바꿔 예전 토큰 발급 도구 대부분이 `redirect_uri` 오류로 막혔다. tesla_auth는 0.13.0에서 고쳐졌으니 0.13.0 이상을 쓴다. 예전에 받아 둔 버전이면 새로 받는다.
 - 이 토큰은 계정 전체 권한이다. 채팅·메모·스크린샷에 남기지 않는다.
-- 토큰을 붙여넣은 뒤에는 폰 클립보드 기록에서 지운다.
+- 토큰을 붙여넣은 뒤에는 클립보드 기록에서 지운다. PC는 `Win+V`에서 지우고, 폰으로 옮겼으면 폰 클립보드와 옮길 때 쓴 채팅에서도 지운다.
 
-1. 토큰 발급 도구로 테슬라에 새로 로그인해 **Refresh Token**을 받고 폰에 복사해 둔다.
-2. Termius로 기기에 접속해 토큰을 넣는다. 붙여넣은 입력이 화면에 안 보이는 게 정상이다:
+1. PC에서 tesla_auth를 받아(https://github.com/adriankumpf/tesla_auth/releases/latest , Windows는 x64 zip) 실행하고 테슬라에 새로 로그인한다(MFA 코드 포함). 마지막 창의 **Refresh Token**을 복사한다(Access Token 아님). PC PowerShell에서 `ssh comma@<기기IP>`가 되면 2~4번을 PC에서 한다. 그러면 토큰을 폰으로 옮기지 않아도 된다. 안 되면 토큰을 폰으로 옮겨 Termius에서 한다.
+2. 기기에 접속해 토큰을 넣는다. 명령을 실행하고, 토큰을 붙여넣고, Enter를 누른다. 붙여넣은 입력이 화면에 안 보이는 게 정상이다:
    ```bash
    read -rs V && printf '%s' "$V" > /data/params/d/.KoreaTeslaOwnerRefreshToken.tmp && mv -f /data/params/d/.KoreaTeslaOwnerRefreshToken.tmp /data/params/d/KoreaTeslaOwnerRefreshToken && unset V
    ```

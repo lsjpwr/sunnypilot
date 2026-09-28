@@ -13,7 +13,7 @@
 - NaviToTesla는 owner API를 쓴다: 토큰 `https://auth.tesla.com/oauth2/v3/token`, `client_id=ownerapi`, `scope=openid email offline_access`(JSON 본문), API `https://owner-api.teslamotors.com`, 차량은 `/api/1/products`의 `id`로 부른다(`/api/1/vehicles/{id}/command/share`).
 - 갱신 토큰은 한 번 쓰면 무효가 된다. NaviToTesla는 갱신할 때마다 새 토큰을 저장한다(`NaviToTeslaService.refreshToken`). 그래서 **기기는 NaviToTesla의 토큰을 같이 쓸 수 없다.** 같이 쓰면 먼저 갱신한 쪽이 다른 쪽을 끊는다. 기기용 토큰은 따로 발급한다.
 - 2026년 owner API 상황:
-  - 2026-04: 테슬라가 `ownerapi` 로그인의 redirect_uri를 바꿔 기존 토큰 발급 도구 대부분이 `redirect_uri not registered`로 막혔다. 갱신된 도구(tesla_auth 포크 등)는 된다.
+  - 2026-04: 테슬라가 `ownerapi` 로그인의 redirect_uri를 바꿔 기존 토큰 발급 도구 대부분이 `redirect_uri not registered`로 막혔다. tesla_auth는 0.13.0(2026-04-30)에서 고쳐져 된다.
   - 2026-05: owner API의 에너지 기기 주소가 401을 준다. 차량 주소는 NaviToTesla가 여전히 쓴다.
   - 2026-06: auth.tesla.com은 갱신 요청의 TLS 버전으로 토큰 종류를 정한다. TLS 1.3 미만이면 Fleet용 토큰을 주고, owner API는 그 토큰을 403으로 거부한다.
 - Fleet API는 `ownerapi` 토큰을 받지 않는다(JWT audience가 다르다). 그래서 두 모드의 접근 토큰은 섞이지 않는다.
@@ -162,6 +162,7 @@ owner API는 요금이 없다. Fleet 모드의 비용은 그대로다.
 - NaviToTesla 차량 주소와 `products`: https://github.com/zipizigi/NaviToTesla/blob/HEAD/app/src/main/kotlin/me/zipi/navitotesla/api/TeslaApi.kt
 - NaviToTesla가 갱신 때 새 토큰 저장: https://github.com/zipizigi/NaviToTesla/blob/HEAD/app/src/main/kotlin/me/zipi/navitotesla/service/NaviToTeslaService.kt
 - redirect_uri 변경(2026-04): https://github.com/teslamate-org/teslamate/issues/5296 , https://github.com/teslamate-org/teslamate/discussions/5295
+- tesla_auth 0.13.0 "Fix Tesla token fetching via the updated callback URL": https://github.com/adriankumpf/tesla_auth/releases , https://github.com/teslamate-org/teslamate/pull/5509
 - 에너지 주소 401, `ownerapi` 토큰의 Fleet 거부(2026-05): https://github.com/springfall2008/batpred/issues/3965
 - TLS 1.3과 토큰 종류(2026-06): https://snowake.dev/posts/tesla-owner-api-tls-version/
 - 갱신 토큰 1회용: https://teslamotorsclub.com/tmc/threads/refreshing-the-api-token.266016/
