@@ -487,7 +487,7 @@ CONFIGS = [
     subs=["longitudinalPlan", "driverAssistance"],
     ignore=["logMonoTime", "longitudinalPlan.processingDelay", "longitudinalPlan.solverExecutionTime"],
     init_callback=get_car_params_callback,
-    should_recv_callback=MessageBasedRcvCallback("modelV2"),
+    should_recv_callback=MessageBasedRcvCallback("radarState"),
     tolerance=NUMPY_TOLERANCE,
   ),
   ProcessConfig(
