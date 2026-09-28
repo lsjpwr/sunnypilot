@@ -15,7 +15,9 @@ from openpilot.common.simple_kalman import KF1D
 
 from opendbc.car import structs
 from opendbc.car.hyundai.values import HyundaiFlags
+from opendbc.car.tesla.values import DAS_CUTIN_TRACK_ID_BASE, TeslaFlags
 from opendbc.sunnypilot.car.hyundai.values import HyundaiFlagsSP
+from openpilot.sunnypilot.selfdrive.controls.lib.das_lead import DasLeadConfirmer
 
 
 # Default lead acceleration decay set to 50% at 1s
@@ -28,6 +30,9 @@ SPEED, ACCEL = 0, 1     # Kalman filter states enum
 V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 
 RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
+
+# Lead prob of a model lead that Tesla's DAS_object confirms: just past get_lead's 0.5 gate, far below the 0.9 FCW threshold
+DAS_CONFIRMED_PROB = 0.51
 
 
 class KalmanParams:
@@ -191,6 +196,17 @@ def get_custom_yrel(CP: structs.CarParams, CP_SP: structs.CarParamsSP, lead_dict
   return lead_dict
 
 
+def split_das_points(rr: car.RadarData) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
+  # Tesla DAS_object points (opendbc tesla/radar_interface.py) as (dRel, yRel): the lead slot, then the cut-in slot
+  lead = cutin = None
+  for pt in rr.points:
+    if pt.trackId < DAS_CUTIN_TRACK_ID_BASE:
+      lead = (pt.dRel, pt.yRel)
+    else:
+      cutin = (pt.dRel, pt.yRel)
+  return lead, cutin
+
+
 class RadarD:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParams, delay: float = 0.0):
     self.CP = CP
@@ -210,6 +226,12 @@ class RadarD:
 
     self.ready = False
 
+    # 2026+ Model Y with the VEHICLE bus tapped: radarTracks carries Tesla's own vision objects (DAS_object).
+    # They only confirm the model's leads and never become tracks.
+    self.das_confirmer: DasLeadConfirmer | None = None
+    if CP.brand == "tesla" and CP.flags & TeslaFlags.HW4_GEN2_VEHICLE_BUS:
+      self.das_confirmer = DasLeadConfirmer()
+
   def update(self, sm: messaging.SubMaster, rr: car.RadarData):
     self.ready = sm.seen['modelV2']
 
@@ -218,7 +240,8 @@ class RadarD:
       self.v_ego_hist.append(self.v_ego)
       self.last_v_ego_frame = sm.recv_frame['carState']
 
-    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel] for pt in rr.points}
+    # DAS_object points confirm vision leads below instead of becoming tracks
+    ar_pts = {} if self.das_confirmer is not None else {pt.trackId: [pt.dRel, pt.yRel, pt.vRel] for pt in rr.points}
 
     # *** remove missing points from meta data ***
     for ids in list(self.tracks.keys()):
@@ -257,9 +280,15 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x,
+      lead_probs = [f.x for f in self.lead_prob_filters]
+      if self.das_confirmer is not None:
+        candidates = [(leads_v3[i].x[0] - RADAR_TO_CAMERA, -leads_v3[i].y[0], leads_v3[i].prob) for i in range(2)]
+        confirmed = self.das_confirmer.update(self.v_ego, *split_das_points(rr), candidates)
+        lead_probs = [max(p, DAS_CONFIRMED_PROB) if c else p for p, c in zip(lead_probs, confirmed, strict=True)]
+
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, lead_probs[0],
                                           self.CP, self.CP_SP, low_speed_override=True)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x,
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, lead_probs[1],
                                           self.CP, self.CP_SP, low_speed_override=False)
 
   def publish(self, pm: messaging.PubMaster):
