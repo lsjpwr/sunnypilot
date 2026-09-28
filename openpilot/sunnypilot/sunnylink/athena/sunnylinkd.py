@@ -74,6 +74,7 @@ SENSITIVE_PARAMS = {
   "LongitudinalManeuverMode",
   "JoystickDebugMode",
   "StopDistance",
+  "TeslaDasLeadConfirm",
 
   # Privacy
   "RecordFront",

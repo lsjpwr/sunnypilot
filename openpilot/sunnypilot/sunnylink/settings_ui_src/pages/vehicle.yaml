@@ -78,6 +78,14 @@ sections:
       equals: true
     enablement:
     - $ref: '#/macros/offroad'
+  - key: TeslaDasLeadConfirm
+    widget: toggle
+    title: Confirm Leads with Tesla Vision (Beta)
+    description: 2026+ Model Y with the vehicle bus connected only. When Tesla's own vision reports a car where the driving
+      model sees a possible lead, sunnypilot treats it as a lead before the model is sure. Distance and speed still come
+      from the model.
+    enablement:
+    - $ref: '#/macros/not_engaged'
 - id: toyota
   title: Toyota / Lexus Settings
   description: ''

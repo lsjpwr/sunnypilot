@@ -95,6 +95,7 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
       "LongitudinalManeuverMode": "1",
       "JoystickDebugMode": "1",
       "StopDistance": "4.0",
+      "TeslaDasLeadConfirm": "0",
       "RecordFront": "1",
       "RecordAudio": "1",
       "RecordAudioFeedback": "1",
