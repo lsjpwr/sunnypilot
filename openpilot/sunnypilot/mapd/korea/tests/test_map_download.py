@@ -119,12 +119,13 @@ class TestReadManifest(MapDownloadTestCase):
     It ships with an empty databases list until a release is published, so this asserts a
     relationship instead of a fixed list: every entry the file holds must survive
     read_manifest. A regenerated manifest carrying a field the device does not read fails
-    here, empty or not.
+    here, empty or not. In any order: read_manifest returns entries smallest first, while
+    emit_manifest writes links first.
     """
     payload = json.loads(pathlib.Path(map_download.MANIFEST_PATH).read_text(encoding="utf-8"))
     self.assertEqual(payload["manifest_version"], map_download.MANIFEST_VERSION)
     entries = map_download.read_manifest()
-    self.assertEqual([e.name for e in entries], [d["name"] for d in payload["databases"]])
+    self.assertCountEqual([e.name for e in entries], [d["name"] for d in payload["databases"]])
 
   def test_cameras_are_not_in_the_manifest(self):
     """camera_refresh.py already rewrites that file from the API. Two writers on one path
