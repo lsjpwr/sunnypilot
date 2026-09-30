@@ -36,6 +36,10 @@ HTTP_TIMEOUT_S = 30.
 
 REFRESH_INTERVAL_S = 7 * 24 * 3600.   # the dataset's referenceDate moves monthly at most
 RETRY_INTERVAL_S = 3600.
+# The first tick after every boot has no deviceState yet (sm.update(0) on a socket opened
+# microseconds earlier). That is a startup race, not a failure, so it must not cost the
+# full retry interval. Same as map_download.STARTUP_WAIT_S.
+STARTUP_WAIT_S = 30.
 
 # Refuse a result this much smaller than what we already have. A partial API outage
 # answers 200 with a short page; without this it would quietly wipe the cameras.
@@ -206,6 +210,7 @@ class CameraRefresher:
             # the capnp default, not an answer. On the first tick after boot that would
             # start a multi-megabyte download over a metered link.
             LOG.info("camera refresh: no deviceState yet, waiting")
+            wait = STARTUP_WAIT_S
           elif sm['deviceState'].networkMetered:
             LOG.info("camera refresh: network is metered, waiting")
           elif refresh(self.cameras_path, api_key):

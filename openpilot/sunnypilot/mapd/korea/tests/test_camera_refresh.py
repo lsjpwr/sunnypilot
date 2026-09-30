@@ -205,9 +205,15 @@ class TestDue(unittest.TestCase):
 
 
 class OneShotStop(threading.Event):
-  """Lets _loop run exactly one iteration: the trailing wait() ends the loop."""
+  """Lets _loop run exactly one iteration: the trailing wait() ends the loop. Records the
+  timeout, so a test can see which interval _loop chose."""
+
+  def __init__(self):
+    super().__init__()
+    self.waits = []
 
   def wait(self, timeout=None):
+    self.waits.append(timeout)
     self.set()
     return True
 
@@ -253,6 +259,7 @@ class TestRefresherLoop(unittest.TestCase):
     r = camera_refresh.CameraRefresher("/nonexistent/korea_cameras.sqlite")  # missing file: always due
     r._stop = OneShotStop()
     r._loop()
+    self.waits = r._stop.waits
     return refreshed
 
   def test_no_deviceState_yet_does_not_download(self):
@@ -260,6 +267,14 @@ class TestRefresherLoop(unittest.TestCase):
     default, not an answer. Downloading on that would put several megabytes on a metered
     link on the first tick after boot."""
     self.assertEqual(self.run_one_iteration(recv_frame=0, metered=False), [])
+
+  def test_no_deviceState_yet_retries_soon(self):
+    """sm.update(0) is non-blocking on a socket opened microseconds earlier, so this branch
+    is taken after every boot. Waiting the full retry interval on it put the first refresh
+    of every boot an hour out, with the key set and Wi-Fi up (seen on the device 2026-09-30)."""
+    self.run_one_iteration(recv_frame=0, metered=False)
+    self.assertEqual(self.waits, [camera_refresh.STARTUP_WAIT_S])
+    self.assertLess(camera_refresh.STARTUP_WAIT_S, camera_refresh.RETRY_INTERVAL_S)
 
   def test_a_metered_network_does_not_download(self):
     self.assertEqual(self.run_one_iteration(recv_frame=1, metered=True), [])
