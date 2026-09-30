@@ -1,4 +1,21 @@
 {
   "manifest_version": 1,
-  "databases": []
+  "databases": [
+    {
+      "name": "korea_links.sqlite",
+      "url": "https://github.com/lsjpwr/sunnypilot/releases/download/korea-map-2026.08/korea_links.sqlite",
+      "sha256": "38a985994ba7e7dc4c38b3b35a5dc89ddacebca3dc1556e71c12692857cf8ca4",
+      "bytes": 219742208,
+      "table": "links",
+      "min_rows": 1000000
+    },
+    {
+      "name": "korea_bumps.sqlite",
+      "url": "https://github.com/lsjpwr/sunnypilot/releases/download/korea-map-2026.08/korea_bumps.sqlite",
+      "sha256": "9c32d0a3c675aafa14863ec7a1c1d30868693cc602b09cc8254321ca0137ce59",
+      "bytes": 11079680,
+      "table": "bumps",
+      "min_rows": 83000
+    }
+  ]
 }
