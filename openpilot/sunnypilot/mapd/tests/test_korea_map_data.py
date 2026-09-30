@@ -839,3 +839,33 @@ class TestSideRoadCamera(unittest.TestCase):
     left_behind = [(37.5009, 127.0200), (37.5009, 127.0320)]
     data = self.publish_with([(37.5009, 127.0228, 30, 0, CAMERA_ZONE)], route=left_behind)
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+
+
+class TestCurvesOnlyOnTheRoute(unittest.TestCase):
+  """The curves follow the slowdown camera's rule: the route's curves count only while the car
+  is on the route. RouteSource keeps a polyline the car has left until a reroute succeeds --
+  3 s at best, minutes with no signal, and again every time Tesla's nav and TMAP disagree about
+  the way. A curve on that road is not on ours, and slowing for it is a phantom brake."""
+
+  # ~97 m east, then ~100 m north: a corner worth ~12 m/s.
+  CORNER = [(37.5000, 127.0200), (37.5000, 127.0211), (37.5009, 127.0211)]
+
+  def curves_at(self, lat, lon):
+    data = make_data()
+    data.read_bump_params = lambda: None
+    data.read_camera_params = lambda: None
+    data.update_destination = lambda: None
+    data.sm = SimpleNamespace(update=lambda rate: None)
+    data.update_location = lambda: None  # keeps the route and position set below
+    data.publish = lambda: None
+    data.publish_targets = lambda: None
+    data.route = self.CORNER
+    data.last_position = Coordinate(lat, lon)
+    data.tick()
+    return data.curve_points
+
+  def test_on_the_route_the_corner_ahead_is_a_target(self):
+    self.assertEqual([(lat, lon) for lat, lon, _ in self.curves_at(37.5000, 127.0200)], [(37.5000, 127.0211)])
+
+  def test_off_the_route_its_corner_is_not_a_target(self):
+    self.assertEqual(self.curves_at(37.4991, 127.0200), [])  # ~100 m south, on a road the route left
