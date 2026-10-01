@@ -514,17 +514,17 @@ class KoreaMapDB:
     """The end camera of the 구간단속 section we would be entering here, or None.
 
     Same limit, SECTION_MIN_M to SECTION_MAX_M away, and ahead on our road: along the route
-    while the car is on it, else within SECTION_AHEAD_TOLERANCE of our heading. Nearest wins.
+    while the car is on it, else within SECTION_AHEAD_TOLERANCE of our heading. Nearest wins, so
+    the ends are tried nearest first and the first one ahead is the answer: the route checks are
+    the costly part.
     """
     if heading_deg is None:
       return None
     on_route = bool(route) and distance_to_route(route, lat, lon) <= ROUTE_CORRIDOR_M
     car_progress = route_progress(route, lat, lon) if on_route else 0.
-    best: Camera | None = None
-    for camera in self._section_cameras(lat, lon, CAMERA_SECTION_END, SECTION_SEARCH_DEG, SECTION_MAX_M):
+    ends = self._section_cameras(lat, lon, CAMERA_SECTION_END, SECTION_SEARCH_DEG, SECTION_MAX_M)
+    for camera in sorted(ends, key=lambda c: c.distance_m):
       if camera.limit_kph != limit_kph or camera.distance_m < SECTION_MIN_M:
-        continue
-      if best is not None and camera.distance_m >= best.distance_m:
         continue
       if on_route:
         if distance_to_route(route, camera.lat, camera.lon) > ROUTE_CORRIDOR_M or \
@@ -532,8 +532,33 @@ class KoreaMapDB:
           continue
       elif bearing_delta(heading_deg, bearing(lat, lon, camera.lat, camera.lon)) > SECTION_AHEAD_TOLERANCE:
         continue
-      best = camera
-    return best
+      return camera
+    return None
+
+  def section_start_between(self, lat: float, lon: float, end: Camera, route: list[tuple[float, float]],
+                            passed_end: tuple[float, float]) -> bool:
+    """Does a start camera of end's limit lie on the route between the car and end?
+
+    Then end closes the section that starts there, not one starting here. The starts beside
+    passed_end (the end camera just passed) and beside end do not count: both directions of a
+    section share their end points, so the other direction's start stands beside each, as does the
+    start of a section that begins where the last one ends.
+    """
+    car_progress = route_progress(route, lat, lon)
+    end_progress = route_progress(route, end.lat, end.lon)
+    # a camera within ROUTE_CORRIDOR_M of the route between the car and end (both within it too) is
+    # at most this far from the two, together
+    reach = end_progress - car_progress + 4 * ROUTE_CORRIDOR_M
+    for start in self._section_cameras(lat, lon, CAMERA_SECTION, SECTION_SEARCH_DEG, reach):
+      if start.limit_kph != end.limit_kph or start.distance_m + haversine(start.lat, start.lon, end.lat, end.lon) > reach:
+        continue
+      if haversine(start.lat, start.lon, passed_end[0], passed_end[1]) <= SECTION_PASS_M or \
+         haversine(start.lat, start.lon, end.lat, end.lon) <= SECTION_PASS_M:
+        continue
+      if distance_to_route(route, start.lat, start.lon) <= ROUTE_CORRIDOR_M and \
+         car_progress < route_progress(route, start.lat, start.lon) < end_progress:
+        return True
+    return False
 
   def _section_cameras(self, lat: float, lon: float, kind: int, box_deg: float, max_m: float) -> list[Camera]:
     if not self._cam_has_kind:

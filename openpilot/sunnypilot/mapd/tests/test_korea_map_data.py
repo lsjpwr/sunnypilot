@@ -68,6 +68,7 @@ def make_data(link=None, camera=None, external=None):
   data.localizer_valid = True
   data.section = None
   data._section_prev = None
+  data._section_passed = None
   return data
 
 
@@ -888,6 +889,9 @@ class TestCurvesOnlyOnTheRoute(unittest.TestCase):
 class TestSection(unittest.TestCase):
   START = Camera(lat=37.6000, lon=127.0000, limit_kph=100, distance_m=4., section_m=0, kind=CAMERA_SECTION)
   END = Camera(lat=37.6000, lon=127.0600, limit_kph=100, distance_m=5286., section_m=0, kind=CAMERA_SECTION_END)
+  START2 = Camera(lat=37.6000, lon=127.0600, limit_kph=100, distance_m=4., section_m=0, kind=CAMERA_SECTION)
+  END2 = Camera(lat=37.6000, lon=127.1200, limit_kph=100, distance_m=5286., section_m=0, kind=CAMERA_SECTION_END)
+  ALONG = [(37.6000, 126.9990), (37.6000, 127.1300)]  # a TMAP route along the road
   NOTHING = SimpleNamespace(section_starts_near=lambda lat, lon: [], section_end_ahead=lambda *a, **k: None)
 
   def make(self, starts=(), end=None):
@@ -931,19 +935,58 @@ class TestSection(unittest.TestCase):
     data.update_section(37.6000, 127.0000)
     self.assertIsNone(data.section)
 
-  def test_a_section_starting_where_the_last_one_ends_gets_its_own_start(self):
+  def pass_the_end(self, route=(), start_between=False):
+    """Open the section, then reach its end camera, where a same-limit start camera stands beside it
+    and another end camera of that limit lies ahead. Returns the data and the first section."""
     data = self.make(starts=[self.START], end=self.END)
+    data.route = list(route)
     data.update_section(37.6000, 127.0000)
     first = data.section
-    # beside the end camera stands the next section's start camera, with the same limit
-    start2 = Camera(lat=37.6000, lon=127.0600, limit_kph=100, distance_m=4., section_m=0, kind=CAMERA_SECTION)
-    end2 = Camera(lat=37.6000, lon=127.1200, limit_kph=100, distance_m=5286., section_m=0, kind=CAMERA_SECTION_END)
-    data.db = SimpleNamespace(section_starts_near=lambda lat, lon: [start2],
-                              section_end_ahead=lambda lat, lon, heading, limit, route=None: end2)
+    data.db = SimpleNamespace(section_starts_near=lambda lat, lon: [self.START2],
+                              section_end_ahead=lambda lat, lon, heading, limit, route=None: self.END2,
+                              section_start_between=lambda lat, lon, end, route, passed: start_between)
     data.update_section(37.6000, 127.0600)
+    return data, first
+
+  def test_on_a_route_a_section_starting_where_the_last_one_ends_gets_its_own_start(self):
+    data, first = self.pass_the_end(route=self.ALONG)
     self.assertIsNot(data.section, first)
     self.assertEqual(data.section.end_lon, 127.1200)
     self.assertGreater(data.section.started, first.started)
+
+  def test_off_a_route_a_start_beside_the_end_just_passed_opens_nothing(self):
+    # most likely the other direction's start: the end it finds ahead belongs to another section
+    data, _ = self.pass_the_end()
+    self.assertIsNone(data.section)
+
+  def test_on_a_route_a_start_in_between_keeps_the_start_beside_the_end_from_opening(self):
+    data, _ = self.pass_the_end(route=self.ALONG, start_between=True)
+    self.assertIsNone(data.section)
+
+  def test_a_start_beside_an_end_left_well_behind_opens_again(self):
+    # back the other way later in the drive: the other direction's section opens there as usual
+    data, _ = self.pass_the_end()
+    stub = data.db
+    data.db = self.NOTHING
+    data.update_section(37.6000, 127.0630)  # ~260 m on: no start beside the end is in reach from here
+    data.db = stub
+    data.update_section(37.6000, 127.0600)
+    self.assertIsNotNone(data.section)
+
+  def test_opening_and_closing_are_logged_without_where(self):
+    with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.cloudlog") as log:
+      data = self.make(starts=[self.START], end=self.END)
+      data.update_section(37.6000, 127.0000)
+      data.db = self.NOTHING
+      data.update_section(37.6000, 127.0600)
+    lines = [call.args[0] % call.args[1:] for call in log.info.call_args_list]
+    self.assertEqual(len(lines), 2, lines)
+    self.assertIn("opened", lines[0])
+    self.assertIn("passed its end camera", lines[1])
+    for line in lines:
+      self.assertIn("100 km/h", line)
+      self.assertNotIn("37.6", line)
+      self.assertNotIn("127.", line)
 
   def test_the_section_goes_to_shared_memory(self):
     data = self.make(starts=[self.START], end=self.END)
@@ -968,3 +1011,56 @@ class TestSection(unittest.TestCase):
     self.assertIsNone(data.section)
     self.assertEqual(data.mem_params.values["KoreaSectionSpeedLimit"], 0.)
     self.assertEqual(data.mem_params.values["KoreaSectionStart"], 0.)
+
+
+class TestSectionAtItsEnd(unittest.TestCase):
+  """update_section over a real database, driving east at about 35 m a tick (1 Hz at 125 km/h) through a
+  100 km/h section whose end has the westbound start beside it, with another 100 km/h section's end
+  further east. That end must not be taken for one of a section starting at ours."""
+  CAMERAS = [
+    (37.6000, 127.0000, 100, 0, CAMERA_SECTION),
+    (37.6000, 127.0600, 100, 0, CAMERA_SECTION_END),
+    (37.60001, 127.06001, 100, 0, CAMERA_SECTION),      # westbound start, beside our end
+    (37.60001, 127.00001, 100, 0, CAMERA_SECTION_END),  # westbound end, beside our start
+    (37.6000, 127.2100, 100, 0, CAMERA_SECTION_END),    # another 100 km/h section's end, ~13 km east of ours
+  ]
+  NEXT_START = (37.6000, 127.1500, 100, 0, CAMERA_SECTION)  # that section's start
+  ALONG = [(37.6000, 126.9900), (37.6000, 127.3000)]
+
+  def drive(self, cameras, route=()):
+    """The end camera of the open section at each tick, by longitude; None for no section."""
+    tmp = self.enterContext(tempfile.TemporaryDirectory())
+    cams, links = os.path.join(tmp, "cameras.sqlite"), os.path.join(tmp, "links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, cameras))
+    write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [(100, "road", self.ALONG)]))
+    data = make_data()
+    data.db = KoreaMapDB(cams, links)
+    self.addCleanup(data.db.close)
+    data.last_bearing = 90.
+    data.route = list(route)
+    seen = {}
+    for i in range(560):
+      lon = round(126.9990 + i * 0.0004, 4)
+      data.update_section(37.6000, lon)
+      seen[lon] = data.section.end_lon if data.section is not None else None
+    return seen
+
+  @staticmethod
+  def ends_open(seen, west, east):
+    return {end for lon, end in seen.items() if west < lon < east and end is not None}
+
+  def test_off_a_route_nothing_opens_at_the_end(self):
+    seen = self.drive(self.CAMERAS)
+    self.assertEqual(self.ends_open(seen, 127.0000, 127.0588), {127.0600})
+    self.assertEqual(self.ends_open(seen, 127.0596, 127.2200), set())
+
+  def test_on_a_route_a_section_starting_at_the_end_opens_there(self):
+    seen = self.drive(self.CAMERAS, route=self.ALONG)
+    self.assertEqual(self.ends_open(seen, 127.0596, 127.2048), {127.2100})
+
+  def test_the_next_section_opens_at_its_own_start(self):
+    for name, route in (("off a route", ()), ("on a route", self.ALONG)):
+      with self.subTest(name):
+        seen = self.drive(self.CAMERAS + [self.NEXT_START], route=route)
+        self.assertEqual(self.ends_open(seen, 127.0596, 127.1492), set())
+        self.assertEqual(self.ends_open(seen, 127.1496, 127.2048), {127.2100})

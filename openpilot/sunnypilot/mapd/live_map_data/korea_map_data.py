@@ -105,6 +105,8 @@ class KoreaMapData(BaseMapData):
     self.bump: Bump | None = None
     self.section: Section | None = None
     self._section_prev: tuple[float, float] | None = None
+    # the end camera of the section we last left by passing it, while a start beside it is in reach
+    self._section_passed: tuple[float, float] | None = None
     # SmartCruiseControlMap reads its input from /dev/shm, not from the message bus.
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
     self.bump_enabled = False
@@ -167,7 +169,8 @@ class KoreaMapData(BaseMapData):
     self.slowdown_camera = None
     self._camera_anchor = None
     self.bump = None
-    self.section = self._section_prev = None
+    self._drop_section("map source closed")
+    self._section_prev = self._section_passed = None
     # The source is going away. SCC-Map polls this param every frame and has no idea who
     # last wrote it, so a point left here would be acted on by whatever runs next.
     self.mem_params.put("MapTargetVelocities", "[]")
@@ -284,26 +287,53 @@ class KoreaMapData(BaseMapData):
     end points, so the other direction's start stands beside our end. A section opens only when
     a same-limit end camera lies ahead on our road, and when in doubt it does not open at all:
     the start and end cameras still brake the car through SCC-Map, as before.
+
+    So a start beside the end camera we have just passed opens nothing: it is most likely the
+    other direction's, and the end it finds ahead belongs to another section, whose own start
+    would then go unnoticed. Only a route tells it from the start of a section that begins where
+    ours ends: on one, it opens when its end lies along the route with no start of its limit in
+    between.
     """
     if CAMERA_SECTION not in self.camera_kinds or self.last_bearing is None:
-      self.section, self._section_prev = None, None
+      self._drop_section("section cameras off")
+      self._section_prev = self._section_passed = None
       return
 
     if self.section is not None:
       if self._section_prev is not None:
         self.section.travelled_m += haversine(self._section_prev[0], self._section_prev[1], lat, lon)
-      if haversine(lat, lon, self.section.end_lat, self.section.end_lon) <= SECTION_PASS_M or \
-         self.section.travelled_m > self.section.max_travel_m:
-        self.section = None
+      if haversine(lat, lon, self.section.end_lat, self.section.end_lon) <= SECTION_PASS_M:
+        self._section_passed = (self.section.end_lat, self.section.end_lon)
+        self._drop_section("passed its end camera")
+      elif self.section.travelled_m > self.section.max_travel_m:
+        self._drop_section("drove past its length")
+
+    # a start within SECTION_PASS_M of the passed end is out of reach from twice that
+    passed = self._section_passed
+    if passed is not None and haversine(lat, lon, passed[0], passed[1]) > 2 * SECTION_PASS_M:
+      passed = self._section_passed = None
 
     if self.section is None:
       for start in self.db.section_starts_near(lat, lon):
+        beside_passed = passed is not None and haversine(start.lat, start.lon, passed[0], passed[1]) <= SECTION_PASS_M
+        if beside_passed and distance_to_route(self.route, lat, lon) > ROUTE_CORRIDOR_M:
+          continue
         end = self.db.section_end_ahead(lat, lon, self.last_bearing, start.limit_kph, route=self.route)
-        if end is not None:
-          self.section = Section(start.limit_kph, end.lat, end.lon,
-                                 end.distance_m * SECTION_TRAVEL_FACTOR + SECTION_TRAVEL_SLACK_M, started=time.monotonic())
-          break
+        if end is None or (beside_passed and self.db.section_start_between(lat, lon, end, self.route, passed)):
+          continue
+        self.section = Section(start.limit_kph, end.lat, end.lon,
+                               end.distance_m * SECTION_TRAVEL_FACTOR + SECTION_TRAVEL_SLACK_M, started=time.monotonic())
+        cloudlog.info("korea_map: section opened: limit %d km/h, end camera %.0f m away, given up after %.0f m",
+                      start.limit_kph, end.distance_m, self.section.max_travel_m)
+        break
     self._section_prev = (lat, lon)
+
+  def _drop_section(self, reason: str) -> None:
+    """Forget the section we are in, and log why: its limit and distances, never where it is."""
+    if self.section is not None:
+      cloudlog.info("korea_map: section closed (%s): limit %d km/h, drove %.0f of %.0f m", reason,
+                    self.section.limit_kph, self.section.travelled_m, self.section.max_travel_m)
+    self.section = None
 
   def get_current_speed_limit(self) -> float:
     nav = self.nav()

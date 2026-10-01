@@ -570,6 +570,30 @@ class TestSections(KoreaMapDBTestCase):
   def test_the_end_kind_answers_to_the_section_toggle(self):
     self.assertEqual(CAMERA_KIND_PARAMS[CAMERA_SECTION_END], CAMERA_KIND_PARAMS[CAMERA_SECTION])
 
+  def test_the_nearest_of_two_ends_ahead_wins(self):
+    db = self.open_with_cameras([*SECTION_CAMERAS, (37.6000, 127.0400, 100, 0, CAMERA_SECTION_END)])
+    end = db.section_end_ahead(*SEC_A, 90., 100)
+    self.assertEqual((end.lat, end.lon), (37.6000, 127.0400))
+
+  def test_only_a_start_of_the_limit_on_the_route_before_the_end_is_between(self):
+    # just past the eastbound end, with another 100 km/h section's end further east along the route
+    car, along = (37.6000, 127.0594), [(37.6000, 126.9900), (37.6000, 127.3000)]
+    far_end = (37.6000, 127.2100, 100, 0, CAMERA_SECTION_END)
+    not_between = [
+      (37.60001, 127.06001, 100, 0, CAMERA_SECTION),  # beside the end just passed: the other direction's start
+      (37.60001, 127.21001, 100, 0, CAMERA_SECTION),  # beside the far end
+      (37.6000, 127.1500, 80, 0, CAMERA_SECTION),     # another limit
+      (37.6100, 127.1500, 100, 0, CAMERA_SECTION),    # ~1.1 km off the route
+      (37.6000, 127.0300, 100, 0, CAMERA_SECTION),    # behind the car
+    ]
+    for name, starts, between in (("none between", not_between, False),
+                                  ("a start between", [*not_between, (37.6000, 127.1500, 100, 0, CAMERA_SECTION)], True)):
+      with self.subTest(name):
+        db = self.open_with_cameras([far_end, *starts])
+        end = db.section_end_ahead(*car, 90., 100, route=along)
+        self.assertEqual((end.lat, end.lon), far_end[:2])
+        self.assertEqual(db.section_start_between(*car, end, along, SEC_B), between)
+
 
 class TestReloadAllThree(KoreaMapDBTestCase):
   """reload_if_changed used to watch only the camera file. The downloader replaces the
