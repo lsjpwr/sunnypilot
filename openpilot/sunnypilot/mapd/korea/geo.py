@@ -40,6 +40,21 @@ def bearing_delta(a: float, b: float) -> float:
   return abs((a - b + 180.) % 360. - 180.)
 
 
+def _project(plat: float, plon: float,
+             alat: float, alon: float,
+             blat: float, blon: float) -> tuple[float, float, float, float, float]:
+  """Segment AB in a local equirectangular projection centred on P, in metres: A as (ax, ay), AB as
+  (dx, dy), and t, the fraction along AB of the point nearest P (0 for a zero-length segment)."""
+  m_lon = M_PER_DEG_LAT * math.cos(math.radians(plat))
+  ax, ay = (alon - plon) * m_lon, (alat - plat) * M_PER_DEG_LAT
+  bx, by = (blon - plon) * m_lon, (blat - plat) * M_PER_DEG_LAT
+  dx, dy = bx - ax, by - ay
+  seg_len_sq = dx * dx + dy * dy
+  # closest point on AB to the origin, clamped to the segment
+  t = 0. if seg_len_sq == 0. else max(0., min(1., -(ax * dx + ay * dy) / seg_len_sq))
+  return ax, ay, dx, dy, t
+
+
 def point_segment_distance(plat: float, plon: float,
                            alat: float, alon: float,
                            blat: float, blon: float) -> float:
@@ -48,17 +63,7 @@ def point_segment_distance(plat: float, plon: float,
   Uses a local equirectangular projection centred on P. Over a single link segment
   the error is well under a metre, and the caller only needs to rank candidates.
   """
-  m_lon = M_PER_DEG_LAT * math.cos(math.radians(plat))
-  ax, ay = (alon - plon) * m_lon, (alat - plat) * M_PER_DEG_LAT
-  bx, by = (blon - plon) * m_lon, (blat - plat) * M_PER_DEG_LAT
-
-  dx, dy = bx - ax, by - ay
-  seg_len_sq = dx * dx + dy * dy
-  if seg_len_sq == 0.:
-    return math.hypot(ax, ay)
-
-  # closest point on AB to the origin, clamped to the segment
-  t = max(0., min(1., -(ax * dx + ay * dy) / seg_len_sq))
+  ax, ay, dx, dy, t = _project(plat, plon, alat, alon, blat, blon)
   return math.hypot(ax + t * dx, ay + t * dy)
 
 
@@ -66,10 +71,5 @@ def closest_point_on_segment(plat: float, plon: float,
                              alat: float, alon: float,
                              blat: float, blon: float) -> tuple[float, float]:
   """The point of segment AB nearest to P, as (lat, lon). Same projection as point_segment_distance."""
-  m_lon = M_PER_DEG_LAT * math.cos(math.radians(plat))
-  ax, ay = (alon - plon) * m_lon, (alat - plat) * M_PER_DEG_LAT
-  bx, by = (blon - plon) * m_lon, (blat - plat) * M_PER_DEG_LAT
-  dx, dy = bx - ax, by - ay
-  seg_len_sq = dx * dx + dy * dy
-  t = 0. if seg_len_sq == 0. else max(0., min(1., -(ax * dx + ay * dy) / seg_len_sq))
+  t = _project(plat, plon, alat, alon, blat, blon)[4]
   return alat + t * (blat - alat), alon + t * (blon - alon)
