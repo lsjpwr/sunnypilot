@@ -68,6 +68,12 @@ FAR_HIGH = (100, "고속도로", [(37.5203, 127.0500), (37.5203, 127.0620)])
 STICKY_NEAR = (30, "이면도로", [(37.5300, 127.0500), (37.5300, 127.0620)])
 STICKY_FAR = (100, "고속도로", [(37.53022, 127.0500), (37.53022, 127.0620)])  # ~24.5 m north
 
+# A 60 km/h main road and a 10 km/h side road ~14.5 m north of it, both east-west -- the
+# 2026-09-30 false low: a fix drifting a few metres toward the side road must not drop the
+# limit to 10.
+MAIN_60 = (60, "큰길", [(37.5400, 127.0500), (37.5400, 127.0620)])
+SIDE_10 = (10, "이면도로", [(37.54013, 127.0500), (37.54013, 127.0620)])
+
 # os.replace() of a file with an open sqlite3 connection on it is a POSIX guarantee
 # (existing readers keep the old inode) that Windows does not provide (PermissionError:
 # WinError 5, even for a read-only, idle connection). These tests exercise exactly that
@@ -438,6 +444,28 @@ class TestTieBreakAndHysteresis(KoreaMapDBTestCase):
         second = database.current_link(37.5300, 127.0500)
         self.assertIsNotNone(second)
         self.assertEqual(second.max_spd, 30)
+
+
+class TestSwitchMargin(KoreaMapDBTestCase):
+  def test_a_drift_toward_a_slower_side_road_keeps_the_road_we_are_on(self):
+    database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
+    self.assertEqual(database.current_link(37.5400, 127.0510).max_spd, 60)
+    # ~8.3 m off the main road, ~6.1 m off the side road: nearer the side road, but not by LINK_SWITCH_MARGIN_M
+    self.assertEqual(database.current_link(37.540075, 127.0510).max_spd, 60)
+
+  def test_a_slower_road_clearly_nearer_takes_over(self):
+    database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
+    database.current_link(37.5400, 127.0510)
+    self.assertEqual(database.current_link(37.54013, 127.0510).max_spd, 10)
+
+  def test_a_faster_road_takes_over_as_soon_as_it_is_nearer(self):
+    database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
+    self.assertEqual(database.current_link(37.54013, 127.0510).max_spd, 10)
+    self.assertEqual(database.current_link(37.540060, 127.0510).max_spd, 60)
+
+  def test_without_a_previous_match_the_nearest_road_wins(self):
+    database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
+    self.assertEqual(database.current_link(37.540075, 127.0510).max_spd, 10)
 
 
 class TestVerify(KoreaMapDBTestCase):

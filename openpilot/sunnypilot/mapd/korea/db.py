@@ -35,6 +35,12 @@ LINK_BEARING_TOLERANCE = 60.
 # actually a few metres apart.
 TIE_DISTANCE_M = 0.1
 
+# A link with a lower limit than the one we are on must be this much nearer before it takes
+# over. Side roads and service lanes run a few metres off main roads, and a fix drifting toward
+# one dropped a 60 road to 10 km/h for 6 s on 2026-09-30. A higher limit still takes over as soon
+# as it is nearer: guessing high only means speed limit assist assists less.
+LINK_SWITCH_MARGIN_M = 10.
+
 # 과속방지턱형태구분, as build_db.classify_kind maps it. Defined here rather than in
 # build_db because the dependency has to run builder -> runtime: db.py and
 # korea_map_data.py read these at runtime, and importing build_db to get them would drag
@@ -338,6 +344,9 @@ class KoreaMapDB:
     is held only while it stays tied with the nearest candidate, so the pick does not
     flap between tied links frame to frame; it releases as soon as a clearly nearer link
     appears, not merely when it falls out of LINK_MAX_DISTANCE_M or fails the heading check.
+    A link with a lower limit than the previous match must also be LINK_SWITCH_MARGIN_M
+    nearer before it takes over, so a fix drifting toward a slower side road keeps the road
+    we are on.
     """
     rows = self.lnk.execute(
       "SELECT l.id, l.max_spd, l.name, l.geom FROM links_idx i JOIN links l ON l.id = i.id " + _RTREE_OVERLAP,
@@ -364,6 +373,13 @@ class KoreaMapDB:
       self._last_link_id = None
       return None
 
+    best_id = self._pick_off_route(candidates)
+
+    self._last_link_id = best_id
+    _, max_spd, name = candidates[best_id]
+    return Link(max_spd=max_spd, name=name)
+
+  def _pick_off_route(self, candidates: dict[int, tuple[float, int, str]]) -> int:
     nearest = min(distance for distance, _, _ in candidates.values())
     # Everything inside the tie band is the same place as far as float32 geometry can tell.
     tied = {link_id: value for link_id, value in candidates.items()
@@ -372,15 +388,16 @@ class KoreaMapDB:
     if self._last_link_id in tied:
       # Hold the previous match, but only against links it is genuinely tied with.
       # Anything beyond the tie band is a different road and must outrank stickiness.
-      best_id = self._last_link_id
-    else:
-      # Prefer the higher limit among tied candidates, nearest first as a deterministic
-      # tiebreak so the result never depends on row order.
-      best_id = max(tied, key=lambda link_id: (tied[link_id][1], -tied[link_id][0]))
+      return self._last_link_id
 
-    self._last_link_id = best_id
-    _, max_spd, name = candidates[best_id]
-    return Link(max_spd=max_spd, name=name)
+    # Prefer the higher limit among tied candidates, nearest first as a deterministic
+    # tiebreak so the result never depends on row order.
+    best_id = max(tied, key=lambda link_id: (tied[link_id][1], -tied[link_id][0]))
+
+    held = candidates.get(self._last_link_id)
+    if held is not None and candidates[best_id][1] < held[1] and held[0] - candidates[best_id][0] < LINK_SWITCH_MARGIN_M:
+      return self._last_link_id
+    return best_id
 
   def next_camera(self, lat: float, lon: float, heading_deg: float | None,
                   route: list[tuple[float, float]] | None = None,
