@@ -9,6 +9,7 @@ import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log, custom
 from opendbc.car.structs import car
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.sunnypilot.selfdrive.selfdrived.events_base import EventsBase, Priority, ET, Alert, \
   NoEntryAlert, ImmediateDisableAlert, EngagementAlert, NormalPermanentAlert, AlertCallbackType, wrong_car_mode_alert
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import resolve_pcm_long_required_max
@@ -73,6 +74,24 @@ def speed_limit_pre_active_alert(CP: car.CarParams, CS: car.CarState, sm: messag
     "",
     AlertStatus.normal, alert_size,
     Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleLow, .1)
+
+
+AUTO_SLA_CHIME_MARGIN = 1.  # m/s; a new target this far under the current speed slows the car
+
+
+def speed_limit_active_alert(CP: car.CarParams, CS: car.CarState, sm: messaging.SubMaster, metric: bool, soft_disable_time: int, personality) -> Alert:
+  sound = AudibleAlertSP.promptSingleHigh
+  if CP.brand == "tesla" and Params().get_bool("TeslaAutoSpeedLimitAssist"):
+    # Auto mode announces every limit it takes, so only one that slows the car chimes: under the
+    # current speed, and under the Tesla set speed, which would hold the car lower anyway.
+    v_target = sm['longitudinalPlanSP'].speedLimit.assist.vTarget
+    if not (v_target < CS.vEgo - AUTO_SLA_CHIME_MARGIN and v_target < CS.cruiseState.speed):
+      sound = AudibleAlert.none
+  return Alert(
+    "Auto adjusting to speed limit",
+    "",
+    AlertStatus.normal, AlertSize.small,
+    Priority.LOW, VisualAlert.none, sound, 5.)
 
 
 class EventsSP(EventsBase):
@@ -212,11 +231,7 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
   },
 
   EventNameSP.speedLimitActive: {
-    ET.WARNING: Alert(
-      "Auto adjusting to speed limit",
-      "",
-      AlertStatus.normal, AlertSize.small,
-      Priority.LOW, VisualAlert.none, AudibleAlertSP.promptSingleHigh, 5.),
+    ET.WARNING: speed_limit_active_alert,
   },
 
   EventNameSP.speedLimitChanged: {
