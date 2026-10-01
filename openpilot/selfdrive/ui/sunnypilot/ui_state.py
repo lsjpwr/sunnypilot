@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import platform
 from enum import Enum
 
 from openpilot.cereal import messaging, log, custom
@@ -58,6 +59,10 @@ class UIStateSP:
     self.rocket_fuel: bool = False
     self.speed_limit_mode = None
     self.tesla_auto_sla: bool = False
+    # SpeedLimitAssist and korea mapd hand the 구간단속 section over through /dev/shm
+    self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
+    self.section_avg: float = 0.
+    self.section_limit: float = 0.
     self.standstill_timer: bool = False
     self.sunnylink_enabled: bool = False
     self.torque_bar: bool = False
@@ -172,6 +177,8 @@ class UIStateSP:
     self.rocket_fuel = self.params.get_bool("RocketFuel")
     self.speed_limit_mode = self.params.get("SpeedLimitMode", return_default=True)
     self.tesla_auto_sla = self.params.get_bool("TeslaAutoSpeedLimitAssist")
+    self.section_avg = float(self.mem_params.get("KoreaSectionAverage") or 0.)
+    self.section_limit = float(self.mem_params.get("KoreaSectionSpeedLimit") or 0.)
     self.standstill_timer = self.params.get_bool("StandstillTimer")
     self.sunnylink_enabled = self.params.get_bool("SunnylinkEnabled")
     self.torque_bar = self.params.get_bool("TorqueBar")

@@ -56,3 +56,13 @@ def comma_target_kph(sla_active: bool, sla_target: float, map_active: bool, map_
     return None
   target_kph = min(targets) * CV.MS_TO_KPH
   return target_kph if round(target_kph) < round(v_cruise_cluster_kph) else None
+
+
+def section_average_display(avg: float, limit: float, is_metric: bool) -> tuple[int, bool] | None:
+  """The 구간단속 average the mici HUD shows, in display units, and whether it is over the section's
+  limit. None outside a section."""
+  if avg <= 0. or limit <= 0.:
+    return None
+  factor = CV.MS_TO_KPH if is_metric else CV.MS_TO_MPH
+  shown = round(avg * factor)
+  return shown, shown > round(limit * factor)

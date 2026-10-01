@@ -16,7 +16,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import comma_target_kph
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import comma_target_kph, section_average_display
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist, V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
@@ -305,3 +305,19 @@ class TestCommaTargetDisplay(unittest.TestCase):
   def test_shows_nothing_without_an_active_target(self):
     assert comma_target_kph(False, kph(50), False, kph(40), 69.) is None
     assert comma_target_kph(True, V_CRUISE_UNSET, False, V_CRUISE_UNSET, 69.) is None
+
+
+class TestSectionAverageDisplay(unittest.TestCase):
+  def test_shows_the_average_in_display_units(self):
+    assert section_average_display(kph(97), kph(100), True) == (97, False)
+    assert section_average_display(kph(97), kph(100), False) == (60, False)
+
+  def test_marks_an_average_over_the_limit(self):
+    assert section_average_display(kph(102), kph(100), True) == (102, True)
+
+  def test_an_average_that_rounds_to_the_limit_is_not_over(self):
+    assert section_average_display(kph(100.4), kph(100), True) == (100, False)
+
+  def test_shows_nothing_outside_a_section(self):
+    assert section_average_display(0., kph(100), True) is None
+    assert section_average_display(kph(97), 0., True) is None
