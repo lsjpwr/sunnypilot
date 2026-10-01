@@ -298,10 +298,9 @@ class HudRenderer(Widget):
     rl.draw_circle_gradient(rl.Vector2(x + circle_radius, y + circle_radius), circle_radius,
                             rl.Color(0, 0, 0, int(255 / 2 * alpha)), rl.BLANK)
 
-    set_speed_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
-    max_color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
+    set_speed_color, max_color = self._set_speed_colors(alpha)
 
-    set_speed = self.set_speed
+    set_speed = self._display_set_speed()
     if self.is_cruise_set and not ui_state.is_metric:
       set_speed *= KM_TO_MILE
 
@@ -324,6 +323,13 @@ class HudRenderer(Widget):
       0,
       max_color,
     )
+
+  def _display_set_speed(self) -> float:
+    return self.set_speed
+
+  def _set_speed_colors(self, alpha: float) -> tuple[rl.Color, rl.Color]:
+    color = rl.Color(255, 255, 255, int(255 * 0.9 * alpha))
+    return color, color
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""

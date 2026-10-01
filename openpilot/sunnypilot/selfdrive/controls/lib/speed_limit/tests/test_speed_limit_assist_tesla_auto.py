@@ -4,6 +4,8 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import unittest
+
 from openpilot.cereal import custom
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.tesla.values import CAR as TESLA
@@ -14,6 +16,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import comma_target_kph
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist, V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 
@@ -182,3 +185,19 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
   def test_zero_max_speed_is_off(self):
     self.drive(1., limit_kph=130, set_kph=135)
     assert self.target_kph == 130
+
+
+class TestCommaTargetDisplay(unittest.TestCase):
+  def test_shows_the_speed_limit_target_while_it_holds_the_car_under_the_set_speed(self):
+    assert round(comma_target_kph(True, kph(57), False, V_CRUISE_UNSET, 69.)) == 57
+
+  def test_a_lower_camera_target_wins(self):
+    assert round(comma_target_kph(True, kph(115), True, kph(100), 125.)) == 100
+
+  def test_shows_nothing_when_the_set_speed_is_the_lower_one(self):
+    assert comma_target_kph(True, kph(69), False, V_CRUISE_UNSET, 69.) is None
+    assert comma_target_kph(True, kph(80), True, kph(75), 69.) is None
+
+  def test_shows_nothing_without_an_active_target(self):
+    assert comma_target_kph(False, kph(50), False, kph(40), 69.) is None
+    assert comma_target_kph(True, V_CRUISE_UNSET, False, V_CRUISE_UNSET, 69.) is None

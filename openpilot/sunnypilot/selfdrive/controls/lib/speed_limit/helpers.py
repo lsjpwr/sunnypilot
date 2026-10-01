@@ -9,6 +9,7 @@ from openpilot.cereal import custom
 from opendbc.car.structs import car
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.auto_speed_limit import V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode as SpeedLimitMode
 
 
@@ -43,3 +44,15 @@ def set_speed_limit_assist_availability(CP: car.CarParams, CP_SP: custom.CarPara
       params.put("SpeedLimitMode", int(SpeedLimitMode.warning), block=True)
 
   return allowed
+
+
+def comma_target_kph(sla_active: bool, sla_target: float, map_active: bool, map_target: float,
+                     v_cruise_cluster_kph: float) -> float | None:
+  """What the comma MAX box shows instead of the Tesla set speed: the lower of the active speed limit
+  assist and SCC-Map targets (limits, 구간단속, cameras, bumps), while it holds the car under the
+  Tesla set speed. None otherwise."""
+  targets = [v for active, v in ((sla_active, sla_target), (map_active, map_target)) if active and v < V_CRUISE_UNSET]
+  if not targets or v_cruise_cluster_kph <= 0.:
+    return None
+  target_kph = min(targets) * CV.MS_TO_KPH
+  return target_kph if round(target_kph) < round(v_cruise_cluster_kph) else None
