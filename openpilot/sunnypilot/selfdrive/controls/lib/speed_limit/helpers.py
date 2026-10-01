@@ -46,12 +46,12 @@ def set_speed_limit_assist_availability(CP: car.CarParams, CP_SP: custom.CarPara
   return allowed
 
 
-def comma_target_kph(sla_active: bool, sla_target: float, map_active: bool, map_target: float,
+def comma_target_kph(sla_enabled: bool, sla_target: float, map_active: bool, map_target: float,
                      v_cruise_cluster_kph: float) -> float | None:
-  """What the comma MAX box shows instead of the Tesla set speed: the lower of the active speed limit
-  assist and SCC-Map targets (limits, 구간단속, cameras, bumps), while it holds the car under the
-  Tesla set speed. None otherwise."""
-  targets = [v for active, v in ((sla_active, sla_target), (map_active, map_target)) if active and v < V_CRUISE_UNSET]
+  """What the comma MAX box shows instead of the Tesla set speed: the lower of the enabled speed limit
+  assist target (with no limit known yet, the max speed alone) and the active SCC-Map target (limits,
+  구간단속, cameras, bumps), while it holds the car under the Tesla set speed. None otherwise."""
+  targets = [v for on, v in ((sla_enabled, sla_target), (map_active, map_target)) if on and v < V_CRUISE_UNSET]
   if not targets or v_cruise_cluster_kph <= 0.:
     return None
   target_kph = min(targets) * CV.MS_TO_KPH

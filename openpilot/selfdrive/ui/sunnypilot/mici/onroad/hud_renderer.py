@@ -37,7 +37,7 @@ class HudRendererSP(HudRenderer):
     if ui_state.tesla_auto_sla and ui_state.CP is not None and ui_state.CP.brand == "tesla":
       plan = ui_state.sm['longitudinalPlanSP']
       assist, scc_map = plan.speedLimit.assist, plan.smartCruiseControl.map
-      sla_kph = comma_target_kph(assist.active, assist.vTarget, scc_map.active, scc_map.vTarget,
+      sla_kph = comma_target_kph(assist.enabled, assist.vTarget, scc_map.active, scc_map.vTarget,
                                  ui_state.sm['carState'].vCruiseCluster)
       self._section_avg = section_average_display(ui_state.section_avg, ui_state.section_limit, ui_state.is_metric)
     # bring the MAX box up whenever the number it shows changes, the way a set speed change does

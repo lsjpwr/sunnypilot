@@ -181,6 +181,14 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.drive(1., limit_kph=0, set_kph=140, v_kph=120)
     assert self.target_kph == 125
 
+  def test_the_max_speed_alone_goes_on_the_comma_box(self):
+    # no limit known yet: the state is pending, not active, yet the max speed holds the car under the set speed
+    self.params.put("TeslaAutoSpeedLimitMax", 125, block=True)
+    self.sla = self.make_sla(TESLA.TESLA_MODEL_Y)
+    self.drive(1., limit_kph=0, set_kph=140, v_kph=120)
+    assert self.sla.state == SpeedLimitAssistState.pending
+    assert round(comma_target_kph(self.sla.is_enabled, self.sla.output_v_target, False, V_CRUISE_UNSET, 140.)) == 125
+
   def test_a_scroll_above_the_max_builds_no_nudge(self):
     self.params.put("TeslaAutoSpeedLimitMax", 125, block=True)
     self.sla = self.make_sla(TESLA.TESLA_MODEL_Y)
