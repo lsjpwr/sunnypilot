@@ -74,6 +74,10 @@ STICKY_FAR = (100, "고속도로", [(37.53022, 127.0500), (37.53022, 127.0620)])
 MAIN_60 = (60, "큰길", [(37.5400, 127.0500), (37.5400, 127.0620)])
 SIDE_10 = (10, "이면도로", [(37.54013, 127.0500), (37.54013, 127.0620)])
 
+# a TMAP route along MAIN_60, and one ~1.1 km north that the car is not on
+ROUTE_ON_MAIN = [(37.5400, 127.0490), (37.5400, 127.0630)]
+ROUTE_ELSEWHERE = [(37.5500, 127.0490), (37.5500, 127.0630)]
+
 # os.replace() of a file with an open sqlite3 connection on it is a POSIX guarantee
 # (existing readers keep the old inode) that Windows does not provide (PermissionError:
 # WinError 5, even for a read-only, idle connection). These tests exercise exactly that
@@ -466,6 +470,17 @@ class TestSwitchMargin(KoreaMapDBTestCase):
   def test_without_a_previous_match_the_nearest_road_wins(self):
     database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
     self.assertEqual(database.current_link(37.540075, 127.0510).max_spd, 10)
+
+
+class TestRouteAwareMatching(KoreaMapDBTestCase):
+  def test_on_the_route_the_road_it_follows_wins_over_a_nearer_side_road(self):
+    database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
+    # ~10 m off the main road, ~4.5 m off the side road, no previous match
+    self.assertEqual(database.current_link(37.54009, 127.0510, route=ROUTE_ON_MAIN).max_spd, 60)
+
+  def test_off_the_route_the_nearest_road_wins_as_before(self):
+    database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
+    self.assertEqual(database.current_link(37.54009, 127.0510, route=ROUTE_ELSEWHERE).max_spd, 10)
 
 
 class TestVerify(KoreaMapDBTestCase):

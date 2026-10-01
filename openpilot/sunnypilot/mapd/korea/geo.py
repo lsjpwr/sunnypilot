@@ -60,3 +60,16 @@ def point_segment_distance(plat: float, plon: float,
   # closest point on AB to the origin, clamped to the segment
   t = max(0., min(1., -(ax * dx + ay * dy) / seg_len_sq))
   return math.hypot(ax + t * dx, ay + t * dy)
+
+
+def closest_point_on_segment(plat: float, plon: float,
+                             alat: float, alon: float,
+                             blat: float, blon: float) -> tuple[float, float]:
+  """The point of segment AB nearest to P, as (lat, lon). Same projection as point_segment_distance."""
+  m_lon = M_PER_DEG_LAT * math.cos(math.radians(plat))
+  ax, ay = (alon - plon) * m_lon, (alat - plat) * M_PER_DEG_LAT
+  bx, by = (blon - plon) * m_lon, (blat - plat) * M_PER_DEG_LAT
+  dx, dy = bx - ax, by - ay
+  seg_len_sq = dx * dx + dy * dy
+  t = 0. if seg_len_sq == 0. else max(0., min(1., -(ax * dx + ay * dy) / seg_len_sq))
+  return alat + t * (blat - alat), alon + t * (blon - alon)

@@ -224,7 +224,7 @@ class KoreaMapData(BaseMapData):
 
     lat, lon = self.last_position.latitude, self.last_position.longitude
     try:
-      self.link = self.db.current_link(lat, lon, self.last_bearing)
+      self.link = self.db.current_link(lat, lon, self.last_bearing, route=self.route)
       self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds)
       # The sign keeps the wide cone, but only a camera on our road may brake the car. While
       # the car is on the route, next_camera has already held the sign's camera to

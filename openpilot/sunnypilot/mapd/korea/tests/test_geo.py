@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 import unittest
 
-from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, haversine, point_segment_distance
+from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, closest_point_on_segment, haversine, point_segment_distance
 
 # 강남역 부근
 SEOUL_LAT, SEOUL_LON = 37.4979, 127.0276
@@ -59,3 +59,13 @@ class TestGeo(unittest.TestCase):
   def test_degenerate_segment_falls_back_to_point_distance(self):
     d = point_segment_distance(37.001, 127.0, 37.0, 127.0, 37.0, 127.0)
     assert abs(d - 111.) < 5., d
+
+
+class TestClosestPointOnSegment(unittest.TestCase):
+  def test_projects_onto_the_segment(self):
+    lat, lon = closest_point_on_segment(37.5010, 127.0250, 37.5000, 127.0200, 37.5000, 127.0300)
+    self.assertAlmostEqual(lat, 37.5000, places=6)
+    self.assertAlmostEqual(lon, 127.0250, places=6)
+
+  def test_clamps_to_the_ends(self):
+    self.assertEqual(closest_point_on_segment(37.5000, 127.0100, 37.5000, 127.0200, 37.5000, 127.0300), (37.5000, 127.0200))

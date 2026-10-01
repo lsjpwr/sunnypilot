@@ -332,7 +332,7 @@ class StubDB:
     self.reloads += 1
     return False
 
-  def current_link(self, lat, lon, heading_deg=None):
+  def current_link(self, lat, lon, heading_deg=None, route=None):
     return None
 
   def next_camera(self, lat, lon, heading_deg, route=None, kinds=None, corridor_m=None):
@@ -352,7 +352,7 @@ class ExplodingDB:
   def reload_if_changed(self):
     return False
 
-  def current_link(self, lat, lon, heading_deg=None):
+  def current_link(self, lat, lon, heading_deg=None, route=None):
     raise self.exc
 
   def next_camera(self, lat, lon, heading_deg):
@@ -631,7 +631,7 @@ def valid_llk(lat=37.5000, lon=127.0200, heading_deg=90.):
 
 
 class TestRouteReachesTheLookups(unittest.TestCase):
-  def test_the_route_is_handed_to_both_lookups(self):
+  def test_the_route_is_handed_to_every_lookup(self):
     data = make_data()
     data.sm = SingleLocationSM(valid_llk())
     data.last_position = Coordinate(37.5000, 127.0200)
@@ -643,12 +643,13 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     seen = {}
     data.db = SimpleNamespace(
       reload_if_changed=lambda: False,
-      current_link=lambda *a, **k: None,
+      current_link=lambda *a, **k: seen.update(link=k.get("route")),
       next_camera=lambda *a, **k: seen.update(camera=k.get("route")),
       next_bump=lambda *a, **k: seen.update(bump=k.get("route")),
     )
 
     data.update_location()
+    self.assertEqual(seen["link"], route)
     self.assertEqual(seen["camera"], route)
     self.assertEqual(seen["bump"], route)
 

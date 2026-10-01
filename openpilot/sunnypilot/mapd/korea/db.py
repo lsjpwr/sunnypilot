@@ -15,7 +15,7 @@ import struct
 from collections.abc import Collection
 from dataclasses import dataclass
 
-from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, haversine, point_segment_distance
+from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, closest_point_on_segment, haversine, point_segment_distance
 from openpilot.sunnypilot.mapd.korea.route import distance_to_route
 
 # Shared by all three databases (cameras, links, bumps) -- there is no independent version
@@ -334,7 +334,8 @@ class KoreaMapDB:
       except sqlite3.Error:
         logging.getLogger(__name__).exception("korea db: a connection failed to close")
 
-  def current_link(self, lat: float, lon: float, heading_deg: float | None = None) -> Link | None:
+  def current_link(self, lat: float, lon: float, heading_deg: float | None = None,
+                   route: list[tuple[float, float]] | None = None) -> Link | None:
     """Nearest road segment we are plausibly driving on, or None when off the network.
 
     Ties (an overpass, a ramp, two links meeting at a node -- all within TIE_DISTANCE_M
@@ -347,6 +348,10 @@ class KoreaMapDB:
     A link with a lower limit than the previous match must also be LINK_SWITCH_MARGIN_M
     nearer before it takes over, so a fix drifting toward a slower side road keeps the road
     we are on.
+
+    While the car is on the route (within ROUTE_CORRIDOR_M of it), the candidate nearest the
+    route line wins instead: the 10 km/h side road of 2026-09-30 ran 15-25 m off the 60 road,
+    inside the corridor, so the corridor alone cannot tell them apart.
     """
     rows = self.lnk.execute(
       "SELECT l.id, l.max_spd, l.name, l.geom FROM links_idx i JOIN links l ON l.id = i.id " + _RTREE_OVERLAP,
@@ -357,6 +362,7 @@ class KoreaMapDB:
     # A running minimum made the outcome depend on the order sqlite returned rows in,
     # which let a stale sticky link outrank a clearly nearer road.
     candidates: dict[int, tuple[float, int, str]] = {}
+    segments: dict[int, tuple[float, float, float, float]] = {}
     for link_id, max_spd, name, blob in rows:
       points = _unpack_geom(blob)
       for (alat, alon), (blat, blon) in zip(points, points[1:], strict=False):
@@ -368,12 +374,19 @@ class KoreaMapDB:
         previous = candidates.get(link_id)
         if previous is None or distance < previous[0]:
           candidates[link_id] = (distance, max_spd, name)
+          segments[link_id] = (alat, alon, blat, blon)
 
     if not candidates:
       self._last_link_id = None
       return None
 
-    best_id = self._pick_off_route(candidates)
+    if route and distance_to_route(route, lat, lon) <= ROUTE_CORRIDOR_M:
+      # On the route, the road it follows is the one we drive, whatever the fix is nearer to.
+      def route_offset(link_id: int) -> float:
+        return distance_to_route(route, *closest_point_on_segment(lat, lon, *segments[link_id]))
+      best_id = min(candidates, key=lambda link_id: (route_offset(link_id), candidates[link_id][0], -candidates[link_id][1]))
+    else:
+      best_id = self._pick_off_route(candidates)
 
     self._last_link_id = best_id
     _, max_spd, name = candidates[best_id]
