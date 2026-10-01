@@ -377,6 +377,24 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.drive(0.5, limit_kph=92, set_kph=50, v_kph=30)
     assert self.target_kph == 40
 
+  def test_a_lower_limit_inside_a_section_moves_the_road_target_as_outside_a_section(self):
+    # a deep scroll down before the section and a scroll up inside it, then a tunnel: 97 either way
+    self.drive(1., limit_kph=115, set_kph=125, v_kph=100)
+    self.drive(0.5, limit_kph=115, set_kph=50, v_kph=40)
+    self.enter_section(100)
+    self.drive(0.5, limit_kph=115, set_kph=50, v_kph=40)
+    self.drive(0.5, limit_kph=115, set_kph=130, v_kph=100)
+    self.drive(3., limit_kph=92, set_kph=130, v_kph=92)
+    assert self.target_kph == 97
+
+  def test_a_scroll_down_outlasts_the_road_limit_dropping_out(self):
+    self.drive(1., limit_kph=92, set_kph=115, v_kph=92)
+    self.drive(0.5, limit_kph=92, set_kph=105, v_kph=82)
+    assert self.target_kph == 82
+    self.drive(3., limit_kph=0, set_kph=105, v_kph=82)
+    self.drive(3., limit_kph=92, set_kph=105, v_kph=82)
+    assert self.target_kph == 82
+
 
 class TestCommaTargetDisplay(unittest.TestCase):
   def test_shows_the_speed_limit_target_while_it_holds_the_car_under_the_set_speed(self):

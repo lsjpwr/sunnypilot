@@ -73,7 +73,7 @@ class AutoSpeedLimit:
   def v_target(self) -> float:
     targets = []
     if self.limit > 0.:
-      # plus what scrolls made inside a section moved it by
+      # the road target, plus what scrolls made inside a section moved it by
       targets.append(self.limit + self.nudge + self.section_road_nudge)
     if self.section > 0.:
       # a 구간단속 section: its pace, raised by time lost in it or lowered to give a lead back
@@ -138,7 +138,12 @@ class AutoSpeedLimit:
       self.nudge = _scrolled(self.nudge, self.limit, prev, v_cruise_cluster)
 
   def _clamp_nudge(self) -> None:
-    # a new limit: the road target stays at the floor or above, so a scroll up moves it at once
+    # a new limit keeps the road target at the floor or above, so a scroll up moves it at once: the
+    # drive's nudge on its own (what stays after the section) and with the section's scrolls. With no
+    # limit the road target is unused, so the scrolls wait for the next one.
+    if self.limit <= 0.:
+      return
     floor = min(self.limit, NUDGE_MIN_SPEED) - self.limit
+    road = max(self.nudge + self.section_road_nudge, floor)
     self.nudge = max(self.nudge, floor)
-    self.section_road_nudge = max(self.section_road_nudge, floor - self.nudge)
+    self.section_road_nudge = road - self.nudge
