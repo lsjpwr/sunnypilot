@@ -156,3 +156,29 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
 
   def test_other_brands_ignore_the_switch(self):
     assert not self.make_sla(TOYOTA.TOYOTA_RAV4_TSS2).auto_mode
+
+  def test_the_max_speed_caps_the_target(self):
+    self.params.put("TeslaAutoSpeedLimitMax", 125, block=True)
+    self.sla = self.make_sla(TESLA.TESLA_MODEL_Y)
+    self.drive(1., limit_kph=126.5, set_kph=127)
+    assert self.target_kph == 125
+
+  def test_the_max_speed_holds_without_a_limit(self):
+    self.params.put("TeslaAutoSpeedLimitMax", 125, block=True)
+    self.sla = self.make_sla(TESLA.TESLA_MODEL_Y)
+    self.drive(1., limit_kph=0, set_kph=140, v_kph=120)
+    assert self.target_kph == 125
+
+  def test_a_scroll_above_the_max_builds_no_nudge(self):
+    self.params.put("TeslaAutoSpeedLimitMax", 125, block=True)
+    self.sla = self.make_sla(TESLA.TESLA_MODEL_Y)
+    self.drive(1., limit_kph=115, set_kph=115)
+    self.drive(0.5, limit_kph=115, set_kph=135)
+    assert self.target_kph == 125
+    # only the 10 below the max counted: 80+15% plus 10, not plus 20
+    self.drive(3., limit_kph=92, set_kph=135)
+    assert self.target_kph == 102
+
+  def test_zero_max_speed_is_off(self):
+    self.drive(1., limit_kph=130, set_kph=135)
+    assert self.target_kph == 130

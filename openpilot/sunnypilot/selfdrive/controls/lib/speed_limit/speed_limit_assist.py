@@ -93,6 +93,7 @@ class SpeedLimitAssist:
     self.auto = AutoSpeedLimit()
     self.auto_mode = self._read_auto_mode()
     self.auto_delay = self._read_auto_delay()
+    self.auto_cap = self._read_auto_cap()
 
     self._plus_hold = 0.
     self._minus_hold = 0.
@@ -138,7 +139,7 @@ class SpeedLimitAssist:
 
   def get_v_target_from_control(self) -> float:
     if self.auto_mode:
-      return self.auto.v_target if self.is_enabled else V_CRUISE_UNSET
+      return self._auto_target() if self.is_enabled else V_CRUISE_UNSET
     if self._has_speed_limit:
       if self.pcm_op_long and self.is_enabled:
         return self._speed_limit_final_last
@@ -159,12 +160,21 @@ class SpeedLimitAssist:
       self.enabled = self.params.get("SpeedLimitMode", return_default=True) == Mode.assist
       self.auto_mode = self._read_auto_mode()
       self.auto_delay = self._read_auto_delay()
+      self.auto_cap = self._read_auto_cap()
 
   def _read_auto_mode(self) -> bool:
     return self.CP.brand == "tesla" and self.pcm_op_long and self.params.get_bool("TeslaAutoSpeedLimitAssist")
 
   def _read_auto_delay(self) -> float:
     return float(self.params.get("TeslaAutoSpeedLimitDelay", return_default=True))
+
+  def _read_auto_cap(self) -> float:
+    cap = self.params.get("TeslaAutoSpeedLimitMax", return_default=True)
+    return cap * (CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS) if cap > 0 else 0.
+
+  def _auto_target(self) -> float:
+    target = self.auto.v_target
+    return min(target, self.auto_cap) if self.auto_cap > 0. else target
 
   def update_buttons(self, release_toggle: int) -> None:
     released = self._release_toggle_prev ^ release_toggle
@@ -393,10 +403,13 @@ class SpeedLimitAssist:
       self.long_engaged_timer = int(DISABLED_GUARD_PERIOD / DT_MDL)
     else:
       self.long_engaged_timer = max(0, self.long_engaged_timer - 1)
-    self.auto.update(limit, self.v_cruise_cluster, self.long_engaged_timer == 0, self.auto_delay, DT_MDL)
 
-    v_target = self.auto.v_target
-    if v_target >= V_CRUISE_UNSET:
+    # the max speed is a second ceiling, so a scroll above it builds no nudge
+    ceiling = min(self.v_cruise_cluster, self.auto_cap) if self.auto_cap > 0. else self.v_cruise_cluster
+    self.auto.update(limit, ceiling, self.long_engaged_timer == 0, self.auto_delay, DT_MDL)
+
+    v_target = self._auto_target()
+    if self.auto.v_target >= V_CRUISE_UNSET:
       self.state = SpeedLimitAssistState.pending
     elif v_target - self.v_ego < LIMIT_SPEED_OFFSET_TH:
       self.state = SpeedLimitAssistState.adapting
