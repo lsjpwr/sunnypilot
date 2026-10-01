@@ -28,6 +28,13 @@ def kph(v):
   return v * CV.KPH_TO_MS
 
 
+class MemParams(dict):
+  """Stands in for the /dev/shm params: korea mapd's section on the way in, the average on the way out."""
+
+  def put(self, key, value, block=False):
+    self[key] = value
+
+
 class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
   def setup_method(self):
     self.params = Params()
@@ -46,7 +53,9 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     CI = CarInterface(CP, CP_SP)
     CI.CP.openpilotLongitudinalControl = True
     sunnypilot_interfaces.setup_interfaces(CI, self.params)
-    return SpeedLimitAssist(CI.CP, CI.CP_SP)
+    sla = SpeedLimitAssist(CI.CP, CI.CP_SP)
+    self.mem = sla.mem_params = MemParams()
+    return sla
 
   def drive(self, seconds, limit_kph, set_kph, v_kph=None, engaged=True):
     """Run the SLA at DT_MDL. limit_kph is limit + offset as the resolver hands it over, 0 for none
@@ -185,6 +194,101 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
   def test_zero_max_speed_is_off(self):
     self.drive(1., limit_kph=130, set_kph=135)
     assert self.target_kph == 130
+
+  def enter_section(self, limit_kph, start=1.):
+    self.mem["KoreaSectionSpeedLimit"] = kph(limit_kph)
+    self.mem["KoreaSectionStart"] = start if limit_kph > 0 else 0.
+
+  def test_a_section_holds_its_exact_limit(self):
+    self.drive(1., limit_kph=115, set_kph=115)
+    self.drive(0.5, limit_kph=115, set_kph=125)
+    assert self.target_kph == 125
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=125, v_kph=100)
+    assert self.target_kph == 100
+
+  def test_a_scroll_inside_a_section_moves_its_pace_from_then_on(self):
+    self.drive(1., limit_kph=115, set_kph=115)
+    self.drive(0.5, limit_kph=115, set_kph=125)
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=125, v_kph=100)
+    self.drive(0.5, limit_kph=115, set_kph=130, v_kph=105)
+    assert self.target_kph == 105
+    # the time already driven at 100 is not counted again at 105, so nothing jumps
+    self.drive(60., limit_kph=115, set_kph=130, v_kph=105)
+    assert self.target_kph == 105
+    self.enter_section(0)
+    self.drive(1., limit_kph=115, set_kph=130)
+    assert self.target_kph == 125
+
+  def test_a_lower_limit_inside_a_section_still_wins(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=92, set_kph=115)
+    assert self.target_kph == 92
+
+  def test_cancel_inside_a_section_drops_the_scroll_but_keeps_the_section(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    self.drive(0.5, limit_kph=115, set_kph=120, v_kph=105)
+    assert self.target_kph == 105
+    self.drive(0.5, limit_kph=115, set_kph=120, v_kph=105, engaged=False)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    assert self.target_kph == 100
+
+  def test_a_section_holds_even_without_a_road_limit(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=0, set_kph=115, v_kph=100)
+    assert self.target_kph == 100
+    assert self.sla.state == SpeedLimitAssistState.active
+
+  def test_time_lost_in_a_section_comes_back_above_its_limit(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    self.drive(12., limit_kph=115, set_kph=115, v_kph=70)
+    # 100 m behind: 100 + 100 m / 60 s = 106
+    assert self.target_kph == 106
+    self.drive(30., limit_kph=115, set_kph=115, v_kph=106)
+    # 30 s at 106 made up 50 m of it
+    assert self.target_kph == 103
+
+  def test_running_ahead_in_a_section_is_paid_back_at_most_10_under(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    self.drive(6., limit_kph=115, set_kph=115, v_kph=130)
+    # the driver's foot took the car 50 m ahead: 100 - 50 m / 60 s = 97
+    assert self.target_kph == 97
+    self.drive(24., limit_kph=115, set_kph=115, v_kph=130)
+    # 250 m ahead would be 85, but paying back stops 10 under the pace
+    assert self.target_kph == 90
+
+  def test_a_scroll_up_in_a_section_is_not_paid_back(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    self.drive(60., limit_kph=115, set_kph=120, v_kph=105)
+    assert self.target_kph == 105
+
+  def test_the_section_counts_while_cruise_is_off(self):
+    self.enter_section(100)
+    self.drive(12., limit_kph=115, set_kph=115, v_kph=70, engaged=False)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    assert self.target_kph == 106
+
+  def test_a_new_section_starts_from_nothing(self):
+    self.enter_section(100, start=1.)
+    self.drive(12., limit_kph=115, set_kph=115, v_kph=70)
+    assert self.target_kph == 106
+    # the next section starts where this one ends, with the same limit: only the start tells
+    self.enter_section(100, start=2.)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    assert self.target_kph == 100
+
+  def test_the_section_average_goes_to_shared_memory(self):
+    self.enter_section(100)
+    self.drive(10., limit_kph=115, set_kph=115, v_kph=90)
+    assert round(self.mem["KoreaSectionAverage"] * CV.MS_TO_KPH) == 90
+    self.enter_section(0)
+    self.drive(1., limit_kph=115, set_kph=115)
+    assert self.mem["KoreaSectionAverage"] == 0.
 
 
 class TestCommaTargetDisplay(unittest.TestCase):

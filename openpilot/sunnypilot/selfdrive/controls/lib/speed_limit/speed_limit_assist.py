@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import math
+import platform
 import time
 
 from openpilot.cereal import custom
@@ -42,6 +43,7 @@ LIMIT_MAX_ACC = 1.0   # m/s^2 Maximum acceleration allowed for limit controllers
 LIMIT_MIN_SPEED = 8.33  # m/s, Minimum speed limit to provide as solution on limit controllers.
 LIMIT_SPEED_OFFSET_TH = -1.  # m/s Maximum offset between speed limit and current speed for adapting state.
 V_CRUISE_UNSET = 255.
+SECTION_READ_PERIOD = 0.5  # secs; korea mapd updates the section once a second
 
 CRUISE_BUTTONS_PLUS = (ButtonType.accelCruise, ButtonType.resumeCruise)
 CRUISE_BUTTONS_MINUS = (ButtonType.decelCruise, ButtonType.setCruise)
@@ -94,6 +96,11 @@ class SpeedLimitAssist:
     self.auto_mode = self._read_auto_mode()
     self.auto_delay = self._read_auto_delay()
     self.auto_cap = self._read_auto_cap()
+
+    # korea mapd hands the 구간단속 section over through /dev/shm, like MapTargetVelocities
+    self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
+    self.section_limit = 0.
+    self.section_start = 0.
 
     self._plus_hold = 0.
     self._minus_hold = 0.
@@ -175,6 +182,17 @@ class SpeedLimitAssist:
   def _auto_target(self) -> float:
     target = self.auto.v_target
     return min(target, self.auto_cap) if self.auto_cap > 0. else target
+
+  def update_section(self) -> None:
+    """Auto mode, every frame and engaged or not: the cameras time the whole section, so time lost
+    or gained while cruise is off counts too. The average goes back out for the mici HUD."""
+    read = self.frame % int(SECTION_READ_PERIOD / DT_MDL) == 0
+    if read:
+      self.section_limit = float(self.mem_params.get("KoreaSectionSpeedLimit") or 0.)
+      self.section_start = float(self.mem_params.get("KoreaSectionStart") or 0.)
+    self.auto.track_section(self.section_limit, self.section_start, self.v_ego, DT_MDL)
+    if read:
+      self.mem_params.put("KoreaSectionAverage", self.auto.section_average)
 
   def update_buttons(self, release_toggle: int) -> None:
     released = self._release_toggle_prev ^ release_toggle
@@ -456,6 +474,9 @@ class SpeedLimitAssist:
 
     self.update_params()
     self.update_calculations(v_cruise_cluster)
+
+    if self.auto_mode:
+      self.update_section()
 
     self._state_prev = self.state
     if self.auto_mode:

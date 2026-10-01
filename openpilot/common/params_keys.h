@@ -315,6 +315,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"KoreaSectionSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
     {"KoreaSectionStart", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
+    {"KoreaSectionAverage", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"SmartCruiseControlVision", {PERSISTENT | BACKUP, BOOL, "0"}},
 
