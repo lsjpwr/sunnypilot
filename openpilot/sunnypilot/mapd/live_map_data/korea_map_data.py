@@ -21,6 +21,8 @@ import json
 import math
 import os
 import platform
+import time
+from dataclasses import dataclass
 
 from openpilot.cereal import log
 from openpilot.common.constants import CV
@@ -29,8 +31,10 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
-                                                 ROUTE_CORRIDOR_M, Bump, Camera, KoreaMapDB, Link, mtime_or_none)
+                                                 CAMERA_SECTION, ROUTE_CORRIDOR_M, SECTION_PASS_M, Bump, Camera,
+                                                 KoreaMapDB, Link, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
+from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -49,6 +53,22 @@ BUMP_TRAPEZOID_SPEED_RANGE = (20, 50)
 # m, how far before a camera to be at its limit. Bounds, not the default -- that lives in
 # params_keys.h, like the bump speeds.
 CAMERA_MARGIN_RANGE = (0, 300)
+
+# A 구간단속 section is dropped after this many times its straight-line length, plus the slack:
+# the road winds, but a car that has driven well past that has left the section.
+SECTION_TRAVEL_FACTOR = 1.5
+SECTION_TRAVEL_SLACK_M = 2000.
+
+
+@dataclass
+class Section:
+  """The 구간단속 section we are in: its limit, its end camera, and how far we may drive before giving up on it."""
+  limit_kph: int
+  end_lat: float
+  end_lon: float
+  max_travel_m: float
+  travelled_m: float = 0.
+  started: float = 0.  # time.monotonic() at the start camera; tells back-to-back sections apart
 
 
 class KoreaMapData(BaseMapData):
@@ -83,6 +103,8 @@ class KoreaMapData(BaseMapData):
     # ((camera lat, camera lon, margin), (point lat, point lon)) -- see camera_point
     self._camera_anchor: tuple[tuple[float, float, int], tuple[float, float]] | None = None
     self.bump: Bump | None = None
+    self.section: Section | None = None
+    self._section_prev: tuple[float, float] | None = None
     # SmartCruiseControlMap reads its input from /dev/shm, not from the message bus.
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
     self.bump_enabled = False
@@ -238,6 +260,7 @@ class KoreaMapData(BaseMapData):
         self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
                                                    kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M)
       self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
+      self.update_section(lat, lon)
     except Exception:
       # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
       # geometry blob raises struct.error from _unpack_geom -- not a sqlite exception at
@@ -249,6 +272,34 @@ class KoreaMapData(BaseMapData):
       self._give_up()
       self.close()
       cloudlog.exception("korea_map: dropping the database after a query error")
+
+  def update_section(self, lat: float, lon: float) -> None:
+    """Track the 구간단속 section we are in, for SpeedLimitAssist to hold its limit.
+
+    A start camera alone cannot say we are entering: both directions of a section share their
+    end points, so the other direction's start stands beside our end. A section opens only when
+    a same-limit end camera lies ahead on our road, and when in doubt it does not open at all:
+    the start and end cameras still brake the car through SCC-Map, as before.
+    """
+    if CAMERA_SECTION not in self.camera_kinds or self.last_bearing is None:
+      self.section, self._section_prev = None, None
+      return
+
+    if self.section is not None:
+      if self._section_prev is not None:
+        self.section.travelled_m += haversine(self._section_prev[0], self._section_prev[1], lat, lon)
+      if haversine(lat, lon, self.section.end_lat, self.section.end_lon) <= SECTION_PASS_M or \
+         self.section.travelled_m > self.section.max_travel_m:
+        self.section = None
+
+    if self.section is None:
+      for start in self.db.section_starts_near(lat, lon):
+        end = self.db.section_end_ahead(lat, lon, self.last_bearing, start.limit_kph, route=self.route)
+        if end is not None:
+          self.section = Section(start.limit_kph, end.lat, end.lon,
+                                 end.distance_m * SECTION_TRAVEL_FACTOR + SECTION_TRAVEL_SLACK_M, started=time.monotonic())
+          break
+    self._section_prev = (lat, lon)
 
   def get_current_speed_limit(self) -> float:
     nav = self.nav()
@@ -355,6 +406,12 @@ class KoreaMapData(BaseMapData):
       [{"latitude": lat, "longitude": lon, "velocity": velocity} for lat, lon, velocity in points]))
     if self.last_position is not None:
       self.mem_params.put("LastGPSPosition", json.dumps(self.last_position.as_dict()))
+
+    # SpeedLimitAssist keeps the section's average at its limit; 0 is no section. The start tells a
+    # section from the next one when both have the same limit.
+    section = self.section
+    self.mem_params.put("KoreaSectionSpeedLimit", section.limit_kph * CV.KPH_TO_MS if section is not None else 0.)
+    self.mem_params.put("KoreaSectionStart", section.started if section is not None else 0.)
 
   def tick(self) -> None:
     """Override rather than calling from update_location: update_location returns early on

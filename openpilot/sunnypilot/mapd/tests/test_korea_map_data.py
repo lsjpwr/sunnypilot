@@ -66,6 +66,8 @@ def make_data(link=None, camera=None, external=None):
   data.camera_kinds = frozenset(CAMERA_KIND_PARAMS)
   data.camera_margin = 50
   data.localizer_valid = True
+  data.section = None
+  data._section_prev = None
   return data
 
 
@@ -102,6 +104,7 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
   data.localizer_valid = localizer_valid
   data.curve_points = []
+  data.section = None
   return data
 
 
@@ -339,6 +342,12 @@ class StubDB:
     return None
 
   def next_bump(self, lat, lon, heading_deg, route=None):
+    return None
+
+  def section_starts_near(self, lat, lon):
+    return []
+
+  def section_end_ahead(self, lat, lon, heading_deg, limit_kph, route=None):
     return None
 
 
@@ -646,6 +655,8 @@ class TestRouteReachesTheLookups(unittest.TestCase):
       current_link=lambda *a, **k: seen.update(link=k.get("route")),
       next_camera=lambda *a, **k: seen.update(camera=k.get("route")),
       next_bump=lambda *a, **k: seen.update(bump=k.get("route")),
+      section_starts_near=lambda *a, **k: [],
+      section_end_ahead=lambda *a, **k: None,
     )
 
     data.update_location()
@@ -675,6 +686,8 @@ class TestRouteReachesTheLookups(unittest.TestCase):
       current_link=lambda *a, **k: None,
       next_camera=lambda *a, **k: seen.update(kinds=k.get("kinds")),
       next_bump=lambda *a, **k: None,
+      section_starts_near=lambda *a, **k: [],
+      section_end_ahead=lambda *a, **k: None,
     )
 
     data.update_location()
@@ -870,3 +883,77 @@ class TestCurvesOnlyOnTheRoute(unittest.TestCase):
 
   def test_off_the_route_its_corner_is_not_a_target(self):
     self.assertEqual(self.curves_at(37.4991, 127.0200), [])  # ~100 m south, on a road the route left
+
+
+class TestSection(unittest.TestCase):
+  START = Camera(lat=37.6000, lon=127.0000, limit_kph=100, distance_m=4., section_m=0, kind=CAMERA_SECTION)
+  END = Camera(lat=37.6000, lon=127.0600, limit_kph=100, distance_m=5286., section_m=0, kind=CAMERA_SECTION_END)
+  NOTHING = SimpleNamespace(section_starts_near=lambda lat, lon: [], section_end_ahead=lambda *a, **k: None)
+
+  def make(self, starts=(), end=None):
+    data = make_data()
+    data.last_bearing = 90.
+    data.db = SimpleNamespace(section_starts_near=lambda lat, lon: list(starts),
+                              section_end_ahead=lambda lat, lon, heading, limit, route=None: end)
+    return data
+
+  def test_a_start_with_an_end_ahead_opens_the_section(self):
+    data = self.make(starts=[self.START], end=self.END)
+    data.update_section(37.6000, 127.0000)
+    self.assertEqual(data.section.limit_kph, 100)
+    self.assertAlmostEqual(data.section.max_travel_m, 5286. * 1.5 + 2000.)
+
+  def test_a_start_without_an_end_ahead_opens_nothing(self):
+    data = self.make(starts=[self.START], end=None)
+    data.update_section(37.6000, 127.0000)
+    self.assertIsNone(data.section)
+
+  def test_passing_the_end_camera_closes_the_section(self):
+    data = self.make(starts=[self.START], end=self.END)
+    data.update_section(37.6000, 127.0000)
+    data.db = self.NOTHING
+    data.update_section(37.6000, 127.0300)
+    self.assertIsNotNone(data.section)
+    data.update_section(37.6000, 127.0600)
+    self.assertIsNone(data.section)
+
+  def test_driving_far_past_the_expected_length_gives_up(self):
+    short = Camera(lat=37.6000, lon=127.0600, limit_kph=100, distance_m=100., section_m=0, kind=CAMERA_SECTION_END)
+    data = self.make(starts=[self.START], end=short)
+    data.update_section(37.6000, 127.0000)  # may drive 100 * 1.5 + 2000 = 2150 m
+    data.db = self.NOTHING
+    data.update_section(37.6200, 127.0000)  # ~2.2 km north, nowhere near the end camera
+    self.assertIsNone(data.section)
+
+  def test_section_cameras_off_means_no_section(self):
+    data = self.make(starts=[self.START], end=self.END)
+    data.camera_kinds = frozenset()
+    data.update_section(37.6000, 127.0000)
+    self.assertIsNone(data.section)
+
+  def test_a_section_starting_where_the_last_one_ends_gets_its_own_start(self):
+    data = self.make(starts=[self.START], end=self.END)
+    data.update_section(37.6000, 127.0000)
+    first = data.section
+    # beside the end camera stands the next section's start camera, with the same limit
+    start2 = Camera(lat=37.6000, lon=127.0600, limit_kph=100, distance_m=4., section_m=0, kind=CAMERA_SECTION)
+    end2 = Camera(lat=37.6000, lon=127.1200, limit_kph=100, distance_m=5286., section_m=0, kind=CAMERA_SECTION_END)
+    data.db = SimpleNamespace(section_starts_near=lambda lat, lon: [start2],
+                              section_end_ahead=lambda lat, lon, heading, limit, route=None: end2)
+    data.update_section(37.6000, 127.0600)
+    self.assertIsNot(data.section, first)
+    self.assertEqual(data.section.end_lon, 127.1200)
+    self.assertGreater(data.section.started, first.started)
+
+  def test_the_section_goes_to_shared_memory(self):
+    data = self.make(starts=[self.START], end=self.END)
+    data.last_position = Coordinate(37.6000, 127.0000)
+    data.update_section(37.6000, 127.0000)
+    data.publish_targets()
+    self.assertAlmostEqual(data.mem_params.values["KoreaSectionSpeedLimit"], 100 * CV.KPH_TO_MS)
+    self.assertGreater(data.mem_params.values["KoreaSectionStart"], 0.)
+    self.assertEqual(data.mem_params.values["KoreaSectionStart"], data.section.started)
+    data.section = None
+    data.publish_targets()
+    self.assertEqual(data.mem_params.values["KoreaSectionSpeedLimit"], 0.)
+    self.assertEqual(data.mem_params.values["KoreaSectionStart"], 0.)
