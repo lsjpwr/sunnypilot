@@ -498,6 +498,7 @@ class TestKoreaMapDataClose(unittest.TestCase):
     data.db = SimpleNamespace(close=lambda: closed.append(True))
     data.link = data.camera = data.bump = object()
     data.mem_params = SimpleNamespace(put=lambda k, v, **kw: puts.append((k, v)))
+    data.section = None  # __init__ sets it; close() reads it to log a section it drops
 
     data.close()
     self.assertEqual(closed, [True], "the sqlite handles on a 220 MB database are never released")
