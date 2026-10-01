@@ -17,6 +17,7 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import CONFIRM_SPEED_THRESHOLD, resolve_pcm_long_required_max
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.auto_speed_limit import AutoSpeedLimit
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import compare_cluster_target, set_speed_limit_assist_availability
 
@@ -89,6 +90,9 @@ class SpeedLimitAssist:
     self.state = SpeedLimitAssistState.disabled
     self._state_prev = SpeedLimitAssistState.disabled
     self.pcm_op_long = CP.openpilotLongitudinalControl and CP.pcmCruise
+    self.auto = AutoSpeedLimit()
+    self.auto_mode = self._read_auto_mode()
+    self.auto_delay = self._read_auto_delay()
 
     self._plus_hold = 0.
     self._minus_hold = 0.
@@ -133,6 +137,8 @@ class SpeedLimitAssist:
       events_sp.add(EventNameSP.speedLimitActive)
 
   def get_v_target_from_control(self) -> float:
+    if self.auto_mode:
+      return self.auto.v_target if self.is_enabled else V_CRUISE_UNSET
     if self._has_speed_limit:
       if self.pcm_op_long and self.is_enabled:
         return self._speed_limit_final_last
@@ -151,6 +157,14 @@ class SpeedLimitAssist:
       self.is_metric = self.params.get_bool("IsMetric")
       set_speed_limit_assist_availability(self.CP, self.CP_SP, self.params)
       self.enabled = self.params.get("SpeedLimitMode", return_default=True) == Mode.assist
+      self.auto_mode = self._read_auto_mode()
+      self.auto_delay = self._read_auto_delay()
+
+  def _read_auto_mode(self) -> bool:
+    return self.CP.brand == "tesla" and self.pcm_op_long and self.params.get_bool("TeslaAutoSpeedLimitAssist")
+
+  def _read_auto_delay(self) -> float:
+    return float(self.params.get("TeslaAutoSpeedLimitDelay", return_default=True))
 
   def update_buttons(self, release_toggle: int) -> None:
     released = self._release_toggle_prev ^ release_toggle
@@ -364,6 +378,39 @@ class SpeedLimitAssist:
 
     return enabled, active
 
+  def update_state_machine_auto(self) -> tuple[bool, bool]:
+    """TeslaAutoSpeedLimitAssist: no confirmation. The Tesla set speed stays the ceiling (the
+    planner takes the min); under it AutoSpeedLimit gives limit + offset, held and nudged."""
+    if not self.long_enabled or not self.enabled:
+      self.state = SpeedLimitAssistState.disabled
+      return False, False
+
+    limit = self._speed_limit_final_last if self._has_speed_limit else 0.
+    if self.state == SpeedLimitAssistState.disabled:
+      # just engaged: take the limit as it is, and give the Tesla time to put up the set speed it
+      # picks on engagement before any set speed change counts as a scroll
+      self.auto.reset(limit)
+      self.long_engaged_timer = int(DISABLED_GUARD_PERIOD / DT_MDL)
+    else:
+      self.long_engaged_timer = max(0, self.long_engaged_timer - 1)
+    self.auto.update(limit, self.v_cruise_cluster, self.long_engaged_timer == 0, self.auto_delay, DT_MDL)
+
+    v_target = self.auto.v_target
+    if v_target >= V_CRUISE_UNSET:
+      self.state = SpeedLimitAssistState.pending
+    elif v_target - self.v_ego < LIMIT_SPEED_OFFSET_TH:
+      self.state = SpeedLimitAssistState.adapting
+    else:
+      self.state = SpeedLimitAssistState.active
+
+    return self.state in ENABLED_STATES, self.state in ACTIVE_STATES
+
+  def update_events_auto(self, events_sp: EventsSP) -> None:
+    # One banner when the car starts following a limit, and one per limit taken. The alert only
+    # chimes when the new target slows the car (events.speed_limit_active_alert).
+    if self.is_active and (self._state_prev not in ACTIVE_STATES or self.auto.changed):
+      events_sp.add(EventNameSP.speedLimitActive)
+
   def update_events(self, events_sp: EventsSP) -> None:
     if self.state == SpeedLimitAssistState.preActive:
       events_sp.add(EventNameSP.speedLimitPreActive)
@@ -398,12 +445,17 @@ class SpeedLimitAssist:
     self.update_calculations(v_cruise_cluster)
 
     self._state_prev = self.state
-    if self.pcm_op_long:
+    if self.auto_mode:
+      self.is_enabled, self.is_active = self.update_state_machine_auto()
+    elif self.pcm_op_long:
       self.is_enabled, self.is_active = self.update_state_machine_pcm_op_long()
     else:
       self.is_enabled, self.is_active = self.update_state_machine_non_pcm_long()
 
-    self.update_events(events_sp)
+    if self.auto_mode:
+      self.update_events_auto(events_sp)
+    else:
+      self.update_events(events_sp)
 
     # Update change tracking variables
     self.speed_limit_prev = self._speed_limit
