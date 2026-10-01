@@ -290,6 +290,46 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.drive(1., limit_kph=115, set_kph=115)
     assert self.mem["KoreaSectionAverage"] == 0.
 
+  def test_cancel_inside_a_section_stops_the_scroll_counting_while_off(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    self.drive(0.5, limit_kph=115, set_kph=125, v_kph=110)
+    assert self.target_kph == 110
+    # the driver holds the limit with cruise off: nothing to make up when it comes back on
+    self.drive(60., limit_kph=115, set_kph=125, v_kph=100, engaged=False)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    assert self.target_kph == 100
+
+  def test_a_scroll_inside_a_section_works_when_the_road_target_is_the_limit(self):
+    # no offset: the road target and the section limit are both 100
+    self.enter_section(100)
+    self.drive(1., limit_kph=100, set_kph=115, v_kph=100)
+    self.drive(0.5, limit_kph=100, set_kph=120, v_kph=105)
+    assert self.target_kph == 105
+
+  def test_a_scroll_down_inside_a_section_takes_effect_at_once(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=100, set_kph=115, v_kph=100)
+    self.drive(120., limit_kph=100, set_kph=125, v_kph=110)
+    assert self.target_kph == 110
+    self.drive(0.5, limit_kph=100, set_kph=105, v_kph=90)
+    assert self.target_kph == 90
+
+  def test_raising_the_set_speed_to_the_section_limit_is_not_a_scroll(self):
+    # the Tesla number held the car under the section limit; raising it to the limit adds no pace
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=92, v_kph=92)
+    self.drive(0.5, limit_kph=115, set_kph=100, v_kph=100)
+    assert self.target_kph == 100
+
+  def test_a_scroll_up_after_the_floor_responds_at_once(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    self.drive(0.5, limit_kph=115, set_kph=30, v_kph=30)
+    assert self.target_kph == 30
+    self.drive(0.5, limit_kph=115, set_kph=40, v_kph=30)
+    assert self.target_kph == 40
+
 
 class TestCommaTargetDisplay(unittest.TestCase):
   def test_shows_the_speed_limit_target_while_it_holds_the_car_under_the_set_speed(self):

@@ -411,6 +411,9 @@ class SpeedLimitAssist:
     planner takes the min); under it AutoSpeedLimit gives limit + offset, held and nudged."""
     if not self.long_enabled or not self.enabled:
       self.state = SpeedLimitAssistState.disabled
+      # the cameras keep timing the section while cruise is off (update_section), but a scroll made
+      # in it is gone: count the time off against the section's own limit
+      self.auto.section_nudge = 0.
       return False, False
 
     limit = self._speed_limit_final_last if self._has_speed_limit else 0.
