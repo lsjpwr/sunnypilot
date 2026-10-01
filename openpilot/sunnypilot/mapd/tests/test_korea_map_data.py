@@ -25,8 +25,8 @@ from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras,
                                                       insert_links, write_db)
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_KIND_PARAMS,
-                                                 CAMERA_SECTION, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE, Bump,
-                                                 Camera, KoreaMapDB, Link)
+                                                 CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED,
+                                                 CAMERA_ZONE, Bump, Camera, KoreaMapDB, Link)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import KoreaMapData
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -704,7 +704,7 @@ class TestReadCameraParams(OpenpilotTestCase):
     for key in CAMERA_KIND_PARAMS.values():
       params.put_bool(key, True, block=True)
     params.put_bool("KoreaCameraZoneEnabled", False, block=True)
-    self.assertEqual(self.read().camera_kinds, {CAMERA_SPEED, CAMERA_SIGNAL, CAMERA_SECTION})
+    self.assertEqual(self.read().camera_kinds, {CAMERA_SPEED, CAMERA_SIGNAL, CAMERA_SECTION, CAMERA_SECTION_END})
 
   def test_the_margin_falls_back_to_its_default_and_is_clamped(self):
     self.assertEqual(self.read().camera_margin, 50)  # unset: get_sanitize_int_param reads the default

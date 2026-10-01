@@ -20,7 +20,7 @@ from unittest import mock
 from openpilot.sunnypilot.mapd.korea import camera_refresh
 from openpilot.sunnypilot.mapd.korea.build_db import (CAMERA_API_KIND_FIELDS, SCHEMA_CAMERAS, insert_cameras,
                                                       load_cameras_api, write_db)
-from openpilot.sunnypilot.mapd.korea.db import CAMERA_SPEED
+from openpilot.sunnypilot.mapd.korea.db import CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SPEED
 from openpilot.sunnypilot.mapd.korea.tests.test_db import drop_kind
 
 
@@ -56,6 +56,11 @@ def count_rows(path):
 def seed(path, n):
   write_db(path, SCHEMA_CAMERAS,
            lambda con: insert_cameras(con, [(37.5 + i * 1e-4, 127.0, 60, 0, CAMERA_SPEED) for i in range(n)]))
+
+
+def seed_sections(path, kinds):
+  write_db(path, SCHEMA_CAMERAS,
+           lambda con: insert_cameras(con, [(37.5 + i * 1e-3, 127.0, 100, 0, kind) for i, kind in enumerate(kinds)]))
 
 
 class TestFetch(unittest.TestCase):
@@ -202,6 +207,15 @@ class TestDue(unittest.TestCase):
     seed(self.path, 5)
     drop_kind(self.path)
     self.assertTrue(camera_refresh.CameraRefresher(self.path)._due())
+
+  def test_a_database_with_merged_sections_is_due(self):
+    """Built before section ends got their own kind: no start can be told from an end."""
+    seed_sections(self.path, (CAMERA_SECTION, CAMERA_SECTION))
+    self.assertTrue(camera_refresh.CameraRefresher(self.path)._due())
+
+  def test_a_database_with_split_sections_is_not_due(self):
+    seed_sections(self.path, (CAMERA_SECTION, CAMERA_SECTION_END))
+    self.assertFalse(camera_refresh.CameraRefresher(self.path)._due())
 
 
 class OneShotStop(threading.Event):

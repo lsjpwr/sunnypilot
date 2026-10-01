@@ -19,7 +19,7 @@ from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSIO
                                                      insert_links, load_bumps, load_cameras, load_cameras_api, \
                                                      load_links, pack_geom, to_float, to_int
 from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_SECTION, \
-                                               CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE
+                                               CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE
 
 # pyshp and pyproj are PC-only build tooling: build_db.py imports them lazily and documents
 # them as a manual `pip install`, deliberately keeping them off the device and out of every
@@ -386,9 +386,9 @@ class TestClassifyCamera(unittest.TestCase):
         self.assertEqual(classify_camera(code, "", "99"), CAMERA_SIGNAL)
 
   def test_section_start_and_end(self):
-    for position in ("1", "01", "2", "02"):
+    for position, kind in (("1", CAMERA_SECTION), ("01", CAMERA_SECTION), ("2", CAMERA_SECTION_END), ("02", CAMERA_SECTION_END)):
       with self.subTest(position=position):
-        self.assertEqual(classify_camera("99", position, "99"), CAMERA_SECTION)
+        self.assertEqual(classify_camera("99", position, "99"), kind)
 
   def test_a_zone_wins_over_everything_else(self):
     """A school-zone signal camera answers to the zone toggle, not the signal one."""

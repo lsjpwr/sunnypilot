@@ -31,7 +31,7 @@ import struct
 from collections.abc import Iterator
 
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_SECTION,
-                                                 CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE)
+                                                 CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE)
 
 SCHEMA_VERSION = "1"
 
@@ -64,7 +64,8 @@ CAMERA_API_KIND_FIELDS = ("regltSe", "regltSctnLcSe", "prtcareaType")
 #   단속구간위치구분: 1 시점, 2 종점 of a 구간단속 section, blank for a point camera.
 #   보호구역구분: 1 노인, 2 어린이 보호구역, 99 none, blank unrecorded.
 SIGNAL_CODES = frozenset({2})
-SECTION_CODES = frozenset({1, 2})
+SECTION_START_CODES = frozenset({1})
+SECTION_END_CODES = frozenset({2})
 ZONE_CODES = frozenset({1, 2})
 
 # an r-tree entry needs a non-degenerate box; ~0.1 m is far below GPS noise
@@ -223,8 +224,11 @@ def classify_camera(enforcement, section_position, zone) -> int:
   """
   if to_codes(zone) & ZONE_CODES:
     return CAMERA_ZONE
-  if to_codes(section_position) & SECTION_CODES:
+  position = to_codes(section_position)
+  if position & SECTION_START_CODES:
     return CAMERA_SECTION
+  if position & SECTION_END_CODES:
+    return CAMERA_SECTION_END
   if to_codes(enforcement) & SIGNAL_CODES:
     return CAMERA_SIGNAL
   return CAMERA_SPEED

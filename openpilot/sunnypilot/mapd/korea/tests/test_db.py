@@ -13,8 +13,9 @@ import unittest
 
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS, SCHEMA_LINKS,
                                                       insert_bumps, insert_cameras, insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_SECTION,
-                                                 CAMERA_SPEED, CAMERA_ZONE, KoreaMapDB, has_camera_kind, verify)
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
+                                                 CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SPEED, CAMERA_ZONE,
+                                                 KoreaMapDB, has_camera_kind, has_split_sections, verify)
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
 ROAD_60 = (60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])
@@ -77,6 +78,18 @@ SIDE_10 = (10, "이면도로", [(37.54013, 127.0500), (37.54013, 127.0620)])
 # a TMAP route along MAIN_60, and one ~1.1 km north that the car is not on
 ROUTE_ON_MAIN = [(37.5400, 127.0490), (37.5400, 127.0630)]
 ROUTE_ELSEWHERE = [(37.5500, 127.0490), (37.5500, 127.0630)]
+
+# 구간단속 on an east-west road at 100 km/h: eastbound starts at SEC_A and ends at SEC_B (~5.3 km);
+# westbound starts at SEC_B and ends at SEC_A, each a metre or so off the other direction's camera.
+SEC_A = (37.6000, 127.0000)
+SEC_B = (37.6000, 127.0600)
+SECTION_CAMERAS = [
+  (SEC_A[0], SEC_A[1], 100, 0, CAMERA_SECTION),
+  (SEC_B[0], SEC_B[1], 100, 0, CAMERA_SECTION_END),
+  (SEC_B[0] + 1e-5, SEC_B[1] + 1e-5, 100, 0, CAMERA_SECTION),
+  (SEC_A[0] + 1e-5, SEC_A[1] + 1e-5, 100, 0, CAMERA_SECTION_END),
+  (37.6000, 127.1500, 80, 0, CAMERA_SECTION_END),  # another section's end, 80 km/h, ~13 km east
+]
 
 # os.replace() of a file with an open sqlite3 connection on it is a POSIX guarantee
 # (existing readers keep the old inode) that Windows does not provide (PermissionError:
@@ -502,6 +515,60 @@ class TestVerify(KoreaMapDBTestCase):
     cameras, links = self._make_pair()
     with self.assertRaisesRegex(ValueError, "expected at least"):
       verify(cameras, "cameras", 999999)
+
+
+class TestSections(KoreaMapDBTestCase):
+  def setUp(self):
+    super().setUp()
+    self.db = self.open_with_cameras(SECTION_CAMERAS)
+
+  def open_with_cameras(self, cameras):
+    cams = str(self.tmp_path / "korea_cameras.sqlite")
+    links = str(self.tmp_path / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, cameras))
+    write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [ROAD_60]))
+    return self.open_db(cams, links)
+
+  def test_the_end_ahead_on_our_heading_is_found(self):
+    end = self.db.section_end_ahead(*SEC_A, 90., 100)
+    self.assertIsNotNone(end)
+    self.assertEqual((end.lat, end.lon), SEC_B)
+
+  def test_the_other_direction_finds_its_own_end(self):
+    end = self.db.section_end_ahead(SEC_B[0] + 1e-5, SEC_B[1] + 1e-5, 270., 100)
+    self.assertIsNotNone(end)
+    self.assertAlmostEqual(end.lon, SEC_A[1] + 1e-5, places=6)
+
+  def test_an_end_with_another_limit_does_not_count(self):
+    # at the eastbound end, the only end camera further east is the 80 km/h one
+    self.assertIsNone(self.db.section_end_ahead(*SEC_B, 90., 100))
+
+  def test_no_heading_no_end(self):
+    self.assertIsNone(self.db.section_end_ahead(*SEC_A, None, 100))
+
+  def test_on_the_route_the_end_has_to_lie_along_it(self):
+    along = [(37.6000, 126.9990), (37.6000, 127.0700)]
+    north = [(37.6000, 127.0000), (37.7000, 127.0000)]
+    self.assertIsNotNone(self.db.section_end_ahead(*SEC_A, 90., 100, route=along))
+    self.assertIsNone(self.db.section_end_ahead(*SEC_A, 90., 100, route=north))
+
+  def test_starts_near_are_the_start_cameras_we_are_passing(self):
+    near = self.db.section_starts_near(37.60003, 127.00003)
+    self.assertEqual([(c.lat, c.lon) for c in near], [SEC_A])
+    self.assertEqual(self.db.section_starts_near(37.6020, 127.0000), [])
+
+  def test_merged_sections_are_not_split(self):
+    merged = [(SEC_A[0], SEC_A[1], 100, 0, CAMERA_SECTION), (SEC_B[0], SEC_B[1], 100, 0, CAMERA_SECTION)]
+    for name, cameras, split in (("split", SECTION_CAMERAS, True), ("merged", merged, False), ("none", [CAM_AHEAD], True)):
+      with self.subTest(name):
+        path = str(self.tmp_path / f"cams_{name}.sqlite")
+        write_db(path, SCHEMA_CAMERAS, lambda con, cams=cameras: insert_cameras(con, cams))
+        con = sqlite3.connect(path)
+        self.addCleanup(con.close)
+        self.assertEqual(has_split_sections(con), split)
+
+  def test_the_end_kind_answers_to_the_section_toggle(self):
+    self.assertEqual(CAMERA_KIND_PARAMS[CAMERA_SECTION_END], CAMERA_KIND_PARAMS[CAMERA_SECTION])
 
 
 class TestReloadAllThree(KoreaMapDBTestCase):

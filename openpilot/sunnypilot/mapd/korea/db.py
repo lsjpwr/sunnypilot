@@ -16,7 +16,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 
 from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, closest_point_on_segment, haversine, point_segment_distance
-from openpilot.sunnypilot.mapd.korea.route import distance_to_route
+from openpilot.sunnypilot.mapd.korea.route import distance_to_route, route_progress
 
 # Shared by all three databases (cameras, links, bumps) -- there is no independent version
 # per kind. Bumping this to add a camera/link schema change also invalidates every existing
@@ -54,8 +54,9 @@ BUMP_VIRTUAL = 2    # 가상방지턱 -- road markings only, no physical rise
 # says which one wins when it is several things at once.
 CAMERA_SPEED = 0    # 과속 only -- and any code this build does not recognise
 CAMERA_SIGNAL = 1   # 신호·과속, the multi-function intersection cameras
-CAMERA_SECTION = 2  # the start or end camera of a 구간단속 section
+CAMERA_SECTION = 2  # the start camera of a 구간단속 section
 CAMERA_ZONE = 3     # inside a 노인/어린이 보호구역, whatever else it enforces
+CAMERA_SECTION_END = 4  # the end camera of a 구간단속 section
 
 # The toggle behind each kind, all on by default (params_keys.h). korea_map_data drops the
 # kinds that are off; map_controller keeps SCC-Map on while any of them is on.
@@ -64,6 +65,7 @@ CAMERA_KIND_PARAMS = {
   CAMERA_SIGNAL: "KoreaCameraSignalEnabled",
   CAMERA_SECTION: "KoreaCameraSectionEnabled",
   CAMERA_ZONE: "KoreaCameraZoneEnabled",
+  CAMERA_SECTION_END: "KoreaCameraSectionEnabled",
 }
 
 # ~3.3 km box, then filtered down to CAMERA_MAX_DISTANCE_M
@@ -104,6 +106,16 @@ BUMP_CORRIDOR_M = 20.
 # localizer's lateral error in an urban canyon, which is what forced BUMP_CORRIDOR_M to 20
 # rather than 10.
 ROUTE_CORRIDOR_M = 30.
+
+# 구간단속. Both directions of a section share their end points -- one direction's start stands
+# beside the other's end -- so passing a start camera says nothing on its own. A section opens
+# only when a same-limit end camera lies ahead on our road (section_end_ahead).
+SECTION_PASS_M = 60.            # this close to a camera is passing it; 1 Hz at 125 km/h is 35 m a tick
+SECTION_NEAR_DEG = 0.001        # ~90 m box around the car for the start camera
+SECTION_MIN_M = 300.            # an end camera nearer than this is the other direction's, beside our start
+SECTION_MAX_M = 45000.          # the longest section in the 2026-08 data is about 43 km
+SECTION_SEARCH_DEG = 0.51       # ~45 km box in longitude at 37 N
+SECTION_AHEAD_TOLERANCE = 30.   # off a route, how far off our heading the end camera may lie
 
 _RTREE_OVERLAP = "WHERE i.maxlat >= ? AND i.minlat <= ? AND i.maxlon >= ? AND i.minlon <= ?"
 
@@ -188,6 +200,15 @@ def has_camera_kind(con: sqlite3.Connection) -> bool:
   too, to rebuild such a file without waiting out the week.
   """
   return any(row[1] == "kind" for row in con.execute("PRAGMA table_info(cameras)"))
+
+
+def has_split_sections(con: sqlite3.Connection) -> bool:
+  """False for a camera database whose 구간단속 cameras are all CAMERA_SECTION: built before end
+  cameras got CAMERA_SECTION_END, so no start can be told from an end. camera_refresh rebuilds
+  such a file at once, the way it does one without the kind column."""
+  kinds = {row[0] for row in con.execute("SELECT DISTINCT kind FROM cameras WHERE kind IN (?, ?)",
+                                         (CAMERA_SECTION, CAMERA_SECTION_END))}
+  return CAMERA_SECTION_END in kinds or CAMERA_SECTION not in kinds
 
 
 def verify(path: str, table: str, min_rows: int) -> int:
@@ -483,6 +504,51 @@ class KoreaMapDB:
       best = Bump(lat=blat, lon=blon, kind=kind, distance_m=distance)
 
     return best
+
+  def section_starts_near(self, lat: float, lon: float) -> list[Camera]:
+    """구간단속 start cameras within SECTION_PASS_M: the ones we are passing right now."""
+    return self._section_cameras(lat, lon, CAMERA_SECTION, SECTION_NEAR_DEG, SECTION_PASS_M)
+
+  def section_end_ahead(self, lat: float, lon: float, heading_deg: float | None, limit_kph: int,
+                        route: list[tuple[float, float]] | None = None) -> Camera | None:
+    """The end camera of the 구간단속 section we would be entering here, or None.
+
+    Same limit, SECTION_MIN_M to SECTION_MAX_M away, and ahead on our road: along the route
+    while the car is on it, else within SECTION_AHEAD_TOLERANCE of our heading. Nearest wins.
+    """
+    if heading_deg is None:
+      return None
+    on_route = bool(route) and distance_to_route(route, lat, lon) <= ROUTE_CORRIDOR_M
+    car_progress = route_progress(route, lat, lon) if on_route else 0.
+    best: Camera | None = None
+    for camera in self._section_cameras(lat, lon, CAMERA_SECTION_END, SECTION_SEARCH_DEG, SECTION_MAX_M):
+      if camera.limit_kph != limit_kph or camera.distance_m < SECTION_MIN_M:
+        continue
+      if best is not None and camera.distance_m >= best.distance_m:
+        continue
+      if on_route:
+        if distance_to_route(route, camera.lat, camera.lon) > ROUTE_CORRIDOR_M or \
+           route_progress(route, camera.lat, camera.lon) < car_progress + SECTION_MIN_M:
+          continue
+      elif bearing_delta(heading_deg, bearing(lat, lon, camera.lat, camera.lon)) > SECTION_AHEAD_TOLERANCE:
+        continue
+      best = camera
+    return best
+
+  def _section_cameras(self, lat: float, lon: float, kind: int, box_deg: float, max_m: float) -> list[Camera]:
+    if not self._cam_has_kind:
+      return []
+    rows = self.cam.execute(
+      "SELECT c.lat, c.lon, c.limit_kph, c.section_m, c.kind FROM cameras_idx i JOIN cameras c ON c.id = i.id " +
+      _RTREE_OVERLAP + " AND c.kind = ?",
+      (lat - box_deg, lat + box_deg, lon - box_deg, lon + box_deg, kind),
+    ).fetchall()
+    cameras = []
+    for clat, clon, limit_kph, section_m, camera_kind in rows:
+      distance = haversine(lat, lon, clat, clon)
+      if distance <= max_m:
+        cameras.append(Camera(lat=clat, lon=clon, limit_kph=limit_kph, distance_m=distance, section_m=section_m, kind=camera_kind))
+    return cameras
 
 
 def _heading_matches(heading_deg: float, alat: float, alon: float, blat: float, blon: float) -> bool:

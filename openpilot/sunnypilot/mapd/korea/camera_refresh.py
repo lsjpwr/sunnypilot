@@ -27,7 +27,7 @@ import urllib.parse
 import urllib.request
 
 from openpilot.sunnypilot.mapd.korea.build_db import CAMERA_API_KIND_FIELDS, SCHEMA_CAMERAS, insert_cameras, load_cameras_api, write_db
-from openpilot.sunnypilot.mapd.korea.db import has_camera_kind
+from openpilot.sunnypilot.mapd.korea.db import has_camera_kind, has_split_sections
 
 API_URL = "https://api.data.go.kr/openapi/tn_pubr_public_unmanned_traffic_camera_api"
 PAGE_SIZE = 1000
@@ -107,6 +107,12 @@ def current_has_kind(path: str) -> bool:
   return _read_live(path, has_camera_kind, False)
 
 
+def current_has_split_sections(path: str) -> bool:
+  """Whether the live database tells 구간단속 ends from starts. True when there is no usable
+  database or no kind column: the age and kind checks already fetch those."""
+  return _read_live(path, has_split_sections, True)
+
+
 def refresh(cameras_path: str, api_key: str, opener=urllib.request.urlopen) -> int:
   """Rebuild the camera database from the API. Returns the new row count, or 0 if it kept
   the old one.
@@ -184,9 +190,10 @@ class CameraRefresher:
       age = time.time() - os.path.getmtime(self.cameras_path)  # noqa: TID251
     except OSError:
       return True  # no database at all: fetch one
-    # A database from before the kind column opens fine but ignores every kind toggle, so
-    # replace it on the next unmetered tick rather than whenever the week runs out.
-    return age >= REFRESH_INTERVAL_S or not current_has_kind(self.cameras_path)
+    # A database from before the kind column, or from before section ends got their own kind,
+    # opens fine but cannot do what the toggles ask, so replace it on the next unmetered tick.
+    return age >= REFRESH_INTERVAL_S or not current_has_kind(self.cameras_path) or \
+      not current_has_split_sections(self.cameras_path)
 
   def _loop(self) -> None:
     # imported here so the module stays importable without the device stack, which is

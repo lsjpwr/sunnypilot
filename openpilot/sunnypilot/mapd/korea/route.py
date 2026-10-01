@@ -21,7 +21,7 @@ import threading
 import time
 import urllib.request
 
-from openpilot.sunnypilot.mapd.korea.geo import haversine, M_PER_DEG_LAT, point_segment_distance
+from openpilot.sunnypilot.mapd.korea.geo import closest_point_on_segment, haversine, M_PER_DEG_LAT, point_segment_distance
 
 # Everything this feature serves is inside South Korea, so a coordinate outside it is a
 # provider bug or a hostile answer either way. Generous on purpose: the box covers Jeju
@@ -188,6 +188,17 @@ def distance_to_route(route: list[tuple[float, float]], lat: float, lon: float) 
     return float("inf")
   return min(point_segment_distance(lat, lon, a[0], a[1], b[0], b[1])
              for a, b in zip(route, route[1:], strict=False))
+
+
+def route_progress(route: list[tuple[float, float]], lat: float, lon: float) -> float:
+  """Metres along the polyline to its point nearest (lat, lon); inf without a route."""
+  if len(route) < MIN_ROUTE_POINTS:
+    return float("inf")
+  i = min(range(len(route) - 1),
+          key=lambda k: point_segment_distance(lat, lon, route[k][0], route[k][1], route[k + 1][0], route[k + 1][1]))
+  along = sum(haversine(route[k][0], route[k][1], route[k + 1][0], route[k + 1][1]) for k in range(i))
+  plat, plon = closest_point_on_segment(lat, lon, route[i][0], route[i][1], route[i + 1][0], route[i + 1][1])
+  return along + haversine(route[i][0], route[i][1], plat, plon)
 
 
 class RouteState:

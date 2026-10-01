@@ -18,7 +18,8 @@ from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, MIN_V_MS,
                                                    OFF_ROUTE_TICKS, REROUTE_BACKOFF_S, RequestBudget, RouteSource,
                                                    RouteState, arrived, build_request, curve_targets,
-                                                   distance_to_route, fetch_route, in_korea, parse_route)
+                                                   distance_to_route, fetch_route, in_korea, parse_route,
+                                                   route_progress)
 
 
 def feature(coords, kind="LineString"):
@@ -558,3 +559,14 @@ class TestRouteSourceLoopDestinationChange(unittest.TestCase):
     # dest2's first request behind it -- also 1, not 2. Only with both does dest2 get asked
     # for on the very next tick.
     self.assertEqual(fetch_calls, [dest1, dest2])
+
+
+class TestRouteProgress(unittest.TestCase):
+  ROUTE = [(37.5000, 127.0000), (37.5000, 127.0100), (37.5000, 127.0200)]
+
+  def test_counts_metres_along_the_route_to_the_nearest_point(self):
+    expected = haversine(37.5, 127.0, 37.5, 127.01) + haversine(37.5, 127.01, 37.5, 127.015)
+    self.assertAlmostEqual(route_progress(self.ROUTE, 37.5005, 127.0150), expected, delta=1.)
+
+  def test_no_route_is_infinitely_far(self):
+    self.assertEqual(route_progress([], 37.5, 127.0), float("inf"))
