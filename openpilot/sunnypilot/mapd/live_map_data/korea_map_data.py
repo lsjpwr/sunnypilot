@@ -167,9 +167,13 @@ class KoreaMapData(BaseMapData):
     self.slowdown_camera = None
     self._camera_anchor = None
     self.bump = None
+    self.section = self._section_prev = None
     # The source is going away. SCC-Map polls this param every frame and has no idea who
     # last wrote it, so a point left here would be acted on by whatever runs next.
     self.mem_params.put("MapTargetVelocities", "[]")
+    # Same for SpeedLimitAssist and the 구간단속 section it holds.
+    self.mem_params.put("KoreaSectionSpeedLimit", 0.)
+    self.mem_params.put("KoreaSectionStart", 0.)
 
   def nav(self) -> ExternalNav | None:
     return self.external.latest() if self.external is not None else None

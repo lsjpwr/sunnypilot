@@ -957,3 +957,14 @@ class TestSection(unittest.TestCase):
     data.publish_targets()
     self.assertEqual(data.mem_params.values["KoreaSectionSpeedLimit"], 0.)
     self.assertEqual(data.mem_params.values["KoreaSectionStart"], 0.)
+
+  def test_closing_the_source_drops_the_section(self):
+    """A database error or a source switch closes the source. SpeedLimitAssist polls the section
+    params and has no idea who last wrote them, so the last section must not stay there."""
+    data = self.make(starts=[self.START], end=self.END)
+    data.update_section(37.6000, 127.0000)
+    data.db = None  # close() also runs before the database has opened
+    data.close()
+    self.assertIsNone(data.section)
+    self.assertEqual(data.mem_params.values["KoreaSectionSpeedLimit"], 0.)
+    self.assertEqual(data.mem_params.values["KoreaSectionStart"], 0.)
