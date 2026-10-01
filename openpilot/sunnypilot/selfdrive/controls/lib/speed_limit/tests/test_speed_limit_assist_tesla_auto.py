@@ -395,6 +395,33 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.drive(3., limit_kph=92, set_kph=105, v_kph=82)
     assert self.target_kph == 82
 
+  def test_a_scroll_up_in_a_section_that_undid_one_before_it_outlasts_the_section(self):
+    # limit 115, Tesla 125, scroll to 50 (target 40), then to 130 inside a 100 section (target 120):
+    # after the section the 75 that undid the scroll down stays, the 5 above 115 was the section's own
+    self.drive(1., limit_kph=115, set_kph=125, v_kph=115)
+    self.drive(0.5, limit_kph=115, set_kph=50, v_kph=50)
+    assert self.target_kph == 40
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=50, v_kph=50)
+    self.drive(0.5, limit_kph=115, set_kph=130, v_kph=100)
+    self.drive(30., limit_kph=115, set_kph=130, v_kph=120)
+    assert self.target_kph == 120
+    self.enter_section(0)
+    self.drive(1., limit_kph=115, set_kph=130, v_kph=120)
+    assert self.target_kph == 115
+
+  def test_a_section_ending_in_a_tunnel_keeps_the_undone_scroll_down_undone(self):
+    self.drive(1., limit_kph=115, set_kph=125, v_kph=100)
+    self.drive(0.5, limit_kph=115, set_kph=50, v_kph=40)
+    self.enter_section(100)
+    self.drive(0.5, limit_kph=115, set_kph=50, v_kph=40)
+    self.drive(0.5, limit_kph=115, set_kph=130, v_kph=100)
+    self.drive(3., limit_kph=92, set_kph=130, v_kph=92)
+    assert self.target_kph == 97
+    self.enter_section(0)
+    self.drive(1., limit_kph=92, set_kph=130, v_kph=92)
+    assert self.target_kph == 92
+
 
 class TestCommaTargetDisplay(unittest.TestCase):
   def test_shows_the_speed_limit_target_while_it_holds_the_car_under_the_set_speed(self):

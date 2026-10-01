@@ -42,7 +42,8 @@ class AutoSpeedLimit:
   Inside a 구간단속 section (from korea mapd) the target is also capped at the section's pace: its
   exact limit, moved only by scrolls made inside it and only from then on. Those scrolls move the
   pace and the road target, each by the same rules as the drive's nudge, and end with the section or
-  a cancel. Time lost against that pace comes back above it and a lead taken over it is given back
+  a cancel, but for the part of a scroll up that undid a scroll down made before the section: that
+  part stays. Time lost against that pace comes back above it and a lead taken over it is given back
   below it, so the section average lands on the pace.
   """
 
@@ -95,6 +96,8 @@ class AutoSpeedLimit:
     a new start (a section right after another of the same limit) starts from nothing."""
     if section != self.section or start != self.section_start:
       self.section, self.section_start = section, start
+      # a scroll up made in the section stays only as far as it undid a scroll down from before it
+      self.nudge += min(max(self.section_road_nudge, 0.), max(-self.nudge, 0.))
       self.drop_section_scrolls()
       self.section_credit = self._section_time = self._section_dist = 0.
     if self.section <= 0.:
@@ -139,8 +142,8 @@ class AutoSpeedLimit:
 
   def _clamp_nudge(self) -> None:
     # a new limit keeps the road target at the floor or above, so a scroll up moves it at once: the
-    # drive's nudge on its own (what stays after the section) and with the section's scrolls. With no
-    # limit the road target is unused, so the scrolls wait for the next one.
+    # drive's nudge on its own and with the section's scrolls. With no limit there is no road target,
+    # so the clamp waits for the next limit.
     if self.limit <= 0.:
       return
     floor = min(self.limit, NUDGE_MIN_SPEED) - self.limit
