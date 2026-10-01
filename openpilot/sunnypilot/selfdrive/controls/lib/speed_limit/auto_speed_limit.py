@@ -18,6 +18,18 @@ SECTION_CREDIT_TAU = 60.
 SECTION_PAYBACK_MAX = 2.78
 
 
+def _scrolled(nudge: float, base: float, prev: float, v_cruise_cluster: float) -> float:
+  """The nudge of a target base + nudge after the set speed moved from prev to v_cruise_cluster. A
+  target that was holding the car under the set speed moves with the scroll; when the set speed was
+  the ceiling, only the part of a scroll up above the target counts. Never under NUDGE_MIN_SPEED, nor
+  under base when that is lower."""
+  if base + nudge < prev:
+    nudge += v_cruise_cluster - prev
+  elif v_cruise_cluster > prev:
+    nudge = max(nudge, v_cruise_cluster - base)
+  return max(nudge, min(base, NUDGE_MIN_SPEED) - base)
+
+
 class AutoSpeedLimit:
   """Speed limit target without confirmation, for TeslaAutoSpeedLimitAssist.
 
@@ -28,9 +40,9 @@ class AutoSpeedLimit:
   nudge lasts until cruise is canceled.
 
   Inside a 구간단속 section (from korea mapd) the target is also capped at the section's pace: its
-  exact limit, moved only by scrolls made inside it and only from then on. Those scrolls follow the
-  same rules as the drive's nudge, lift the road target by as much, and end with the section or a
-  cancel. Time lost against that pace comes back above it and a lead taken over it is given back
+  exact limit, moved only by scrolls made inside it and only from then on. Those scrolls move the
+  pace and the road target, each by the same rules as the drive's nudge, and end with the section or
+  a cancel. Time lost against that pace comes back above it and a lead taken over it is given back
   below it, so the section average lands on the pace.
   """
 
@@ -47,19 +59,22 @@ class AutoSpeedLimit:
     credit carry on (track_section keeps them), but a scroll made in it before the cancel is gone."""
     self.limit = limit
     self.nudge = 0.
-    self.section_nudge = 0.
+    self.drop_section_scrolls()
     self.changed = False
     self._pending = limit
     self._pending_frames = 0
     self._cluster_prev: float | None = None
 
+  def drop_section_scrolls(self) -> None:
+    """A cancel or a new section: scrolls made in the section are gone."""
+    self.section_nudge = self.section_road_nudge = 0.
+
   @property
   def v_target(self) -> float:
     targets = []
     if self.limit > 0.:
-      # a scroll up made inside a section lifts the road target by as much, so it moves the car's
-      # target there the same way it does outside one
-      targets.append(self.limit + self.nudge + max(self.section_nudge, 0.))
+      # plus what scrolls made inside a section moved it by
+      targets.append(self.limit + self.nudge + self.section_road_nudge)
     if self.section > 0.:
       # a 구간단속 section: its pace, raised by time lost in it or lowered to give a lead back
       adjust = max(self.section_credit / SECTION_CREDIT_TAU, -SECTION_PAYBACK_MAX)
@@ -80,7 +95,8 @@ class AutoSpeedLimit:
     a new start (a section right after another of the same limit) starts from nothing."""
     if section != self.section or start != self.section_start:
       self.section, self.section_start = section, start
-      self.section_nudge = self.section_credit = self._section_time = self._section_dist = 0.
+      self.drop_section_scrolls()
+      self.section_credit = self._section_time = self._section_dist = 0.
     if self.section <= 0.:
       return
     # credit: how far the car is behind the pace it was asked to keep, in m
@@ -110,28 +126,19 @@ class AutoSpeedLimit:
     prev, self._cluster_prev = self._cluster_prev, v_cruise_cluster
     if prev is None or not scroll_allowed:
       return
-    delta = v_cruise_cluster - prev
-    if abs(delta) < SCROLL_EPSILON:
+    if abs(v_cruise_cluster - prev) < SCROLL_EPSILON:
       return
     if self.section > 0.:
-      # inside a section a scroll moves the section's pace from now on, by the same rules as the road
-      # target's nudge below; the drive's nudge waits
-      if self._section_pace < prev:
-        self.section_nudge += delta
-      elif delta > 0.:
-        # the set speed was the ceiling, so only the part of the scroll above the pace counts
-        self.section_nudge = max(self.section_nudge, v_cruise_cluster - self.section)
-      self.section_nudge = max(self.section_nudge, min(self.section, NUDGE_MIN_SPEED) - self.section)
-      return
-    if self.limit <= 0.:
-      return
-    if self.limit + self.nudge < prev:
-      # the road target was holding the car under the set speed: move it with the scroll
-      self.nudge += delta
-    elif delta > 0.:
-      # the set speed was the ceiling, so only the part of the scroll above the road target counts
-      self.nudge = max(self.nudge, v_cruise_cluster - self.limit)
-    self._clamp_nudge()
+      # inside a section a scroll moves the section's pace and the road target from now on, each
+      # measured from itself; the drive's nudge waits
+      self.section_nudge = _scrolled(self.section_nudge, self.section, prev, v_cruise_cluster)
+      if self.limit > 0.:
+        self.section_road_nudge = _scrolled(self.nudge + self.section_road_nudge, self.limit, prev, v_cruise_cluster) - self.nudge
+    elif self.limit > 0.:
+      self.nudge = _scrolled(self.nudge, self.limit, prev, v_cruise_cluster)
 
   def _clamp_nudge(self) -> None:
-    self.nudge = max(self.nudge, min(self.limit, NUDGE_MIN_SPEED) - self.limit)
+    # a new limit: the road target stays at the floor or above, so a scroll up moves it at once
+    floor = min(self.limit, NUDGE_MIN_SPEED) - self.limit
+    self.nudge = max(self.nudge, floor)
+    self.section_road_nudge = max(self.section_road_nudge, floor - self.nudge)

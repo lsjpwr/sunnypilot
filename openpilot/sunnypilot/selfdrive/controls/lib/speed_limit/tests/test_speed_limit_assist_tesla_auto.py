@@ -330,6 +330,53 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.drive(0.5, limit_kph=115, set_kph=40, v_kph=30)
     assert self.target_kph == 40
 
+  def test_a_scroll_down_inside_a_section_moves_a_road_target_holding_the_car(self):
+    # no offset, and a jam left the car 15 km/h behind: the road target holds it while it catches up
+    self.enter_section(100)
+    self.drive(1., limit_kph=100, set_kph=115, v_kph=100)
+    self.drive(30., limit_kph=100, set_kph=115, v_kph=70)
+    self.drive(30., limit_kph=100, set_kph=115, v_kph=100)
+    assert self.target_kph == 100
+    self.drive(0.5, limit_kph=100, set_kph=105, v_kph=90)
+    assert self.target_kph == 90
+
+  def test_a_scroll_down_inside_a_section_moves_a_lower_road_target(self):
+    # a tunnel inside the section: its road target is under the section's pace
+    self.enter_section(100)
+    self.drive(1., limit_kph=92, set_kph=115, v_kph=92)
+    self.drive(0.5, limit_kph=92, set_kph=105, v_kph=82)
+    assert self.target_kph == 82
+
+  def test_a_scroll_up_after_the_floor_responds_at_once_under_a_lower_road_target(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=92, set_kph=115, v_kph=92)
+    self.drive(0.5, limit_kph=92, set_kph=30, v_kph=30)
+    assert self.target_kph == 30
+    self.drive(0.5, limit_kph=92, set_kph=40, v_kph=30)
+    assert self.target_kph == 40
+
+  def test_raising_the_set_speed_over_a_lower_road_target_moves_it_as_outside_a_section(self):
+    # the Tesla number sat on the tunnel's road target: raising it moves the target the same way it
+    # would outside a section, while the section's pace takes only the part above the section limit
+    self.enter_section(100)
+    self.drive(1., limit_kph=92, set_kph=92, v_kph=92)
+    self.drive(0.5, limit_kph=92, set_kph=102, v_kph=92)
+    assert self.target_kph == 102
+    # out of the tunnel: the pace is 102, not 110
+    self.drive(3., limit_kph=115, set_kph=102, v_kph=102)
+    assert self.target_kph == 102
+
+  def test_a_lower_road_limit_keeps_a_scrolled_down_road_target_at_the_floor(self):
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=135, v_kph=100)
+    self.drive(0.5, limit_kph=115, set_kph=40, v_kph=30)
+    assert self.target_kph == 30
+    # a tunnel starts: the scrolled-down road target stays at 30, not under it
+    self.drive(3., limit_kph=92, set_kph=40, v_kph=30)
+    assert self.target_kph == 30
+    self.drive(0.5, limit_kph=92, set_kph=50, v_kph=30)
+    assert self.target_kph == 40
+
 
 class TestCommaTargetDisplay(unittest.TestCase):
   def test_shows_the_speed_limit_target_while_it_holds_the_car_under_the_set_speed(self):
