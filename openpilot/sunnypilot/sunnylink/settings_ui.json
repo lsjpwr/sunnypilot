@@ -959,6 +959,96 @@
                       "value": 0
                     }
                   ]
+                },
+                {
+                  "key": "TeslaAutoSpeedLimitAssist",
+                  "widget": "toggle",
+                  "title": "Auto Speed Limit Assist (Tesla)",
+                  "description": "Follows the speed limit plus your offset without asking you to set an exact speed. The Tesla set speed stays the maximum. Scrolling moves the target by the same amount until cruise is canceled.",
+                  "visibility": [
+                    {
+                      "type": "capability",
+                      "field": "brand",
+                      "equals": "tesla"
+                    },
+                    {
+                      "type": "param",
+                      "key": "SpeedLimitMode",
+                      "equals": 3
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "not_engaged"
+                    }
+                  ]
+                },
+                {
+                  "key": "TeslaAutoSpeedLimitDelay",
+                  "widget": "option",
+                  "title": "Speed Limit Change Delay",
+                  "description": "A new speed limit must hold this long before the car adjusts to it, which filters brief misreads. 0 adjusts at once.",
+                  "min": 0.0,
+                  "max": 5.0,
+                  "step": 0.5,
+                  "unit": "s",
+                  "visibility": [
+                    {
+                      "type": "capability",
+                      "field": "brand",
+                      "equals": "tesla"
+                    },
+                    {
+                      "type": "param",
+                      "key": "SpeedLimitMode",
+                      "equals": 3
+                    },
+                    {
+                      "type": "param",
+                      "key": "TeslaAutoSpeedLimitAssist",
+                      "equals": true
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "not_engaged"
+                    }
+                  ]
+                },
+                {
+                  "key": "TeslaAutoSpeedLimitMax",
+                  "widget": "option",
+                  "title": "Auto Speed Limit Assist Max Speed",
+                  "description": "Auto Speed Limit Assist never targets more than this, whatever the limit, your offset or a scroll. 0 turns it off.",
+                  "min": 0,
+                  "max": 145,
+                  "step": 5,
+                  "unit": {
+                    "metric": "km/h",
+                    "imperial": "mph"
+                  },
+                  "visibility": [
+                    {
+                      "type": "capability",
+                      "field": "brand",
+                      "equals": "tesla"
+                    },
+                    {
+                      "type": "param",
+                      "key": "SpeedLimitMode",
+                      "equals": 3
+                    },
+                    {
+                      "type": "param",
+                      "key": "TeslaAutoSpeedLimitAssist",
+                      "equals": true
+                    }
+                  ],
+                  "enablement": [
+                    {
+                      "type": "not_engaged"
+                    }
+                  ]
                 }
               ]
             }
