@@ -32,7 +32,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
                                                  CAMERA_SECTION, ROUTE_CORRIDOR_M, SECTION_PASS_M, Bump, Camera,
-                                                 KoreaMapDB, Link, mtime_or_none)
+                                                 KoreaMapDB, Link, at_section_end, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
@@ -288,11 +288,11 @@ class KoreaMapData(BaseMapData):
     a same-limit end camera lies ahead on our road, and when in doubt it does not open at all:
     the start and end cameras still brake the car through SCC-Map, as before.
 
-    So a start beside the end camera we have just passed opens nothing: it is most likely the
-    other direction's, and the end it finds ahead belongs to another section, whose own start
-    would then go unnoticed. Only a route tells it from the start of a section that begins where
-    ours ends: on one, it opens when its end lies along the route with no start of its limit in
-    between.
+    So a start standing with the end camera we have just passed (beside it, or across the road
+    just before it) opens nothing: it is most likely the other direction's, and the end it finds
+    ahead belongs to another section, whose own start would then go unnoticed. Only a route tells
+    it from the start of a section that begins where ours ends: on one, it opens when its end lies
+    along the route with no start in between.
     """
     if CAMERA_SECTION not in self.camera_kinds or self.last_bearing is None:
       self._drop_section("section cameras off")
@@ -308,18 +308,18 @@ class KoreaMapData(BaseMapData):
       elif self.section.travelled_m > self.section.max_travel_m:
         self._drop_section("drove past its length")
 
-    # a start within SECTION_PASS_M of the passed end is out of reach from twice that
+    # the starts standing with the passed end are out of reach once we are twice SECTION_PASS_M from it
     passed = self._section_passed
     if passed is not None and haversine(lat, lon, passed[0], passed[1]) > 2 * SECTION_PASS_M:
       passed = self._section_passed = None
 
     if self.section is None:
       for start in self.db.section_starts_near(lat, lon):
-        beside_passed = passed is not None and haversine(start.lat, start.lon, passed[0], passed[1]) <= SECTION_PASS_M
-        if beside_passed and distance_to_route(self.route, lat, lon) > ROUTE_CORRIDOR_M:
+        by_passed = passed is not None and at_section_end(start, passed, self.last_bearing)
+        if by_passed and distance_to_route(self.route, lat, lon) > ROUTE_CORRIDOR_M:
           continue
         end = self.db.section_end_ahead(lat, lon, self.last_bearing, start.limit_kph, route=self.route)
-        if end is None or (beside_passed and self.db.section_start_between(lat, lon, end, self.route, passed)):
+        if end is None or (by_passed and self.db.section_start_between(lat, lon, self.last_bearing, end, self.route, passed)):
           continue
         self.section = Section(start.limit_kph, end.lat, end.lon,
                                end.distance_m * SECTION_TRAVEL_FACTOR + SECTION_TRAVEL_SLACK_M, started=time.monotonic())

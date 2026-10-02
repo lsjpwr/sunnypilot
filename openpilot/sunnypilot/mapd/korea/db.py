@@ -116,6 +116,7 @@ SECTION_MIN_M = 300.            # an end camera nearer than this is the other di
 SECTION_MAX_M = 45000.          # the longest section in the 2026-08 data is about 43 km
 SECTION_SEARCH_DEG = 0.51       # ~45 km box in longitude at 37 N
 SECTION_AHEAD_TOLERANCE = 30.   # off a route, how far off our heading the end camera may lie
+M_PER_DEG_LON_MIN = 87000.      # a degree of longitude at 38.6 N, the north end of the map; more further south
 
 _RTREE_OVERLAP = "WHERE i.maxlat >= ? AND i.minlat <= ? AND i.maxlon >= ? AND i.minlon <= ?"
 
@@ -230,6 +231,19 @@ def verify(path: str, table: str, min_rows: int) -> int:
     return count
   finally:
     con.close()
+
+
+def at_section_end(start: Camera, end: tuple[float, float], heading_deg: float) -> bool:
+  """Does this start camera stand with the end camera at end, for a car passing it on heading_deg?
+
+  Both directions of a section share their end points: the other direction's start stands beside the
+  end camera, or across the road up to twice SECTION_PASS_M before it. A section that begins where ours
+  ends starts beside the end camera or past it.
+  """
+  distance = haversine(end[0], end[1], start.lat, start.lon)
+  if distance <= SECTION_PASS_M:
+    return True
+  return distance <= 2 * SECTION_PASS_M and bearing_delta(heading_deg, bearing(end[0], end[1], start.lat, start.lon)) >= 90.
 
 
 class KoreaMapDB:
@@ -535,25 +549,25 @@ class KoreaMapDB:
       return camera
     return None
 
-  def section_start_between(self, lat: float, lon: float, end: Camera, route: list[tuple[float, float]],
-                            passed_end: tuple[float, float]) -> bool:
-    """Does a start camera of end's limit lie on the route between the car and end?
+  def section_start_between(self, lat: float, lon: float, heading_deg: float, end: Camera,
+                            route: list[tuple[float, float]], passed_end: tuple[float, float]) -> bool:
+    """Does a start camera lie on the route between the car and end?
 
-    Then end closes the section that starts there, not one starting here. The starts beside
-    passed_end (the end camera just passed) and beside end do not count: both directions of a
-    section share their end points, so the other direction's start stands beside each, as does the
-    start of a section that begins where the last one ends.
+    Then end closes the section that starts there, not one starting here. Sections do not overlap, so
+    a start of any limit tells. The starts standing with passed_end (the end camera just passed, see
+    at_section_end) or within twice SECTION_PASS_M of end do not count: the other direction's start
+    stands there, and so may the start of a section that begins where the last one ends.
     """
     car_progress = route_progress(route, lat, lon)
     end_progress = route_progress(route, end.lat, end.lon)
     # a camera within ROUTE_CORRIDOR_M of the route between the car and end (both within it too) is
     # at most this far from the two, together
     reach = end_progress - car_progress + 4 * ROUTE_CORRIDOR_M
-    for start in self._section_cameras(lat, lon, CAMERA_SECTION, SECTION_SEARCH_DEG, reach):
-      if start.limit_kph != end.limit_kph or start.distance_m + haversine(start.lat, start.lon, end.lat, end.lon) > reach:
+    for start in self._section_cameras(lat, lon, CAMERA_SECTION, reach / M_PER_DEG_LON_MIN, reach):
+      if start.distance_m + haversine(start.lat, start.lon, end.lat, end.lon) > reach:
         continue
-      if haversine(start.lat, start.lon, passed_end[0], passed_end[1]) <= SECTION_PASS_M or \
-         haversine(start.lat, start.lon, end.lat, end.lon) <= SECTION_PASS_M:
+      if at_section_end(start, passed_end, heading_deg) or \
+         haversine(start.lat, start.lon, end.lat, end.lon) <= 2 * SECTION_PASS_M:
         continue
       if distance_to_route(route, start.lat, start.lon) <= ROUTE_CORRIDOR_M and \
          car_progress < route_progress(route, start.lat, start.lon) < end_progress:

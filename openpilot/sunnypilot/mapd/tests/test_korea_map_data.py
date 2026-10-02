@@ -935,16 +935,18 @@ class TestSection(unittest.TestCase):
     data.update_section(37.6000, 127.0000)
     self.assertIsNone(data.section)
 
-  def pass_the_end(self, route=(), start_between=False):
-    """Open the section, then reach its end camera, where a same-limit start camera stands beside it
-    and another end camera of that limit lies ahead. Returns the data and the first section."""
+  def pass_the_end(self, route=(), start_between=False, start2=None):
+    """Open the section, then reach its end camera, where a same-limit start camera stands (beside it
+    unless start2 says otherwise) and another end camera of that limit lies ahead. Returns the data and
+    the first section."""
+    start2 = start2 or self.START2
     data = self.make(starts=[self.START], end=self.END)
     data.route = list(route)
     data.update_section(37.6000, 127.0000)
     first = data.section
-    data.db = SimpleNamespace(section_starts_near=lambda lat, lon: [self.START2],
+    data.db = SimpleNamespace(section_starts_near=lambda lat, lon: [start2],
                               section_end_ahead=lambda lat, lon, heading, limit, route=None: self.END2,
-                              section_start_between=lambda lat, lon, end, route, passed: start_between)
+                              section_start_between=lambda lat, lon, heading, end, route, passed: start_between)
     data.update_section(37.6000, 127.0600)
     return data, first
 
@@ -958,6 +960,18 @@ class TestSection(unittest.TestCase):
     # most likely the other direction's start: the end it finds ahead belongs to another section
     data, _ = self.pass_the_end()
     self.assertIsNone(data.section)
+
+  def test_off_a_route_the_start_across_the_road_just_before_the_end_opens_nothing(self):
+    # the other direction's start, 66 m before our end camera and 29 m across the road: 72 m from it
+    across = Camera(lat=37.60026, lon=127.05925, limit_kph=100, distance_m=30., section_m=0, kind=CAMERA_SECTION)
+    data, _ = self.pass_the_end(start2=across)
+    self.assertIsNone(data.section)
+
+  def test_off_a_route_a_start_past_the_end_still_opens(self):
+    # a section that begins 100 m after ours ends
+    past = Camera(lat=37.6000, lon=127.06113, limit_kph=100, distance_m=100., section_m=0, kind=CAMERA_SECTION)
+    data, _ = self.pass_the_end(start2=past)
+    self.assertIsNotNone(data.section)
 
   def test_on_a_route_a_start_in_between_keeps_the_start_beside_the_end_from_opening(self):
     data, _ = self.pass_the_end(route=self.ALONG, start_between=True)
@@ -988,6 +1002,31 @@ class TestSection(unittest.TestCase):
       self.assertNotIn("37.6", line)
       self.assertNotIn("127.", line)
 
+  def test_every_other_way_a_section_ends_is_logged_with_its_reason(self):
+    short = Camera(lat=37.6000, lon=127.0600, limit_kph=100, distance_m=100., section_m=0, kind=CAMERA_SECTION_END)
+
+    def drive_past_its_length(data):
+      data.update_section(37.6200, 127.0000)  # ~2.2 km north, past 100 * 1.5 + 2000 m
+
+    def turn_the_cameras_off(data):
+      data.camera_kinds = frozenset()
+      data.update_section(37.6000, 127.0010)
+
+    def close_the_source(data):
+      data.db = None
+      data.close()
+
+    for reason, end_it in (("drove past its length", drive_past_its_length), ("section cameras off", turn_the_cameras_off),
+                           ("map source closed", close_the_source)):
+      with self.subTest(reason), mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.cloudlog") as log:
+        data = self.make(starts=[self.START], end=short)
+        data.update_section(37.6000, 127.0000)
+        data.db = self.NOTHING
+        end_it(data)
+        self.assertIsNone(data.section)
+        last = log.info.call_args_list[-1].args
+        self.assertIn(f"({reason})", last[0] % last[1:])
+
   def test_the_section_goes_to_shared_memory(self):
     data = self.make(starts=[self.START], end=self.END)
     data.last_position = Coordinate(37.6000, 127.0000)
@@ -1016,7 +1055,8 @@ class TestSection(unittest.TestCase):
 class TestSectionAtItsEnd(unittest.TestCase):
   """update_section over a real database, driving east at about 35 m a tick (1 Hz at 125 km/h) through a
   100 km/h section whose end has the westbound start beside it, with another 100 km/h section's end
-  further east. That end must not be taken for one of a section starting at ours."""
+  further east. Off a route nothing opens at our end; on a route a section to that end opens there
+  unless a start lies in between."""
   CAMERAS = [
     (37.6000, 127.0000, 100, 0, CAMERA_SECTION),
     (37.6000, 127.0600, 100, 0, CAMERA_SECTION_END),
@@ -1051,6 +1091,13 @@ class TestSectionAtItsEnd(unittest.TestCase):
 
   def test_off_a_route_nothing_opens_at_the_end(self):
     seen = self.drive(self.CAMERAS)
+    self.assertEqual(self.ends_open(seen, 127.0000, 127.0588), {127.0600})
+    self.assertEqual(self.ends_open(seen, 127.0596, 127.2200), set())
+
+  def test_off_a_route_nothing_opens_at_an_end_with_the_westbound_start_across_the_road_before_it(self):
+    # the westbound start 66 m before our end camera and 29 m across the road, 72 m from it
+    cameras = [*self.CAMERAS[:2], (37.60026, 127.05925, 100, 0, CAMERA_SECTION), *self.CAMERAS[3:]]
+    seen = self.drive(cameras)
     self.assertEqual(self.ends_open(seen, 127.0000, 127.0588), {127.0600})
     self.assertEqual(self.ends_open(seen, 127.0596, 127.2200), set())
 
