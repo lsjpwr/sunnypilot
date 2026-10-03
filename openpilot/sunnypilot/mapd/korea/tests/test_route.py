@@ -420,7 +420,10 @@ class TestCurveTargets(unittest.TestCase):
     self.assertAlmostEqual(targets[0][2], expected, delta=3.)
 
   def test_a_tight_curve_is_clamped_to_the_floor(self):
-    route = arc(37.5665, 126.9780, 15., 0., 180.)
+    curve = arc(37.5665, 126.9780, 15., 0., 180.)
+    m_per_deg_lat = 111195.
+    # 50 m straight legs either side: no vertex within CURVE_BASELINE_M of a route end is measured
+    route = [(curve[0][0] - 50. / m_per_deg_lat, curve[0][1])] + curve + [(curve[-1][0] - 50. / m_per_deg_lat, curve[-1][1])]
     targets = curve_targets(route, route[0][0], route[0][1], 30.)
     self.assertTrue(targets)
     self.assertGreaterEqual(min(t[2] for t in targets), MIN_V_MS)
@@ -485,6 +488,14 @@ class TestCurveTargets(unittest.TestCase):
     m_per_deg_lon = m_per_deg_lat * math.cos(math.radians(37.5665))
     route = [(37.5665 + i * 50. / m_per_deg_lat, 126.9780) for i in range(8)]
     route.insert(4, (route[3][0] + 3. / m_per_deg_lat, route[3][1] + 0.3 / m_per_deg_lon))
+    self.assertEqual(curve_targets(route, route[0][0], route[0][1], 30.), [])
+
+  def test_a_wiggle_near_the_route_end_has_no_targets(self):
+    # within CURVE_BASELINE_M of a route end one side of the triangle would be the short step itself
+    m_per_deg_lat = 111195.
+    m_per_deg_lon = m_per_deg_lat * math.cos(math.radians(37.5665))
+    route = [(37.5665 + i * 50. / m_per_deg_lat, 126.9780) for i in range(8)]
+    route.insert(7, (route[7][0] - 3. / m_per_deg_lat, route[7][1] + 0.3 / m_per_deg_lon))
     self.assertEqual(curve_targets(route, route[0][0], route[0][1], 30.), [])
 
   def test_an_unevenly_sampled_curve_still_targets_the_physics_speed(self):

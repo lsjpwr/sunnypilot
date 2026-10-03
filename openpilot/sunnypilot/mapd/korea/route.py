@@ -329,9 +329,12 @@ def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
     if travelled > CURVE_HORIZON_M:
       break
 
-    # the vertices at least CURVE_BASELINE_M back and ahead along the route, or its ends
-    back = max(bisect.bisect_right(cum, cum[i] - CURVE_BASELINE_M) - 1, 0)
-    ahead = min(bisect.bisect_left(cum, cum[i] + CURVE_BASELINE_M), len(route) - 1)
+    # the vertices at least CURVE_BASELINE_M back and ahead along the route. Within that of either end
+    # there is none, and the short side left would read joint noise as a curve again.
+    back = bisect.bisect_right(cum, cum[i] - CURVE_BASELINE_M) - 1
+    ahead = bisect.bisect_left(cum, cum[i] + CURVE_BASELINE_M)
+    if back < 0 or ahead >= len(route):
+      continue
     curvature = _menger_curvature(route[back], route[i], route[ahead])
     if curvature <= 0.:
       continue
