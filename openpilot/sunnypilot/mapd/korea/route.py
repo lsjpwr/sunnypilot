@@ -15,9 +15,11 @@ Deliberately free of openpilot imports so it runs under a bare Python interprete
 same rule as db.py and geo.py.
 """
 import bisect
+import glob
 import json
 import logging
 import math
+import os
 import threading
 import time
 import urllib.request
@@ -339,6 +341,24 @@ def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
   return targets
 
 
+# Routes kept on the device, so a drive's curve targets can be replayed against its logs later.
+ROUTES_KEPT = 20
+
+
+def save_route(directory: str, points: list[tuple[float, float]], keep: int = ROUTES_KEPT) -> None:
+  """Write a fetched route to directory as route-<ms>.json and keep only the newest `keep`. Local only:
+  a route is where the car went, and nothing reads this directory but a person pulling it by hand."""
+  os.makedirs(directory, exist_ok=True)
+  # The wall clock on purpose: the file is matched to a drive's logs by time.
+  now = time.time()  # noqa: TID251
+  path = os.path.join(directory, f"route-{int(now * 1000)}.json")
+  with open(path + ".tmp", "w") as f:
+    json.dump({"saved": now, "points": points}, f)
+  os.replace(path + ".tmp", path)
+  for old in sorted(glob.glob(os.path.join(directory, "route-*.json")))[:-keep]:
+    os.remove(old)
+
+
 # Close enough to be there. Generous on purpose -- the destination the phone sends is a
 # POI centroid, not the kerb, and a 20 m threshold would leave the route live in a car park.
 ARRIVED_M = 100.
@@ -359,8 +379,9 @@ class RouteSource:
   same start/stop shape, as CameraRefresher.
   """
 
-  def __init__(self, clock=time.monotonic):
+  def __init__(self, clock=time.monotonic, save_dir: str | None = None):
     self.state = RouteState(clock=clock)
+    self._save_dir = save_dir
     self.budget = RequestBudget()
     self._lock = threading.Lock()
     self._position: tuple[float, float] | None = None
@@ -447,6 +468,11 @@ class RouteSource:
           if route:
             with self._lock:
               self.state.set_route(route)
+            if self._save_dir is not None:
+              try:
+                save_route(self._save_dir, route)
+              except OSError:
+                LOG.warning("route: could not save the route")
       except Exception:
         # This thread dying disables the feature silently until the next reboot, and
         # nothing it does is worth that. Keep going and try again next second.

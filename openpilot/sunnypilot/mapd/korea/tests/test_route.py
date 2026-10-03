@@ -4,9 +4,12 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import itertools
 import json
 import math
+import os
 import sys
+import tempfile
 import threading
 import types
 import unittest
@@ -19,7 +22,7 @@ from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP,
                                                    OFF_ROUTE_TICKS, REROUTE_BACKOFF_S, RequestBudget, RouteSource,
                                                    RouteState, arrived, build_request, curve_targets,
                                                    distance_to_route, fetch_route, in_korea, parse_route,
-                                                   route_progress)
+                                                   route_progress, save_route)
 
 
 def feature(coords, kind="LineString"):
@@ -580,6 +583,48 @@ class TestRouteSourceLoopDestinationChange(unittest.TestCase):
     # dest2's first request behind it -- also 1, not 2. Only with both does dest2 get asked
     # for on the very next tick.
     self.assertEqual(fetch_calls, [dest1, dest2])
+
+
+class OneTickStop(threading.Event):
+  """Lets RouteSource._loop run exactly one iteration."""
+
+  def wait(self, timeout=None):
+    self.set()
+    return True
+
+
+class TestSaveRoute(unittest.TestCase):
+  """Fetched routes stay on the device, the newest ROUTES_KEPT of them, for replaying a drive."""
+
+  def test_a_route_is_written_with_its_points(self):
+    with tempfile.TemporaryDirectory() as d:
+      save_route(d, STRAIGHT)
+      files = os.listdir(d)
+      self.assertEqual(len(files), 1)
+      with open(os.path.join(d, files[0])) as f:
+        self.assertEqual(json.load(f)["points"], [list(p) for p in STRAIGHT])
+
+  def test_only_the_newest_are_kept(self):
+    clock = itertools.count(1_790_000_000)
+    with tempfile.TemporaryDirectory() as d, mock.patch.object(route, "time", SimpleNamespace(time=lambda: next(clock))):
+      for _ in range(22):
+        save_route(d, STRAIGHT)
+      names = sorted(os.listdir(d))
+    self.assertEqual(len(names), 20)
+    self.assertEqual(names[0], "route-1790000002000.json")
+
+  def test_the_route_thread_saves_what_it_fetched(self):
+    params_values = {"NavDestination": json.dumps({"latitude": 37.4979, "longitude": 127.0276}), "KoreaRouteApiKey": "K"}
+    params_mod = types.ModuleType("openpilot.common.params")
+    params_mod.Params = lambda: FakeRouteParams(params_values)
+    with tempfile.TemporaryDirectory() as d:
+      source = RouteSource(clock=FakeClock(), save_dir=d)
+      source.set_position(*STRAIGHT[0])
+      source._stop = OneTickStop()
+      with mock.patch.object(route, "fetch_route", lambda *a, **k: STRAIGHT):
+        with mock.patch.dict(sys.modules, {"openpilot.common.params": params_mod}):
+          source._loop()
+      self.assertEqual(len(os.listdir(d)), 1)
 
 
 class TestRouteProgress(unittest.TestCase):

@@ -102,7 +102,8 @@ class FakeRouteSource:
   and, given a destination, makes real HTTP requests -- none of which this test's device
   stack fakes out."""
 
-  def __init__(self):
+  def __init__(self, save_dir=None):
+    self.save_dir = save_dir
     self.started = False
     self.stopped = False
 
@@ -290,6 +291,12 @@ class TestSourceLoops(MapdSourceTestCase):
     params = FakeParams(MapSource.korea)
     built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))
     self.assertNotIn("tesla_source", built)
+
+  def test_the_route_thread_keeps_its_routes_beside_the_map_databases(self):
+    """Fetched routes go to routes/ in the map directory, for replaying a drive's curve targets."""
+    params = FakeParams(MapSource.korea, KoreaExternalNavEnabled=True)
+    built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))
+    self.assertEqual(built["route_source"].save_dir, str(self.tmp_path / "routes"))
 
   def test_the_korea_loop_returns_when_external_nav_is_toggled(self):
     """The UDP socket binds once at startup, so this toggle only takes effect by ending the

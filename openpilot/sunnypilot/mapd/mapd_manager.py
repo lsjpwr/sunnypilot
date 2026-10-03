@@ -214,7 +214,7 @@ def korea_main() -> None:
     # process's own UDP socket lost the port race, and a separate toggle would only make a
     # trap where a user has to enable both.
     if external_nav:
-      route_source = RouteSource()
+      route_source = RouteSource(save_dir=os.path.join(KOREA_MAP_DIR, "routes"))
       route_source.start()
       # It feeds the route thread above, so it follows the same toggle. Until tesla_setup has
       # written its credentials it asks Tesla nothing.

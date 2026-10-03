@@ -453,16 +453,23 @@ class KoreaMapData(BaseMapData):
     self.read_camera_params()
     self.update_destination()
     super().tick()
+    self.update_curves()
+    self.publish_targets()
+
+  def update_curves(self) -> None:
+    """The route's curves ahead for SCC-Map, unless KoreaRouteCurveEnabled is off: the route still
+    keeps cameras and bumps on our road then."""
     self.curve_points = []
+    if not self.route or self.last_position is None or not self.localizer_valid:
+      return
+    if not self.params.get_bool("KoreaRouteCurveEnabled"):
+      return
     # Only while the car is on the route, the slowdown camera's test in update_location: a
     # polyline the car has left is kept until a reroute succeeds, and its curves are not on
     # our road.
-    if self.route and self.last_position is not None and self.localizer_valid and \
-       distance_to_route(self.route, self.last_position.latitude, self.last_position.longitude) <= ROUTE_CORRIDOR_M:
-      # The road's own limit, not the set speed: mapd never sees the set speed, and
-      # SmartCruiseControlMap already refuses to act on a target above it
-      # (map_controller.py:161,239). A curve target above the posted limit is noise either way.
-      v_max = self.get_current_speed_limit() or MAX_SPEED_LIMIT
-      self.curve_points = curve_targets(self.route, self.last_position.latitude,
-                                        self.last_position.longitude, v_max)
-    self.publish_targets()
+    if distance_to_route(self.route, self.last_position.latitude, self.last_position.longitude) > ROUTE_CORRIDOR_M:
+      return
+    # The road's own limit, not the set speed: mapd never sees the set speed, and a curve target
+    # above the posted limit is noise either way.
+    v_max = self.get_current_speed_limit() or MAX_SPEED_LIMIT
+    self.curve_points = curve_targets(self.route, self.last_position.latitude, self.last_position.longitude, v_max)

@@ -52,6 +52,7 @@ def make_data(link=None, camera=None, external=None):
   data.external = external
   data.route_source = None
   data.params = StubMemParams()
+  data.params.values["KoreaRouteCurveEnabled"] = True  # on by default, like params_keys.h
   data._last_written_destination = None
   data.route = []
   data.curve_points = []
@@ -86,6 +87,9 @@ class StubMemParams:
 
   def get(self, key, block=False, return_default=False):
     return self.values.get(key)
+
+  def get_bool(self, key, block=False):
+    return bool(self.values.get(key))
 
   def remove(self, key):
     self.values.pop(key, None)
@@ -611,6 +615,33 @@ class TestMapTargetVelocitiesMerge(unittest.TestCase):
     data = self.make(bump=Bump(lat=37.5000, lon=127.0217, kind=BUMP_ARCH, distance_m=150.),
                      curve_points=[(37.5000, 127.0234, 12.)], localizer_valid=False)
     self.assertEqual(self.read(data), [])
+
+
+def quarter_turn():
+  """A 100 m radius quarter turn starting at its first point: curvy enough for curve targets."""
+  center_lat, center_lon, radius_m = 37.5000, 127.0200, 100.
+  m_per_deg_lat = 111195.
+  m_per_deg_lon = m_per_deg_lat * math.cos(math.radians(center_lat))
+  return [(center_lat + radius_m * math.sin(math.radians(a)) / m_per_deg_lat,
+           center_lon + radius_m * math.cos(math.radians(a)) / m_per_deg_lon) for a in range(0, 95, 5)]
+
+
+class TestRouteCurveToggle(unittest.TestCase):
+  """KoreaRouteCurveEnabled drops the route's curve slowdowns and keeps the route."""
+
+  def curves(self, enabled):
+    data = make_data()
+    data.route = quarter_turn()
+    data.last_position = Coordinate(*data.route[0])
+    data.params.values["KoreaRouteCurveEnabled"] = enabled
+    data.update_curves()
+    return data.curve_points
+
+  def test_on_the_route_its_curves_are_handed_over(self):
+    self.assertTrue(self.curves(True))
+
+  def test_switched_off_no_curve_is_handed_over(self):
+    self.assertEqual(self.curves(False), [])
 
 
 class SingleLocationSM:
