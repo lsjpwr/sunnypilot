@@ -6,6 +6,8 @@ See the LICENSE.md file in the root directory for more details.
 """
 import unittest
 
+import numpy as np
+
 from openpilot.cereal import custom
 from opendbc.car.car_helpers import interfaces
 from opendbc.car.tesla.values import CAR as TESLA
@@ -29,10 +31,20 @@ def kph(v):
 
 
 class MemParams(dict):
-  """Stands in for the /dev/shm params: korea mapd's section on the way in, the average on the way out."""
+  """Stands in for the /dev/shm params: korea mapd's section on the way in, the average on the way out.
+  Refuses what Params.put refuses: it matches the exact type, so a numpy float raises."""
 
   def put(self, key, value, block=False):
+    if type(value) not in (bool, int, float, str, bytes):
+      raise TypeError(f"Type mismatch while writing param {key}: {type(value)}")
     self[key] = value
+
+
+class BrokenMemParams(MemParams):
+  """A /dev/shm write that fails, whatever the reason."""
+
+  def put(self, key, value, block=False):
+    raise OSError("no space left on /dev/shm")
 
 
 class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
@@ -297,6 +309,23 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.enter_section(0)
     self.drive(1., limit_kph=115, set_kph=115)
     assert self.mem["KoreaSectionAverage"] == 0.
+
+  def test_numpy_speeds_from_the_planner_still_write_the_section_average(self):
+    # the planner hands over v_desired_filter.x and output_a_target, numpy floats once engaged:
+    # 2026-10-03, Params.put refused the average they made and plannerd died in every section
+    self.enter_section(100)
+    for _ in range(round(1. / DT_MDL)):
+      self.sla.update(True, False, np.float64(kph(90)), np.float64(0.), kph(115), kph(115), kph(115), True, 0., self.events_sp)
+    assert type(self.mem["KoreaSectionAverage"]) is float
+    assert round(self.mem["KoreaSectionAverage"] * CV.MS_TO_KPH) == 90
+
+  def test_a_failed_average_write_keeps_the_planner_running(self):
+    # only the HUD reads the average, so its write must never take the speed control down with it
+    self.enter_section(100)
+    broken = BrokenMemParams(self.mem)
+    self.sla.mem_params = broken
+    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
+    assert self.target_kph == 100
 
   def test_cancel_inside_a_section_stops_the_scroll_counting_while_off(self):
     self.enter_section(100)

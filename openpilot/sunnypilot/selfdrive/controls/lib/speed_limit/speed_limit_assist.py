@@ -13,6 +13,7 @@ from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
@@ -101,6 +102,7 @@ class SpeedLimitAssist:
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
     self.section_limit = 0.
     self.section_start = 0.
+    self._average_write_failed = False
 
     self._plus_hold = 0.
     self._minus_hold = 0.
@@ -192,7 +194,13 @@ class SpeedLimitAssist:
       self.section_start = float(self.mem_params.get("KoreaSectionStart") or 0.)
     self.auto.track_section(self.section_limit, self.section_start, self.v_ego, DT_MDL)
     if read:
-      self.mem_params.put("KoreaSectionAverage", self.auto.section_average)
+      try:
+        self.mem_params.put("KoreaSectionAverage", self.auto.section_average)
+      except Exception:
+        # only the HUD reads the average: losing it must never take the planner down with it
+        if not self._average_write_failed:
+          cloudlog.exception("speed_limit_assist: KoreaSectionAverage write failed")
+        self._average_write_failed = True
 
   def update_buttons(self, release_toggle: int) -> None:
     released = self._release_toggle_prev ^ release_toggle
@@ -467,8 +475,9 @@ class SpeedLimitAssist:
   def update(self, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise_cluster: float, speed_limit: float,
              speed_limit_final_last: float, has_speed_limit: bool, distance: float, events_sp: EventsSP) -> None:
     self.long_enabled = long_enabled
-    self.v_ego = v_ego
-    self.a_ego = a_ego
+    # the planner hands over numpy floats (v_desired_filter.x, np.clip), and Params.put takes only a real float
+    self.v_ego = float(v_ego)
+    self.a_ego = float(a_ego)
 
     self._has_speed_limit = has_speed_limit
     self._speed_limit = speed_limit
