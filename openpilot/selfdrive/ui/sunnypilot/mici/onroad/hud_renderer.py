@@ -34,7 +34,9 @@ class HudRendererSP(HudRenderer):
   def _update_auto_sla(self) -> None:
     sla_kph = None
     self._section_avg = None
-    if ui_state.tesla_auto_sla and ui_state.CP is not None and ui_state.CP.brand == "tesla":
+    # a dead plannerd leaves its last plan in the SubMaster: show none of it, the Tesla number is what holds
+    if ui_state.tesla_auto_sla and ui_state.CP is not None and ui_state.CP.brand == "tesla" and \
+       ui_state.sm.alive['longitudinalPlanSP']:
       plan = ui_state.sm['longitudinalPlanSP']
       assist, scc_map = plan.speedLimit.assist, plan.smartCruiseControl.map
       sla_kph = comma_target_kph(assist.enabled, assist.vTarget, scc_map.active, scc_map.vTarget,
