@@ -261,9 +261,9 @@ sections:
     - key: TeslaAutoSpeedLimitAssist
       widget: toggle
       title: Auto Speed Limit Assist (Tesla)
-      description: Runs at the Tesla set speed and slows for speed cameras, section enforcement and the road
-        speed limits you choose below, without asking you to set an exact speed. The Tesla set speed stays
-        the maximum. Scrolling moves the target by the same amount until cruise is canceled.
+      description: Runs at the Tesla set speed and slows for section enforcement and the road speed limits you
+        choose below, without asking you to set an exact speed. The Tesla set speed stays the maximum.
+        Scrolling moves the target by the same amount until cruise is canceled.
       visibility:
       - type: capability
         field: brand
