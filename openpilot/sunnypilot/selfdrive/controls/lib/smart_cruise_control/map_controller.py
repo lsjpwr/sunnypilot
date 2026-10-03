@@ -20,14 +20,18 @@ ENABLED_STATES = (MapState.enabled, MapState.overriding, *ACTIVE_STATES)
 R = 6373000.0  # approximate radius of earth in meters
 TO_RADIANS = math.pi / 180
 TO_DEGREES = 180 / math.pi
-TARGET_JERK = -0.6  # m/s^3 There's some jounce limits that are not consistent so we're fudging this some
-TARGET_ACCEL = -1.2  # m/s^2 should match up with the long planner limit
 TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you reach the target velocity. It also helps
                      # reach the target velocity when inaccuracies in the distance modeling logic would cause overshoot.
                      # The value is multiplied against the target velocity to determine the additional distance. This is
                      # done to keep the distance calculations consistent but results in the offset actually being less
                      # time than specified depending on how much of a speed differential there is between v_ego and the
                      # target velocity.
+
+# m/s^2. MapSlowdownDecel bounds. The target comes down along v = sqrt(v_point^2 + 2 * decel * d), so the
+# car eases in early at this decel instead of braking late at the planner's 1.2 m/s^2 cruise cap, which
+# every camera slowdown hit on 2026-10-03.
+SLOWDOWN_DECEL_MIN = 0.3
+SLOWDOWN_DECEL_MAX = 1.2
 
 
 def velocities_from_param(param: str, params: Params):
@@ -43,16 +47,6 @@ def velocities_from_param(param: str, params: Params):
   return velocities
 
 
-def calculate_accel(t, target_jerk, a_ego):
-  return a_ego + target_jerk * t
-
-
-def calculate_velocity(t, target_jerk, a_ego, v_ego):
-  return v_ego + a_ego * t + target_jerk/2 * (t ** 2)
-
-
-def calculate_distance(t, target_jerk, a_ego, v_ego):
-  return t * v_ego + a_ego/2 * (t ** 2) + target_jerk/6 * (t ** 3)
 
 
 # points should be in radians
@@ -88,6 +82,7 @@ class SmartCruiseControlMap:
 
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
     self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
+    self.slowdown_decel = self._read_slowdown_decel()
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
@@ -119,9 +114,15 @@ class SmartCruiseControlMap:
       return any(self.params.get_bool(key) for key in keys)
     return False
 
+  def _read_slowdown_decel(self) -> float:
+    # argument order: a NaN param falls through to the max, the firm slowdown this replaced
+    value = float(self.params.get("MapSlowdownDecel", return_default=True))
+    return max(SLOWDOWN_DECEL_MIN, min(SLOWDOWN_DECEL_MAX, value))
+
   def update_params(self):
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self._get_enabled()
+      self.slowdown_decel = self._read_slowdown_decel()
 
   def update_calculations(self) -> None:
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
@@ -152,75 +153,18 @@ class SmartCruiseControlMap:
     forward_points = self.target_velocities[min_idx:]
     forward_distances = distances[min_idx:]
 
-    # find velocities that we are within the distance we need to adjust for
-    valid_velocities = []
-    for i in range(len(forward_points)):
-      target_velocity = forward_points[i]
-      tlat = target_velocity["latitude"]
-      tlon = target_velocity["longitude"]
-      tv = target_velocity["velocity"]
-      if tv > self.v_ego:
-        continue
-
-      d = forward_distances[i]
-
-      a_diff = (self.a_ego - TARGET_ACCEL)
-      accel_t = abs(a_diff / TARGET_JERK)
-      min_accel_v = calculate_velocity(accel_t, TARGET_JERK, self.a_ego, self.v_ego)
-
-      max_d = 0
-      if tv > min_accel_v:
-        # calculate time needed based on target jerk
-        a = 0.5 * TARGET_JERK
-        b = self.a_ego
-        c = self.v_ego - tv
-        t_a = -1 * ((b**2 - 4 * a * c) ** 0.5 + b) / (2 * a)
-        t_b = ((b**2 - 4 * a * c) ** 0.5 - b) / (2 * a)
-        if not isinstance(t_a, complex) and t_a > 0:
-          t = t_a
-        else:
-          t = t_b
-        if isinstance(t, complex):
-          continue
-
-        max_d = max_d + calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
-      else:
-        t = accel_t
-        max_d = calculate_distance(t, TARGET_JERK, self.a_ego, self.v_ego)
-
-        # calculate additional time needed based on target accel
-        t = abs((min_accel_v - tv) / TARGET_ACCEL)
-        max_d += calculate_distance(t, 0, TARGET_ACCEL, min_accel_v)
-
-      if d < max_d + tv * TARGET_OFFSET:
-        valid_velocities.append((float(tv), tlat, tlon))
-
-    # Find the smallest velocity we need to adjust for
+    # The speed allowed here so that a steady slowdown_decel still reaches each point's speed
+    # TARGET_OFFSET seconds before the point; the lowest of them is the target. A point above the
+    # current speed counts too: it keeps the car from speeding up past what it can shed in time.
     min_v = 100.0
     target_lat = 0.0
     target_lon = 0.0
-    for tv, lat, lon in valid_velocities:
-      if tv < min_v:
-        min_v = tv
-        target_lat = lat
-        target_lon = lon
-
-    if self.v_target < min_v and not (self.target_lat == 0 and self.target_lon == 0):
-      for i in range(len(forward_points)):
-        target_velocity = forward_points[i]
-        tlat = target_velocity["latitude"]
-        tlon = target_velocity["longitude"]
-        tv = target_velocity["velocity"]
-        if tv > self.v_ego:
-          continue
-
-        if tlat == self.target_lat and tlon == self.target_lon and tv == self.v_target:
-          return
-
-      # not found so let's reset
-      self.v_target = 0.0
-      self.target_lat = 0.0
-      self.target_lon = 0.0
+    for target_velocity, d in zip(forward_points, forward_distances, strict=True):
+      tv = target_velocity["velocity"]
+      v_allowed = math.sqrt(tv ** 2 + 2. * self.slowdown_decel * max(d - tv * TARGET_OFFSET, 0.))
+      if v_allowed < min_v:
+        min_v = v_allowed
+        target_lat, target_lon = target_velocity["latitude"], target_velocity["longitude"]
 
     self.v_target = min_v
     self.target_lat = target_lat

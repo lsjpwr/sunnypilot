@@ -10,15 +10,25 @@ import platform
 
 
 from openpilot.cereal import custom
+from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import R, SmartCruiseControlMap
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import R, TARGET_OFFSET, SmartCruiseControlMap
 from openpilot.common.test import OpenpilotTestCase
 
 MapState = VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
+
+
+def kph(v):
+  return v * CV.KPH_TO_MS
+
+
+def ramp(distance_m, velocity, decel):
+  """The speed allowed distance_m before a point so that decel still reaches velocity TARGET_OFFSET s early."""
+  return math.sqrt(velocity ** 2 + 2. * decel * max(distance_m - velocity * TARGET_OFFSET, 0.))
 
 
 class TestSmartCruiseControlMap(OpenpilotTestCase):
@@ -37,6 +47,7 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     # MapDataSource defaults to korea (see params_keys.h), which would otherwise leave
     # .enabled False despite the toggle above.
     self.params.put("MapDataSource", int(MapSource.osm), block=True)
+    self.params.put("MapSlowdownDecel", 0.6, block=True)
 
     # TODO-SP: mock data from gpsLocation
     self.params.put("LastGPSPosition", "{}", block=True)
@@ -144,17 +155,52 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
       self.scc_m.update(True, False, 0., 0., 0.)
     assert self.scc_m.state == VisionState.enabled
 
-  def test_moderate_curve(self):
-    # Regression: `... / 2 * a` parsed as `(.../2)*a` instead of `.../(2*a)`,
-    # making max_d ~11x too small so the moderate-curve branch never tripped.
-    # v_ego=25, a_ego=0, tv=24: fixed max_d≈45m vs buggy ≈4m at a 40m waypoint.
-    waypoint_lon_deg = (40.0 / R) * (180.0 / math.pi)
+  def put_point(self, distance_m, velocity):
+    """One point (camera, bump or curve) straight ahead of a car at 0, 0."""
+    lon = (distance_m / R) * (180.0 / math.pi)
     self.mem_params.put("LastGPSPosition", json.dumps({"latitude": 0.0, "longitude": 0.0}), block=True)
-    self.mem_params.put("MapTargetVelocities",
-                        json.dumps([{"latitude": 0.0, "longitude": waypoint_lon_deg, "velocity": 24.0}]), block=True)
+    self.mem_params.put("MapTargetVelocities", json.dumps([{"latitude": 0.0, "longitude": lon, "velocity": velocity}]), block=True)
 
-    self.scc_m.update(True, False, 25.0, 0.0, 30.0)
+  def run_at(self, v_ego_kph, v_cruise_kph):
+    for _ in range(2):  # disabled -> enabled -> turning
+      self.scc_m.update(True, False, kph(v_ego_kph), 0., kph(v_cruise_kph))
 
-    self.assertAlmostEqual(self.scc_m.v_target, 24.0, delta=24.0 * 1e-6)
+  def test_a_point_ahead_brings_the_target_down_along_the_decel(self):
+    self.put_point(300., kph(80))
+    self.run_at(110, 125)
+    assert self.scc_m.is_active
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300., kph(80), 0.6), places=3)
+
+  def test_the_target_reaches_the_point_speed_target_offset_before_it(self):
+    self.put_point(15., kph(80))  # inside TARGET_OFFSET * 80 km/h (22 m)
+    self.run_at(85, 125)
+    self.assertAlmostEqual(self.scc_m.output_v_target, kph(80), places=3)
+
+  def test_a_firmer_decel_starts_later(self):
+    self.params.put("MapSlowdownDecel", 1.2, block=True)
+    self.scc_m = SmartCruiseControlMap()
+    self.put_point(300., kph(80))
+    self.run_at(110, 125)
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300., kph(80), 1.2), places=3)
+    assert self.scc_m.output_v_target > ramp(300., kph(80), 0.6)
+
+  def test_a_far_point_does_not_slow_the_car(self):
+    self.put_point(2000., kph(80))
+    self.run_at(110, 125)
+    assert self.scc_m.state == MapState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_a_point_above_the_current_speed_caps_the_speed_up(self):
+    # 70 km/h after traffic, a 100 km/h camera 100 m ahead: don't run up to 110 and brake for it
+    self.put_point(100., kph(100))
+    self.run_at(70, 110)
+    assert self.scc_m.is_active
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(100., kph(100), 0.6), places=3)
+
+  def test_the_decel_setting_is_kept_in_range(self):
+    self.params.put("MapSlowdownDecel", 5.0, block=True)
+    assert SmartCruiseControlMap().slowdown_decel == 1.2
+    self.params.put("MapSlowdownDecel", 0.0, block=True)
+    assert SmartCruiseControlMap().slowdown_decel == 0.3
 
   # TODO-SP: mock data from modelV2 to test other states

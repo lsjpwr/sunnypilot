@@ -376,9 +376,8 @@ class KoreaMapData(BaseMapData):
     """The slowdown camera as an SCC-Map target: its limit, camera_margin metres short of it.
 
     The point is placed once per camera, on the straight line from where the car was when it
-    first took that camera, and then stays put: SCC-Map holds a target only while a point with
-    the same lat/lon/velocity is still in the list (map_controller.update_calculations), and a
-    point recomputed from the moving car every tick would drop that hold each second. SCC-Map
+    first took that camera, and then stays put, so the distance SCC-Map ramps its target down
+    along (map_controller.update_calculations) shrinks steadily as the car closes in. SCC-Map
     measures straight-line distance too, so the car reaches the limit about camera_margin
     metres before the camera as the crow flies -- on a winding road that is a little early,
     never late.

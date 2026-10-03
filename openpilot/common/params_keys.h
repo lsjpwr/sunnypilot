@@ -288,6 +288,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"KoreaMapApiKey", {PERSISTENT | BACKUP | DONT_LOG, STRING, ""}},   // DONT_LOG: 업로드되는 로그(initData)에 키를 싣지 않는다
     {"KoreaMapAutoDownload", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"MapSlowdownDecel", {PERSISTENT | BACKUP, FLOAT, "0.6"}},           // m/s^2, SCC-Map slowdowns: cameras, bumps, route curves
     {"KoreaRouteApiKey", {PERSISTENT | BACKUP | DONT_LOG, STRING, ""}}, // DONT_LOG: 업로드되는 로그(initData)에 키를 싣지 않는다
     {"KoreaSpeedBumpArchSpeed", {PERSISTENT | BACKUP, INT, "25"}},        // km/h, 원호형
     {"KoreaSpeedBumpEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
