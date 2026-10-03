@@ -17,7 +17,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.car import interfaces as sunnypilot_interfaces
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode, RoadLimitMode
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import comma_target_kph, section_average_display
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist import SpeedLimitAssist, V_CRUISE_UNSET
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
@@ -55,6 +55,8 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.params.put_bool("IsMetric", True, block=True)
     self.params.put_bool("TeslaAutoSpeedLimitAssist", True, block=True)
     self.params.put("TeslaAutoSpeedLimitDelay", 2.0, block=True)
+    # most tests here are about following road limits; the use_mode tests cover the other modes
+    self.params.put("TeslaAutoSpeedLimitRoadMode", int(RoadLimitMode.always), block=True)
     self.events_sp = EventsSP()
     self.sla = self.make_sla(TESLA.TESLA_MODEL_Y)
 
@@ -69,15 +71,16 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.mem = sla.mem_params = MemParams()
     return sla
 
-  def drive(self, seconds, limit_kph, set_kph, v_kph=None, engaged=True):
+  def drive(self, seconds, limit_kph, set_kph, v_kph=None, engaged=True, low_kph=0.):
     """Run the SLA at DT_MDL. limit_kph is limit + offset as the resolver hands it over, 0 for none
-    yet. Returns the events of every frame."""
+    yet; low_kph the same for a 30-and-under zone both sources show. Returns the events of every frame."""
     v = kph(v_kph if v_kph is not None else (limit_kph or set_kph))
     seen = []
     for _ in range(round(seconds / DT_MDL)):
       self.events_sp.clear()
       limit = kph(limit_kph)
-      self.sla.update(engaged, False, v, 0., kph(set_kph), limit, limit, limit > 0., 0., self.events_sp)
+      self.sla.update(engaged, False, v, 0., kph(set_kph), limit, limit, limit > 0., 0., self.events_sp,
+                      low_zone_limit=kph(low_kph))
       seen.append(list(self.events_sp.names))
     return seen
 
@@ -458,6 +461,54 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.enter_section(0)
     self.drive(1., limit_kph=92, set_kph=130, v_kph=92)
     assert self.target_kph == 92
+
+  # TeslaAutoSpeedLimitRoadMode: outside what the mode lets through, the car runs at the Tesla set speed
+  def use_mode(self, mode):
+    self.params.put("TeslaAutoSpeedLimitRoadMode", int(mode), block=True)
+    self.sla = self.make_sla(TESLA.TESLA_MODEL_Y)
+
+  def test_never_follows_no_road_limit(self):
+    self.use_mode(RoadLimitMode.never)
+    self.drive(3., limit_kph=69, set_kph=100, v_kph=90)
+    assert self.sla.output_v_target == V_CRUISE_UNSET
+
+  def test_never_still_keeps_the_max_speed(self):
+    self.params.put("TeslaAutoSpeedLimitMax", 125, block=True)
+    self.use_mode(RoadLimitMode.never)
+    self.drive(1., limit_kph=126.5, set_kph=140, v_kph=120)
+    assert self.target_kph == 125
+
+  def test_low_zones_runs_at_the_set_speed_on_ordinary_roads(self):
+    self.use_mode(RoadLimitMode.low_zones)
+    self.drive(3., limit_kph=69, set_kph=100, v_kph=90)
+    assert self.sla.output_v_target == V_CRUISE_UNSET
+
+  def test_low_zones_follows_a_zone_both_sources_show_after_the_delay(self):
+    self.use_mode(RoadLimitMode.low_zones)
+    self.drive(1., limit_kph=69, set_kph=69, v_kph=60)
+    self.drive(1.95, limit_kph=34.5, set_kph=69, v_kph=50, low_kph=34.5)
+    assert self.sla.output_v_target == V_CRUISE_UNSET
+    events = self.drive(0.05, limit_kph=34.5, set_kph=69, v_kph=50, low_kph=34.5)
+    assert abs(self.sla.output_v_target * CV.MS_TO_KPH - 34.5) < 0.01
+    assert any(EventNameSP.speedLimitActive in e for e in events)
+
+  def test_low_zones_lets_the_set_speed_back_after_the_zone(self):
+    self.use_mode(RoadLimitMode.low_zones)
+    self.drive(1., limit_kph=34.5, set_kph=69, v_kph=35, low_kph=34.5)
+    self.drive(2.5, limit_kph=57.5, set_kph=69, v_kph=40)
+    assert self.sla.output_v_target == V_CRUISE_UNSET
+
+  def test_a_scroll_inside_a_low_zone_moves_its_target(self):
+    self.use_mode(RoadLimitMode.low_zones)
+    self.drive(1., limit_kph=34.5, set_kph=60, v_kph=35, low_kph=34.5)
+    self.drive(0.5, limit_kph=34.5, set_kph=65, v_kph=35, low_kph=34.5)
+    assert abs(self.sla.output_v_target * CV.MS_TO_KPH - 39.5) < 0.01
+
+  def test_a_section_still_holds_in_low_zones(self):
+    self.use_mode(RoadLimitMode.low_zones)
+    self.enter_section(100)
+    self.drive(1., limit_kph=115, set_kph=127, v_kph=100)
+    assert self.target_kph == 100
 
 
 class TestCommaTargetDisplay(unittest.TestCase):

@@ -16,11 +16,11 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
+from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD, get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import CONFIRM_SPEED_THRESHOLD, resolve_pcm_long_required_max
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.auto_speed_limit import AutoSpeedLimit
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Mode, RoadLimitMode
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import compare_cluster_target, set_speed_limit_assist_availability
 
 ButtonType = car.CarState.ButtonEvent.Type
@@ -97,6 +97,8 @@ class SpeedLimitAssist:
     self.auto_mode = self._read_auto_mode()
     self.auto_delay = self._read_auto_delay()
     self.auto_cap = self._read_auto_cap()
+    self.road_mode = self._read_road_mode()
+    self._low_zone_limit = 0.
 
     # korea mapd hands the 구간단속 section over through /dev/shm, like MapTargetVelocities
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
@@ -170,6 +172,7 @@ class SpeedLimitAssist:
       self.auto_mode = self._read_auto_mode()
       self.auto_delay = self._read_auto_delay()
       self.auto_cap = self._read_auto_cap()
+      self.road_mode = self._read_road_mode()
 
   def _read_auto_mode(self) -> bool:
     return self.CP.brand == "tesla" and self.pcm_op_long and self.params.get_bool("TeslaAutoSpeedLimitAssist")
@@ -180,6 +183,18 @@ class SpeedLimitAssist:
   def _read_auto_cap(self) -> float:
     cap = self.params.get("TeslaAutoSpeedLimitMax", return_default=True)
     return cap * (CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS) if cap > 0 else 0.
+
+  def _read_road_mode(self) -> int:
+    return get_sanitize_int_param("TeslaAutoSpeedLimitRoadMode", RoadLimitMode.min().value, RoadLimitMode.max().value, self.params)
+
+  def _road_limit(self) -> float:
+    """The road limit + offset AutoSpeedLimit follows, 0 for none: the resolver's in always, a 30 km/h
+    or lower zone the Tesla and the map both show in low_zones, nothing in never."""
+    if self.road_mode == RoadLimitMode.always:
+      return self._speed_limit_final_last if self._has_speed_limit else 0.
+    if self.road_mode == RoadLimitMode.low_zones:
+      return self._low_zone_limit
+    return 0.
 
   def _auto_target(self) -> float:
     target = self.auto.v_target
@@ -416,7 +431,8 @@ class SpeedLimitAssist:
 
   def update_state_machine_auto(self) -> tuple[bool, bool]:
     """TeslaAutoSpeedLimitAssist: no confirmation. The Tesla set speed stays the ceiling (the
-    planner takes the min); under it AutoSpeedLimit gives limit + offset, held and nudged."""
+    planner takes the min); under it AutoSpeedLimit gives the road limit TeslaAutoSpeedLimitRoadMode
+    lets through, plus offset, held and nudged."""
     if not self.long_enabled or not self.enabled:
       self.state = SpeedLimitAssistState.disabled
       # the cameras keep timing the section while cruise is off (update_section), but a scroll made
@@ -424,7 +440,7 @@ class SpeedLimitAssist:
       self.auto.drop_section_scrolls()
       return False, False
 
-    limit = self._speed_limit_final_last if self._has_speed_limit else 0.
+    limit = self._road_limit()
     if self.state == SpeedLimitAssistState.disabled:
       # just engaged: take the limit as it is, and give the Tesla time to put up the set speed it
       # picks on engagement before any set speed change counts as a scroll
@@ -473,7 +489,8 @@ class SpeedLimitAssist:
           self.update_active_event(events_sp)
 
   def update(self, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float, v_cruise_cluster: float, speed_limit: float,
-             speed_limit_final_last: float, has_speed_limit: bool, distance: float, events_sp: EventsSP) -> None:
+             speed_limit_final_last: float, has_speed_limit: bool, distance: float, events_sp: EventsSP,
+             low_zone_limit: float = 0.) -> None:
     self.long_enabled = long_enabled
     # the planner hands over numpy floats (v_desired_filter.x, np.clip), and Params.put takes only a real float
     self.v_ego = float(v_ego)
@@ -483,6 +500,7 @@ class SpeedLimitAssist:
     self._speed_limit = speed_limit
     self._speed_limit_final_last = speed_limit_final_last
     self._distance = distance
+    self._low_zone_limit = low_zone_limit
 
     self.update_params()
     self.update_calculations(v_cruise_cluster)

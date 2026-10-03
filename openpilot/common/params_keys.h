@@ -233,6 +233,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TeslaAutoSpeedLimitAssist", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TeslaAutoSpeedLimitDelay", {PERSISTENT | BACKUP, FLOAT, "2.0"}},
     {"TeslaAutoSpeedLimitMax", {PERSISTENT | BACKUP, INT, "0"}},
+    {"TeslaAutoSpeedLimitRoadMode", {PERSISTENT | BACKUP, INT, "1"}},  // 0 always, 1 only 30 km/h and under, 2 never
     {"TeslaCoopSteering", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TeslaDasLeadConfirm", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"TeslaMadsScreenButton", {PERSISTENT | BACKUP, INT, "0"}},

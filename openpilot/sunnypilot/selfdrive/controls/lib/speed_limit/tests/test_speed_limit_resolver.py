@@ -16,7 +16,7 @@ from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit import LIMIT_MAX_MAP_DATA_AGE
 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver, ALL_SOURCES
-from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import Policy
+from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.common import OffsetType, Policy
 from openpilot.common.test import OpenpilotTestCase
 
 SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
@@ -166,3 +166,36 @@ class TestSpeedLimitResolverValidation(OpenpilotTestCase):
     resolver.update(80 * CV.KPH_TO_MS, sm_mock)
 
     self.assertAlmostEqual(resolver.speed_limit, expected_kph * CV.KPH_TO_MS)
+
+
+class TestLowZoneLimit(OpenpilotTestCase):
+  """low_zone_limit_final: a school-zone limit is followed only when the car and the map both show it."""
+
+  def setup_method(self):
+    params = Params()
+    params.put("SpeedLimitOffsetType", int(OffsetType.percentage), block=True)
+    params.put("SpeedLimitValueOffset", 15, block=True)
+    params.put_bool("IsMetric", True, block=True)
+    self.resolver = SpeedLimitResolver()
+
+  def zone_kph(self, car_kph, map_kph):
+    self.resolver.limit_solutions[SpeedLimitSource.car] = car_kph * CV.KPH_TO_MS
+    self.resolver.limit_solutions[SpeedLimitSource.map] = map_kph * CV.KPH_TO_MS
+    return self.resolver.low_zone_limit_final * CV.MS_TO_KPH
+
+  def test_a_30_zone_both_show_comes_with_the_offset(self):
+    assert abs(self.zone_kph(30, 30) - 34.5) < 0.01
+
+  def test_one_source_alone_is_not_a_zone(self):
+    assert self.zone_kph(30, 60) == 0.
+    assert self.zone_kph(80, 30) == 0.
+
+  def test_a_missing_source_is_not_a_zone(self):
+    assert self.zone_kph(0, 30) == 0.
+    assert self.zone_kph(30, 0) == 0.
+
+  def test_the_higher_of_two_low_limits_is_taken(self):
+    assert abs(self.zone_kph(20, 30) - 34.5) < 0.01
+
+  def test_over_30_is_not_a_zone(self):
+    assert self.zone_kph(40, 40) == 0.

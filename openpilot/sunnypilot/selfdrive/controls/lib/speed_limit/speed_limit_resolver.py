@@ -21,6 +21,9 @@ SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 
 ALL_SOURCES = tuple(SpeedLimitSource.schema.enumerants.values())
 
+# km/h. School zones and the like: RoadLimitMode.low_zones follows a limit this low or lower.
+LOW_ZONE_MAX_KPH = 30
+
 
 class SpeedLimitResolver:
   limit_solutions: dict[custom.LongitudinalPlanSP.SpeedLimit.Source, float]
@@ -99,13 +102,27 @@ class SpeedLimitResolver:
       self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
       self.map_source = self.params.get("MapDataSource", return_default=True)
 
+  @property
+  def low_zone_limit_final(self) -> float:
+    """Limit + offset of a 30 km/h-or-under zone that the car and the map both show, 0 otherwise. Both,
+    because either one alone has misread (the map 30 on an 80 road, 2026-10-03). The higher of the
+    two, because guessing low brakes for a limit that does not apply."""
+    car, map_limit = self.limit_solutions[SpeedLimitSource.car], self.limit_solutions[SpeedLimitSource.map]
+    if not all(0. < limit and round(limit * CV.MS_TO_KPH) <= LOW_ZONE_MAX_KPH for limit in (car, map_limit)):
+      return 0.
+    limit = max(car, map_limit)
+    return limit + self._offset_for(limit)
+
   def _get_speed_limit_offset(self) -> float:
+    return self._offset_for(self.speed_limit)
+
+  def _offset_for(self, limit: float) -> float:
     if self.offset_type == OffsetType.off:
       return 0
     elif self.offset_type == OffsetType.fixed:
       return float(self.offset_value * (CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS))
     elif self.offset_type == OffsetType.percentage:
-      return float(self.offset_value * 0.01 * self.speed_limit)
+      return float(self.offset_value * 0.01 * limit)
     else:
       raise NotImplementedError("Offset not supported")
 

@@ -27,3 +27,11 @@ class Mode(IntEnumBase):
   information = 1
   warning = 2
   assist = 3
+
+
+class RoadLimitMode(IntEnumBase):
+  """TeslaAutoSpeedLimitRoadMode: which road speed limits the Tesla auto SLA follows. Outside them the
+  car runs at the Tesla set speed; 구간단속, the max speed and SCC-Map apply in every mode."""
+  always = 0
+  low_zones = 1  # only limits of 30 km/h and under that the Tesla and the map both show
+  never = 2
