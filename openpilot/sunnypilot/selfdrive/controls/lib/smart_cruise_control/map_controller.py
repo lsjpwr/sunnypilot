@@ -161,6 +161,8 @@ class SmartCruiseControlMap:
     target_lon = 0.0
     for target_velocity, d in zip(forward_points, forward_distances, strict=True):
       tv = target_velocity["velocity"]
+      if tv <= 0.:
+        continue  # no speed to slow to: the old state machine ignored a 0 target too
       v_allowed = math.sqrt(tv ** 2 + 2. * self.slowdown_decel * max(d - tv * TARGET_OFFSET, 0.))
       if v_allowed < min_v:
         min_v = v_allowed

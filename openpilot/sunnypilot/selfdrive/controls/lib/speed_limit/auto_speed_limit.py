@@ -34,7 +34,8 @@ class AutoSpeedLimit:
   """Speed limit target without confirmation, for TeslaAutoSpeedLimitAssist.
 
   The Tesla set speed stays the ceiling: the planner takes the min of it and this target. Under
-  it the target is the speed limit plus offset. A new value is taken only after it has held for
+  it the target is the road limit it is handed (what TeslaAutoSpeedLimitRoadMode lets through)
+  plus offset, and with none the set speed rules. A new value is taken only after it has held for
   `delay` seconds, so a 0.1 s Tesla flicker or a 1 s map flap changes nothing. A set speed change
   the driver scrolls in while engaged moves the target by the same amount (the nudge), and the
   nudge lasts until cruise is canceled.

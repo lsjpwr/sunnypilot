@@ -806,8 +806,8 @@ class TestCameraTarget(unittest.TestCase):
     self.assertEqual(self.publish(data), [])
 
   def test_the_point_stays_put_while_the_car_approaches(self):
-    """SCC-Map holds a target only while the same lat/lon/velocity is still in the list; a
-    point recomputed from the moving car would drop that hold every tick."""
+    """The point stays where it was placed, so the distance SCC-Map ramps its target down along
+    shrinks steadily as the car closes in."""
     data = make_bump_data(camera=self.camera(), margin=50, position=self.CAR)
     first = self.publish(data)[0]
     closer = Coordinate(37.5000, 127.0220)  # ~177 m further east, still outside the margin

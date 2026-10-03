@@ -475,8 +475,8 @@ class RouteSource:
             if self._save_dir is not None:
               try:
                 save_route(self._save_dir, route)
-              except OSError:
-                LOG.warning("route: could not save the route")
+              except OSError as e:
+                LOG.warning("route: could not save the route: %s", e)
       except Exception:
         # This thread dying disables the feature silently until the next reboot, and
         # nothing it does is worth that. Keep going and try again next second.

@@ -211,4 +211,14 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     assert CURVE_HORIZON_M >= needed(kph(125), MIN_V_MS)  # a hairpin off a 125 km/h road
     assert BUMP_MAX_DISTANCE_M >= needed(kph(60), kph(25))  # an arch bump on a 60 road
 
+  def test_a_point_with_no_speed_is_ignored(self):
+    self.put_point(100., 0.)
+    self.run_at(70, 110)
+    assert self.scc_m.state == MapState.enabled
+    assert self.scc_m.output_v_target == V_CRUISE_UNSET
+
+  def test_a_nan_decel_falls_to_the_firmest(self):
+    self.params.put("MapSlowdownDecel", float("nan"), block=True)
+    assert SmartCruiseControlMap().slowdown_decel == 1.2
+
   # TODO-SP: mock data from modelV2 to test other states
