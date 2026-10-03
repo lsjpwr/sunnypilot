@@ -222,15 +222,18 @@ class TestBrandSteeringModeRestrictions(OpenpilotTestCase):
     assert read_steering_mode_param(CP, CP_SP, params) == MadsSteeringModeOnBrake.DISENGAGE
     params.get.assert_not_called()
 
-  def test_tesla_without_vehicle_bus_forced_to_disengage(self, mocker):
+  # Upstream forces DISENGAGE on a Tesla without the vehicle bus or with the screen button off, since nothing
+  # else toggles steering alone. This fork dropped that (a9b52040d): the both-pedals gesture turns it off.
+  def test_tesla_without_vehicle_bus_uses_param(self, mocker):
     CP = structs.CarParams()
     CP.brand = "tesla"
     CP_SP = structs.CarParamsSP()
     CP_SP.flags = 0
-    params = mocker.MagicMock()
-    assert read_steering_mode_param(CP, CP_SP, params) == MadsSteeringModeOnBrake.DISENGAGE
+    params = make_params_mock(mocker, {"MadsSteeringMode": MadsSteeringModeOnBrake.REMAIN_ACTIVE})
+    assert read_steering_mode_param(CP, CP_SP, params) == MadsSteeringModeOnBrake.REMAIN_ACTIVE
 
-  @parameterized.expand([MadsScreenButtonType.THREE_FINGER,
+  @parameterized.expand([MadsScreenButtonType.OFF,
+                                             MadsScreenButtonType.THREE_FINGER,
                                              MadsScreenButtonType.FOUR_FINGER,
                                              MadsScreenButtonType.FIVE_FINGER], names=["screen_button"])
   def test_tesla_with_vehicle_bus_uses_param(self, mocker, screen_button):
@@ -241,15 +244,6 @@ class TestBrandSteeringModeRestrictions(OpenpilotTestCase):
     params = make_params_mock(mocker, {"TeslaMadsScreenButton": screen_button,
                                        "MadsSteeringMode": MadsSteeringModeOnBrake.REMAIN_ACTIVE})
     assert read_steering_mode_param(CP, CP_SP, params) == MadsSteeringModeOnBrake.REMAIN_ACTIVE
-
-  def test_tesla_with_vehicle_bus_screen_button_off_forced_to_disengage(self, mocker):
-    CP = structs.CarParams()
-    CP.brand = "tesla"
-    CP_SP = structs.CarParamsSP()
-    CP_SP.flags = TeslaFlagsSP.HAS_VEHICLE_BUS
-    params = make_params_mock(mocker, {"TeslaMadsScreenButton": MadsScreenButtonType.OFF,
-                                       "MadsSteeringMode": MadsSteeringModeOnBrake.REMAIN_ACTIVE})
-    assert read_steering_mode_param(CP, CP_SP, params) == MadsSteeringModeOnBrake.DISENGAGE
 
   @parameterized.expand(["hyundai", "toyota", "honda", "gm"], names=["brand"])
   def test_other_brands_use_param(self, mocker, brand):
