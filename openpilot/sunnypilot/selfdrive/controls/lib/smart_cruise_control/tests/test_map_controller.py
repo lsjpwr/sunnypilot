@@ -15,8 +15,9 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.mapd import MapSource
-from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import R, TARGET_OFFSET, SmartCruiseControlMap
+from openpilot.sunnypilot.mapd.korea.db import BUMP_MAX_DISTANCE_M, CAMERA_KIND_PARAMS
+from openpilot.sunnypilot.mapd.korea.route import CURVE_HORIZON_M, MIN_V_MS
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import R, SLOWDOWN_DECEL_MIN, TARGET_OFFSET, SmartCruiseControlMap
 from openpilot.common.test import OpenpilotTestCase
 
 MapState = VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
@@ -201,6 +202,13 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     self.params.put("MapSlowdownDecel", 5.0, block=True)
     assert SmartCruiseControlMap().slowdown_decel == 1.2
     self.params.put("MapSlowdownDecel", 0.0, block=True)
-    assert SmartCruiseControlMap().slowdown_decel == 0.3
+    assert SmartCruiseControlMap().slowdown_decel == 0.5
+
+  def test_the_lookaheads_cover_the_gentlest_slowdown(self):
+    # a point has to come into view before its ramp starts, or the target steps down and the planner brakes at 1.2
+    def needed(v_from, v_to):
+      return (v_from ** 2 - v_to ** 2) / (2. * SLOWDOWN_DECEL_MIN) + v_to * TARGET_OFFSET
+    assert CURVE_HORIZON_M >= needed(kph(125), MIN_V_MS)  # a hairpin off a 125 km/h road
+    assert BUMP_MAX_DISTANCE_M >= needed(kph(60), kph(25))  # an arch bump on a 60 road
 
   # TODO-SP: mock data from modelV2 to test other states

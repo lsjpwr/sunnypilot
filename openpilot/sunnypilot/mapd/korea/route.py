@@ -252,10 +252,11 @@ class RouteState:
     return True
 
 
-# SCC-Map ramps its target down at MapSlowdownDecel (0.6 m/s^2 by default), which takes about 450 m
-# to bring 110 km/h down to a 74 km/h curve and about 700 m for 120 down to 60. A far curve costs
-# nothing: its ramp speed sits far above the set speed until the car is close.
-CURVE_HORIZON_M = 800.
+# SCC-Map ramps its target down at MapSlowdownDecel (0.5-1.2 m/s^2), which at the gentlest 0.5 takes
+# about 1.2 km to bring 125 km/h down to the 20 km/h floor; a curve seen later than its ramp needs
+# steps the target down and the planner brakes at its 1.2 cap. A far curve costs nothing: its ramp
+# speed sits far above the set speed until the car is close.
+CURVE_HORIZON_M = 2000.
 # m. Curvature is measured through the vertices at least this far along the route either side of a
 # vertex, not through its raw neighbours: a TMAP joint can put a vertex 1-3 m past the last one and
 # 20-30 cm off the line, which three raw points read as a ~230 m radius (2026-10-03: 33 of 34 route

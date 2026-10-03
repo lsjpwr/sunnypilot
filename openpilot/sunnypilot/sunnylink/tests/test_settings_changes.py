@@ -567,10 +567,10 @@ class TestHighwayDriveSettings(OpenpilotTestCase):
     assert item["widget"] == "multiple_button"
     assert [(o["value"], o["label"]) for o in item["options"]] == [(0, "Always"), (1, "30 and Under"), (2, "Never")]
 
-  def test_the_slowdown_strength_spans_0_3_to_1_2(self, schema):
+  def test_the_slowdown_strength_spans_0_5_to_1_2(self, schema):
     item = _find_item(schema, "MapSlowdownDecel")
     assert item is not None
-    assert (item["widget"], item["min"], item["max"], item["step"]) == ("option", 0.3, 1.2, 0.1)
+    assert (item["widget"], item["min"], item["max"], item["step"]) == ("option", 0.5, 1.2, 0.1)
 
   def test_route_curves_have_their_own_toggle(self, schema):
     item = _find_item(schema, "KoreaRouteCurveEnabled")

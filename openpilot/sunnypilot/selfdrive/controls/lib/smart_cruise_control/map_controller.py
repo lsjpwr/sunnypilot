@@ -30,7 +30,7 @@ TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you rea
 # m/s^2. MapSlowdownDecel bounds. The target comes down along v = sqrt(v_point^2 + 2 * decel * d), so the
 # car eases in early at this decel instead of braking late at the planner's 1.2 m/s^2 cruise cap, which
 # every camera slowdown hit on 2026-10-03.
-SLOWDOWN_DECEL_MIN = 0.3
+SLOWDOWN_DECEL_MIN = 0.5
 SLOWDOWN_DECEL_MAX = 1.2
 
 
