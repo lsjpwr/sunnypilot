@@ -544,18 +544,38 @@ class TestKoreaSectionsOnCruise(OpenpilotTestCase):
   def test_each_section_holds_its_items_in_order(self, schema):
     assert _section_keys(schema, "cruise", "korea_speed_cameras") == [
       "KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled",
-      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "KoreaMapApiKey"]
+      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "MapSlowdownDecel", "KoreaMapApiKey"]
     assert _section_keys(schema, "cruise", "korea_speed_bumps") == [
       "KoreaSpeedBumpEnabled", "KoreaSpeedBumpArchSpeed", "KoreaSpeedBumpTrapezoidSpeed"]
     assert _section_keys(schema, "cruise", "korea_route_map_data") == [
-      "KoreaExternalNavEnabled", "KoreaRouteApiKey", "KoreaMapAutoDownload"]
+      "KoreaExternalNavEnabled", "KoreaRouteCurveEnabled", "KoreaRouteApiKey", "KoreaMapAutoDownload"]
 
   def test_the_speed_limit_sub_panel_keeps_only_speed_limit_settings(self, schema):
     section = _find_section(schema, "cruise", "speed_limits")
     keys = [item["key"] for sub_panel in section["sub_panels"] for item in sub_panel["items"]]
     assert keys == ["SpeedLimitMode", "SpeedLimitPolicy", "MapDataSource", "SpeedLimitOffsetType",
-                    "SpeedLimitValueOffset", "TeslaAutoSpeedLimitAssist", "TeslaAutoSpeedLimitDelay",
-                    "TeslaAutoSpeedLimitMax"], keys
+                    "SpeedLimitValueOffset", "TeslaAutoSpeedLimitAssist", "TeslaAutoSpeedLimitRoadMode",
+                    "TeslaAutoSpeedLimitDelay", "TeslaAutoSpeedLimitMax"], keys
+
+
+class TestHighwayDriveSettings(OpenpilotTestCase):
+  """The three settings from the 2026-10-03 highway drives."""
+
+  def test_the_road_limit_mode_offers_always_30_and_under_never(self, schema):
+    item = _find_item(schema, "TeslaAutoSpeedLimitRoadMode")
+    assert item is not None
+    assert item["widget"] == "multiple_button"
+    assert [(o["value"], o["label"]) for o in item["options"]] == [(0, "Always"), (1, "30 and Under"), (2, "Never")]
+
+  def test_the_slowdown_strength_spans_0_3_to_1_2(self, schema):
+    item = _find_item(schema, "MapSlowdownDecel")
+    assert item is not None
+    assert (item["widget"], item["min"], item["max"], item["step"]) == ("option", 0.3, 1.2, 0.1)
+
+  def test_route_curves_have_their_own_toggle(self, schema):
+    item = _find_item(schema, "KoreaRouteCurveEnabled")
+    assert item is not None
+    assert item["widget"] == "toggle"
 
 
 class TestKoreaApiKeyRemote(OpenpilotTestCase):

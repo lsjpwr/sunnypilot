@@ -273,6 +273,32 @@ sections:
         equals: 3
       enablement:
       - $ref: '#/macros/not_engaged'
+    - key: TeslaAutoSpeedLimitRoadMode
+      widget: multiple_button
+      title: Follow Road Speed Limits
+      description: Always follows the limit plus your offset. 30 and Under runs at the Tesla set speed and
+        follows only limits of 30 km/h or less that both the Tesla and the map show, such as school zones.
+        Never runs at the Tesla set speed. Speed cameras, section enforcement and the max speed apply in
+        every mode.
+      options:
+      - value: 0
+        label: Always
+      - value: 1
+        label: 30 and Under
+      - value: 2
+        label: Never
+      visibility:
+      - type: capability
+        field: brand
+        equals: tesla
+      - type: param
+        key: SpeedLimitMode
+        equals: 3
+      - type: param
+        key: TeslaAutoSpeedLimitAssist
+        equals: true
+      enablement:
+      - $ref: '#/macros/not_engaged'
     - key: TeslaAutoSpeedLimitDelay
       widget: option
       title: Speed Limit Change Delay
@@ -366,6 +392,27 @@ sections:
     max: 300
     step: 10
     unit: m
+    enablement:
+    - type: any
+      conditions:
+      - type: capability
+        field: has_longitudinal_control
+        equals: true
+      - type: capability
+        field: has_icbm
+        equals: true
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: MapSlowdownDecel
+    widget: option
+    title: Slowdown Strength
+    description: How firmly the car slows for speed cameras, speed bumps and route curves. Lower starts
+      earlier and brakes more gently; 0.6 takes 110 km/h down to 80 over about 14 seconds.
+    min: 0.3
+    max: 1.2
+    step: 0.1
+    unit: m/s²
     enablement:
     - type: any
       conditions:
@@ -472,6 +519,15 @@ sections:
       this off unless you are running one — the built-in offline map database works without it.
     enablement:
     - $ref: '#/macros/offroad'
+    - type: param
+      key: MapDataSource
+      equals: 1
+  - key: KoreaRouteCurveEnabled
+    widget: toggle
+    title: Slow Down for Route Curves
+    description: Slow down ahead of curves on the route fetched for the destination. Turn this off to keep
+      the route for speed cameras and bumps without slowing for its curves.
+    enablement:
     - type: param
       key: MapDataSource
       equals: 1
