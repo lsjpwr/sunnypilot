@@ -449,6 +449,26 @@ class TestCurveTargets(unittest.TestCase):
     indices = [route.index((lat, lon)) for lat, lon, _ in targets]
     self.assertEqual(indices, sorted(indices))
 
+  def test_a_curve_the_route_reaches_only_after_turning_back_is_left_out(self):
+    # a P-turn: straight over the junction, a U-turn 900 m on, back down the other carriageway and right at the
+    # same junction. SCC-Map ramps on the straight-line distance, and that last turn is about 100 m from the car
+    # in a straight line but nearly 2 km along the route: it would slow the car as it crosses the junction.
+    m_per_deg_lat = 111195.
+    m_per_deg_lon = m_per_deg_lat * math.cos(math.radians(37.5665))
+
+    def at(x, y):
+      return (37.5665 + y / m_per_deg_lat, 126.9780 + x / m_per_deg_lon)
+
+    out_leg = [at(0., y) for y in range(-100, 901, 10)]
+    u_turn = [at(-15. + 15. * math.cos(math.radians(a)), 900. + 15. * math.sin(math.radians(a))) for a in range(15, 180, 15)]
+    back_leg = [at(-30., y) for y in range(900, -1, -10)]
+    right_turn = [at(x, 0.) for x in range(-40, -201, -10)]
+    route = out_leg + u_turn + back_leg + right_turn
+    car = route[0]
+    targets = curve_targets(route, car[0], car[1], 60. / 3.6)
+    self.assertTrue(targets)  # the U-turn
+    self.assertTrue(all(haversine(car[0], car[1], lat, lon) > 800. for lat, lon, _ in targets))
+
   def test_a_curve_behind_us_is_ignored(self):
     route = arc(37.5665, 126.9780, 100., 0., 90.)
     beyond = route[-1]

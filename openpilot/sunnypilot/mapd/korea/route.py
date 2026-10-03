@@ -257,6 +257,13 @@ class RouteState:
 # steps the target down and the planner brakes at its 1.2 cap. A far curve costs nothing: its ramp
 # speed sits far above the set speed until the car is close.
 CURVE_HORIZON_M = 2000.
+# SCC-Map ramps on the straight-line distance to a point, but the horizon above is along the route. A
+# vertex the route reaches only after turning back toward the car (the return leg of a U-turn or P-turn,
+# a loop ramp) is far along the route yet close in a straight line, and would slow the car long before
+# it gets there. It is left out while its straight-line distance is under this share of the distance
+# along the route, and comes back once the car is on the leg heading at it. The far end of a plain
+# 180 degree bend still reads 2/pi = 0.64.
+MIN_STRAIGHT_LINE_RATIO = 0.5
 # m. Curvature is measured through the vertices at least this far along the route either side of a
 # vertex, not through its raw neighbours: a TMAP joint can put a vertex 1-3 m past the last one and
 # 20-30 cm off the line, which three raw points read as a ~230 m radius (2026-10-03: 33 of 34 route
@@ -328,6 +335,8 @@ def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
     prev = route[i]
     if travelled > CURVE_HORIZON_M:
       break
+    if haversine(lat, lon, route[i][0], route[i][1]) < MIN_STRAIGHT_LINE_RATIO * travelled:
+      continue
 
     # the vertices at least CURVE_BASELINE_M back and ahead along the route. Within that of either end
     # there is none, and the short side left would read joint noise as a curve again.
