@@ -420,13 +420,11 @@ class TestCurveTargets(unittest.TestCase):
     self.assertAlmostEqual(targets[0][2], expected, delta=3.)
 
   def test_a_tight_curve_is_clamped_to_the_floor(self):
-    curve = arc(37.5665, 126.9780, 15., 0., 180.)
-    m_per_deg_lat = 111195.
-    # 50 m straight legs either side: no vertex within CURVE_BASELINE_M of a route end is measured
-    route = [(curve[0][0] - 50. / m_per_deg_lat, curve[0][1])] + curve + [(curve[-1][0] - 50. / m_per_deg_lat, curve[-1][1])]
+    # 270 degrees of a 15 m radius is 71 m: the middle vertices have CURVE_BASELINE_M of arc either side and
+    # read the radius exactly, whose physics speed (19.7 km/h) is under the floor
+    route = arc(37.5665, 126.9780, 15., 0., 270.)
     targets = curve_targets(route, route[0][0], route[0][1], 30.)
-    self.assertTrue(targets)
-    self.assertGreaterEqual(min(t[2] for t in targets), MIN_V_MS)
+    self.assertAlmostEqual(min(t[2] for t in targets), MIN_V_MS)
 
   def test_a_gentle_curve_is_not_reported_above_the_set_speed(self):
     route = arc(37.5665, 126.9780, 2000., 0., 90.)
@@ -444,7 +442,7 @@ class TestCurveTargets(unittest.TestCase):
     route = lead_in + curve
     targets = curve_targets(route, lead_in[0][0], lead_in[0][1], 30.)
     self.assertGreater(len(targets), 1)
-    # route order, not straight-line distance: the 800 m horizon takes in this whole semicircle, whose far
+    # route order, not straight-line distance: the horizon takes in this whole semicircle, whose far
     # side comes back toward the car
     indices = [route.index((lat, lon)) for lat, lon, _ in targets]
     self.assertEqual(indices, sorted(indices))

@@ -17,6 +17,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.mapd.korea.db import BUMP_MAX_DISTANCE_M, CAMERA_KIND_PARAMS
 from openpilot.sunnypilot.mapd.korea.route import CURVE_HORIZON_M, MIN_V_MS
+from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import BUMP_ARCH_SPEED_RANGE, BUMP_TRAPEZOID_SPEED_RANGE
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import R, SLOWDOWN_DECEL_MIN, TARGET_OFFSET, SmartCruiseControlMap
 from openpilot.common.test import OpenpilotTestCase
 
@@ -209,7 +210,8 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     def needed(v_from, v_to):
       return (v_from ** 2 - v_to ** 2) / (2. * SLOWDOWN_DECEL_MIN) + v_to * TARGET_OFFSET
     assert CURVE_HORIZON_M >= needed(kph(125), MIN_V_MS)  # a hairpin off a 125 km/h road
-    assert BUMP_MAX_DISTANCE_M >= needed(kph(60), kph(25))  # an arch bump on a 60 road
+    slowest_bump = kph(min(BUMP_ARCH_SPEED_RANGE[0], BUMP_TRAPEZOID_SPEED_RANGE[0]))
+    assert BUMP_MAX_DISTANCE_M >= needed(kph(60), slowest_bump)  # the slowest bump setting on a 60 road
 
   def test_a_point_with_no_speed_is_ignored(self):
     self.put_point(100., 0.)
