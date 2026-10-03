@@ -262,7 +262,7 @@ CURVE_HORIZON_M = 2000.
 # a loop ramp) is far along the route yet close in a straight line, and would slow the car long before
 # it gets there. It is left out while its straight-line distance is under this share of the distance
 # along the route, and comes back once the car is on the leg heading at it. The far end of a plain
-# 180 degree bend still reads 2/pi = 0.64.
+# 180 degree bend still reads 0.54 or more, the least with a straight lead-in of 4/pi radii.
 MIN_STRAIGHT_LINE_RATIO = 0.5
 # m. Curvature is measured through the vertices at least this far along the route either side of a
 # vertex, not through its raw neighbours: a TMAP joint can put a vertex 1-3 m past the last one and

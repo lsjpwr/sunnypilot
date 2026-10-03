@@ -467,6 +467,17 @@ class TestCurveTargets(unittest.TestCase):
     self.assertTrue(targets)  # the U-turn
     self.assertTrue(all(haversine(car[0], car[1], lat, lon) > 800. for lat, lon, _ in targets))
 
+  def test_the_far_end_of_a_half_turn_is_kept(self):
+    # with a straight lead-in of 4/pi radii the far end of a 180 degree bend is as close as it gets in a straight
+    # line for its distance along the route, sqrt(x^2 + 4) / (x + pi) = 0.54: MIN_STRAIGHT_LINE_RATIO must stay
+    # under that, or a plain bend loses its far end
+    m_per_deg_lat = 111195.
+    curve = arc(37.5665, 126.9780, 100., 0., 180.)
+    lead_in = (curve[0][0] - 127. / m_per_deg_lat, curve[0][1])
+    route = [lead_in] + curve + [(curve[-1][0] - 50. / m_per_deg_lat, curve[-1][1])]
+    targets = curve_targets(route, lead_in[0], lead_in[1], 30.)
+    self.assertIn(curve[-1], [(lat, lon) for lat, lon, _ in targets])
+
   def test_a_curve_behind_us_is_ignored(self):
     route = arc(37.5665, 126.9780, 100., 0., 90.)
     beyond = route[-1]
