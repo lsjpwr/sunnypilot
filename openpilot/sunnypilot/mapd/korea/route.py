@@ -14,6 +14,7 @@ editing parse_route alone.
 Deliberately free of openpilot imports so it runs under a bare Python interpreter --
 same rule as db.py and geo.py.
 """
+import bisect
 import json
 import logging
 import math
@@ -249,9 +250,16 @@ class RouteState:
     return True
 
 
-# SCC-Map brakes with a jerk limit, so a point handed over at 300 m is already inside the
-# comfortable window at highway speed and well outside it in town.
-CURVE_HORIZON_M = 300.
+# SCC-Map ramps its target down at MapSlowdownDecel (0.6 m/s^2 by default), which takes about 450 m
+# to bring 110 km/h down to a 74 km/h curve and about 700 m for 120 down to 60. A far curve costs
+# nothing: its ramp speed sits far above the set speed until the car is close.
+CURVE_HORIZON_M = 800.
+# m. Curvature is measured through the vertices at least this far along the route either side of a
+# vertex, not through its raw neighbours: a TMAP joint can put a vertex 1-3 m past the last one and
+# 20-30 cm off the line, which three raw points read as a ~230 m radius (2026-10-03: 33 of 34 route
+# curve slowdowns had no curve under them). Real vertices keep a sampled arc exact, and a curve worth
+# slowing for is far longer than this.
+CURVE_BASELINE_M = 25.
 # Matches _A_LAT_REG_MAX in smart_cruise_control/vision_controller.py:31. The two
 # controllers feed the same longitudinal planner, so disagreeing here would show up as one
 # of them fighting the other through a bend.
@@ -289,7 +297,7 @@ def _menger_curvature(a: tuple[float, float], b: tuple[float, float],
 
 def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
                   v_max_ms: float) -> list[tuple[float, float, float]]:
-  """(lat, lon, velocity) points for the curves inside CURVE_HORIZON_M ahead, nearest first.
+  """(lat, lon, velocity) points for the curves inside CURVE_HORIZON_M ahead, in route order.
 
   Only curves that actually ask for a slowdown are returned: a target at or above the set
   speed is not a target, it is noise SCC-Map would have to filter itself.
@@ -301,6 +309,10 @@ def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
   start = min(range(len(route) - 1),
               key=lambda i: point_segment_distance(lat, lon, route[i][0], route[i][1],
                                                    route[i + 1][0], route[i + 1][1]))
+
+  cum = [0.]
+  for a, b in zip(route, route[1:], strict=False):
+    cum.append(cum[-1] + haversine(a[0], a[1], b[0], b[1]))
 
   targets: list[tuple[float, float, float]] = []
   # The walk starts at the car, not the segment's start vertex: seeding from route[start]
@@ -314,7 +326,10 @@ def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
     if travelled > CURVE_HORIZON_M:
       break
 
-    curvature = _menger_curvature(route[i - 1], route[i], route[i + 1])
+    # the vertices at least CURVE_BASELINE_M back and ahead along the route, or its ends
+    back = max(bisect.bisect_right(cum, cum[i] - CURVE_BASELINE_M) - 1, 0)
+    ahead = min(bisect.bisect_left(cum, cum[i] + CURVE_BASELINE_M), len(route) - 1)
+    curvature = _menger_curvature(route[back], route[i], route[ahead])
     if curvature <= 0.:
       continue
     velocity = max(math.sqrt(A_LAT_MAX / curvature), MIN_V_MS)

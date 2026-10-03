@@ -426,7 +426,7 @@ class TestCurveTargets(unittest.TestCase):
     route = arc(37.5665, 126.9780, 2000., 0., 90.)
     self.assertEqual(curve_targets(route, route[0][0], route[0][1], 10.), [])
 
-  def test_targets_come_back_nearest_first(self):
+  def test_targets_come_back_in_route_order(self):
     # The lead-in must reach the curve's own first point with no gap. An earlier version of
     # this test used a nearby point as the arc's *center* (arc(37.5685, 126.9780, 100., ...)
     # with 37.5685 taken from STRAIGHT), but center_lat/center_lon is the circle's centre,
@@ -438,8 +438,10 @@ class TestCurveTargets(unittest.TestCase):
     route = lead_in + curve
     targets = curve_targets(route, lead_in[0][0], lead_in[0][1], 30.)
     self.assertGreater(len(targets), 1)
-    distances = [haversine(lead_in[0][0], lead_in[0][1], lat, lon) for lat, lon, _ in targets]
-    self.assertEqual(distances, sorted(distances))
+    # route order, not straight-line distance: the 800 m horizon takes in this whole semicircle, whose far
+    # side comes back toward the car
+    indices = [route.index((lat, lon)) for lat, lon, _ in targets]
+    self.assertEqual(indices, sorted(indices))
 
   def test_a_curve_behind_us_is_ignored(self):
     route = arc(37.5665, 126.9780, 100., 0., 90.)
@@ -472,6 +474,25 @@ class TestCurveTargets(unittest.TestCase):
     route = [lead_in_start, curve[0]] + curve[1:]
     car = (curve[0][0] - 10. / m_per_deg_lat, curve[0][1])  # 10 m short of the curve
     self.assertTrue(curve_targets(route, car[0], car[1], 30.))
+
+  def test_a_wiggle_beside_a_short_step_has_no_targets(self):
+    # 2026-10-03: a vertex 3 m past a joint and 30 cm off the line read as a ~230 m radius (78 km/h)
+    # through three raw points. Over the 25 m baseline it is a straight road again.
+    m_per_deg_lat = 111195.
+    m_per_deg_lon = m_per_deg_lat * math.cos(math.radians(37.5665))
+    route = [(37.5665 + i * 50. / m_per_deg_lat, 126.9780) for i in range(8)]
+    route.insert(4, (route[3][0] + 3. / m_per_deg_lat, route[3][1] + 0.3 / m_per_deg_lon))
+    self.assertEqual(curve_targets(route, route[0][0], route[0][1], 30.), [])
+
+  def test_an_unevenly_sampled_curve_still_targets_the_physics_speed(self):
+    # real polylines mix 1-3 m steps at joints with 35 m runs; the baseline must read the same radius
+    main = arc(37.5665, 126.9780, 200., 0., 90., step_deg=10.)
+    near = arc(37.5665, 126.9780, 200., 0.5, 80.5, step_deg=10.)  # 1.7 m past each vertex
+    route = [p for pair in zip(main, near, strict=False) for p in pair] + [main[-1]]
+    targets = curve_targets(route, route[0][0], route[0][1], 30.)
+    self.assertTrue(targets)
+    for _, _, v in targets:
+      self.assertAlmostEqual(v, math.sqrt(A_LAT_MAX * 200.), delta=3.)
 
   def test_a_centimetre_offset_on_a_straight_road_has_no_targets(self):
     # Coordinate noise, not road shape: adjacent GeoJSON LineString features are
