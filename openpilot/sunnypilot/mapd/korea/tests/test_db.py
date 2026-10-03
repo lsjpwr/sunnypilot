@@ -79,6 +79,12 @@ SIDE_10 = (10, "이면도로", [(37.54013, 127.0500), (37.54013, 127.0620)])
 ROUTE_ON_MAIN = [(37.5400, 127.0490), (37.5400, 127.0630)]
 ROUTE_ELSEWHERE = [(37.5500, 127.0490), (37.5500, 127.0630)]
 
+# A 110 km/h highway and a 40 km/h ramp 4 m north of it, with the TMAP line 3 m north of the highway:
+# nearer the ramp than the road it follows (2026-10-03, ramp limits picked on highways).
+HIGHWAY_110 = (110, "고속도로", [(37.5600, 127.0500), (37.5600, 127.0620)])
+RAMP_40 = (40, "램프", [(37.560036, 127.0500), (37.560036, 127.0620)])
+ROUTE_BESIDE_HIGHWAY = [(37.560027, 127.0490), (37.560027, 127.0630)]
+
 # 구간단속 on an east-west road at 100 km/h: eastbound starts at SEC_A and ends at SEC_B (~5.3 km);
 # westbound starts at SEC_B and ends at SEC_A, each a metre or so off the other direction's camera.
 SEC_A = (37.6000, 127.0000)
@@ -486,6 +492,17 @@ class TestSwitchMargin(KoreaMapDBTestCase):
 
 
 class TestRouteAwareMatching(KoreaMapDBTestCase):
+  def test_on_the_route_a_ramp_beside_the_road_does_not_take_over(self):
+    database = self.open_db(*self._make_links_db([HIGHWAY_110, RAMP_40]))
+    self.assertEqual(database.current_link(37.5600, 127.0510, route=ROUTE_BESIDE_HIGHWAY).max_spd, 110)
+    # 2.5 m north: nearer the ramp now, but not by LINK_SWITCH_MARGIN_M
+    self.assertEqual(database.current_link(37.5600225, 127.0510, route=ROUTE_BESIDE_HIGHWAY).max_spd, 110)
+
+  def test_on_the_route_with_no_road_near_its_line_every_road_counts(self):
+    route = [(37.539775, 127.0490), (37.539775, 127.0630)]  # 25 m south of MAIN_60: on it, but no link within ROUTE_FILTER_M
+    database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
+    self.assertEqual(database.current_link(37.5400, 127.0510, route=route).max_spd, 60)
+
   def test_on_the_route_the_road_it_follows_wins_over_a_nearer_side_road(self):
     database = self.open_db(*self._make_links_db([MAIN_60, SIDE_10]))
     # ~10 m off the main road, ~4.5 m off the side road, no previous match

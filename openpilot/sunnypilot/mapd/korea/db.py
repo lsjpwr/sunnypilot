@@ -106,6 +106,10 @@ BUMP_CORRIDOR_M = 20.
 # localizer's lateral error in an urban canyon, which is what forced BUMP_CORRIDOR_M to 20
 # rather than 10.
 ROUTE_CORRIDOR_M = 30.
+# On the route, a link counts only when this near the route line. It rules out side roads like the
+# 10 km/h one of 2026-09-30, 15-25 m off the 60 road, but it cannot pick among the rest: a ramp runs
+# within metres of the main road and the TMAP line is no closer to the true road than that.
+ROUTE_FILTER_M = 10.
 
 # 구간단속. Both directions of a section share their end points -- one direction's start stands
 # beside the other's end -- so passing a start camera says nothing on its own. A section opens
@@ -384,9 +388,10 @@ class KoreaMapDB:
     nearer before it takes over, so a fix drifting toward a slower side road keeps the road
     we are on.
 
-    While the car is on the route (within ROUTE_CORRIDOR_M of it), the candidate nearest the
-    route line wins instead: the 10 km/h side road of 2026-09-30 ran 15-25 m off the 60 road,
-    inside the corridor, so the corridor alone cannot tell them apart.
+    While the car is on the route (within ROUTE_CORRIDOR_M of it), only the candidates within
+    ROUTE_FILTER_M of its line count, and the rules above pick among them -- all of them when none
+    is that near. Picking the candidate nearest the line instead took ramp limits (40-60) on
+    highways on 2026-10-03.
     """
     rows = self.lnk.execute(
       "SELECT l.id, l.max_spd, l.name, l.geom FROM links_idx i JOIN links l ON l.id = i.id " + _RTREE_OVERLAP,
@@ -416,10 +421,9 @@ class KoreaMapDB:
       return None
 
     if route and distance_to_route(route, lat, lon) <= ROUTE_CORRIDOR_M:
-      # On the route, the road it follows is the one we drive, whatever the fix is nearer to.
-      def route_offset(link_id: int) -> float:
-        return distance_to_route(route, *closest_point_on_segment(lat, lon, *segments[link_id]))
-      best_id = min(candidates, key=lambda link_id: (route_offset(link_id), candidates[link_id][0], -candidates[link_id][1]))
+      near = {link_id: value for link_id, value in candidates.items()
+              if distance_to_route(route, *closest_point_on_segment(lat, lon, *segments[link_id])) <= ROUTE_FILTER_M}
+      best_id = self._pick_off_route(near or candidates)
     else:
       best_id = self._pick_off_route(candidates)
 
