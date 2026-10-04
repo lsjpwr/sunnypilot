@@ -12,8 +12,10 @@ import tempfile
 import unittest
 import urllib.error
 
-from openpilot.sunnypilot.system.github_uploader import (KEEP_DRIVES, SETTLE_S, SWAGLOG_AFTER_S, GithubReleases, drive_windows, is_uploaded,
-                                                         mark_uploaded, pending_qlogs, pending_swaglogs)
+import zstandard
+
+from openpilot.sunnypilot.system.github_uploader import (KEEP_DRIVES, SETTLE_S, SWAGLOG_AFTER_S, GithubReleases, GithubUploader, drive_windows,
+                                                         is_uploaded, mark_uploaded, pending_qlogs, pending_swaglogs)
 
 NOW = 1_790_000_000.
 OLD = NOW - 3600.  # settled long ago
@@ -218,6 +220,92 @@ class TestGithubReleases(unittest.TestCase):
     for request in opener.requests:
       self.assertEqual(request.get_header("Authorization"), f"Bearer {TOKEN}")
       self.assertNotIn(TOKEN, request.full_url)
+
+
+class FakeReleases:
+  """GithubReleases stand-in: hands out release ids and records the uploads."""
+
+  def __init__(self):
+    self.ids: dict[str, int] = {}
+    self.assets: list[tuple[int, str, bytes]] = []
+    self.lookups = 0
+    self.prunes = 0
+    self.upload_error: Exception | None = None
+    self.prune_error: Exception | None = None
+
+  def release_id(self, tag):
+    self.lookups += 1
+    if tag in self.ids:
+      return self.ids[tag], False
+    self.ids[tag] = len(self.ids) + 1
+    return self.ids[tag], True
+
+  def upload(self, release_id, name, data):
+    if self.upload_error is not None:
+      raise self.upload_error
+    self.assets.append((release_id, name, data))
+
+  def prune(self):
+    if self.prune_error is not None:
+      error, self.prune_error = self.prune_error, None
+      raise error
+    self.prunes += 1
+
+
+class TestGithubUploader(LogDirs):
+  def uploader(self, releases: FakeReleases) -> GithubUploader:
+    return GithubUploader(releases, self.log_root, self.swaglog_root, clock=lambda: NOW)
+
+  def test_one_file_per_step_qlogs_as_they_are_then_swaglogs_compressed(self):
+    qlog = self.segment(1, 0, qlog=b"QLOG")
+    swaglog = self.swaglog(1, OLD, b"SWAG")
+    self.swaglog(2, NOW)
+    releases = FakeReleases()
+    uploader = self.uploader(releases)
+    self.assertEqual([uploader.step(), uploader.step(), uploader.step()], [True, True, False])
+    (first_id, first_name, first_data), (second_id, second_name, second_data) = releases.assets
+    self.assertEqual((first_id, first_name, first_data), (1, f"{route(1)}--0--qlog.zst", b"QLOG"))
+    self.assertEqual((second_id, second_name), (1, "swaglog.0000000001.zst"))
+    self.assertEqual(zstandard.ZstdDecompressor().decompress(second_data), b"SWAG")
+    self.assertTrue(is_uploaded(qlog) and is_uploaded(swaglog))
+
+  def test_a_new_drive_gets_its_release_once_and_prunes_old_drives(self):
+    self.segment(1, 0)
+    self.segment(1, 1)
+    releases = FakeReleases()
+    uploader = self.uploader(releases)
+    uploader.step()
+    uploader.step()
+    self.assertEqual((releases.ids, releases.lookups, releases.prunes), ({route(1): 1}, 1, 1))
+
+  def test_a_failed_prune_is_tried_again_on_the_next_step(self):
+    self.segment(1, 0)
+    releases = FakeReleases()
+    releases.prune_error = urllib.error.URLError("offline")
+    uploader = self.uploader(releases)
+    with self.assertRaises(urllib.error.URLError):
+      uploader.step()
+    self.assertTrue(uploader.step())
+    self.assertEqual((releases.prunes, len(releases.assets)), (1, 1))
+
+  def test_a_failed_upload_raises_and_leaves_the_file_pending(self):
+    path = self.segment(1, 0)
+    releases = FakeReleases()
+    releases.upload_error = http_error(500)
+    with self.assertRaises(urllib.error.HTTPError):
+      self.uploader(releases).step()
+    self.assertFalse(is_uploaded(path))
+
+  def test_a_release_deleted_on_github_is_looked_up_again(self):
+    self.segment(1, 0)
+    releases = FakeReleases()
+    releases.upload_error = http_error(404)
+    uploader = self.uploader(releases)
+    with self.assertRaises(urllib.error.HTTPError):
+      uploader.step()
+    releases.upload_error = None
+    self.assertTrue(uploader.step())
+    self.assertEqual(releases.lookups, 2)
 
 
 if __name__ == "__main__":

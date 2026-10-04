@@ -19,9 +19,12 @@ one repo with Contents read and write. Nothing here talks to comma.
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+
+import zstandard
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
@@ -48,6 +51,12 @@ API_URL = "https://api.github.com"
 UPLOADS_URL = "https://uploads.github.com"
 HTTP_TIMEOUT_S = 60.  # a qlog is about 0.5 MB, over a phone hotspot
 ROUTE_RE = re.compile(r"^[0-9a-f]{8}--[0-9a-f]{10}$")
+
+SWAGLOG_ZSTD_LEVEL = 10  # the level loggerd writes qlogs with (system/loggerd/logger.h)
+IDLE_S = 10.
+UPLOAD_GAP_S = 1.  # GitHub's secondary rate limit allows 80 content-creating requests a minute
+MAX_BACKOFF_S = 300.
+REPO_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 
 
 def is_uploaded(path: str) -> bool:
@@ -200,3 +209,87 @@ class GithubReleases:
       except urllib.error.HTTPError as e:
         if e.code not in (404, 422):  # the tag is gone already
           raise
+
+
+class GithubUploader:
+  """Uploads the oldest pending file per step: finished qlogs first, then closed swaglog files."""
+
+  # The wall clock on purpose: segment_closed compares it with file mtimes.
+  def __init__(self, releases, log_root: str, swaglog_root: str, clock=time.time):  # noqa: TID251
+    self.releases = releases
+    self.log_root = log_root
+    self.swaglog_root = swaglog_root
+    self._clock = clock
+    self._release_ids: dict[str, int] = {}
+    self._prune_due = False
+
+  def pending(self) -> list[tuple[str, str, str]]:
+    return pending_qlogs(self.log_root, self._clock()) + pending_swaglogs(self.swaglog_root, drive_windows(self.log_root))
+
+  def step(self) -> bool:
+    """Upload the oldest pending file. False when nothing is pending; a failed request raises."""
+    pending = self.pending()
+    if not pending:
+      return False
+    route, name, path = pending[0]
+    try:
+      with open(path, "rb") as f:
+        data = f.read()
+    except OSError:
+      return True  # the deleter took it, and the next step moves on
+    if name.startswith("swaglog."):
+      data = zstandard.ZstdCompressor(level=SWAGLOG_ZSTD_LEVEL).compress(data)
+
+    release_id = self._release_ids.get(route)
+    if release_id is None:
+      release_id, created = self.releases.release_id(route)
+      self._release_ids[route] = release_id
+      self._prune_due |= created
+    if self._prune_due:
+      self.releases.prune()
+      self._prune_due = False
+    try:
+      self.releases.upload(release_id, name, data)
+    except urllib.error.HTTPError as e:
+      if e.code == 404:
+        self._release_ids.pop(route, None)  # deleted on GitHub meanwhile; the next step makes it again
+      raise
+    mark_uploaded(path)
+    return True
+
+
+def main() -> None:
+  from openpilot.cereal import log, messaging
+  from openpilot.common.hardware.hw import Paths
+  from openpilot.common.params import Params
+
+  params = Params()
+  sm = messaging.SubMaster(["deviceState"])
+  uploader, credentials, backoff = None, None, 0.
+  while True:
+    sm.update(0)
+    token = (params.get("GithubLogToken") or "").strip()
+    repo = (params.get("GithubLogRepo") or "").strip()
+    if sm["deviceState"].networkType == log.DeviceState.NetworkType.none or not token or not REPO_RE.match(repo):
+      time.sleep(IDLE_S)
+      continue
+    if (token, repo) != credentials:
+      credentials = (token, repo)
+      uploader = GithubUploader(GithubReleases(token, repo), Paths.log_root(), Paths.swaglog_root())
+    try:
+      time.sleep(UPLOAD_GAP_S if uploader.step() else IDLE_S)
+      backoff = 0.
+    except urllib.error.HTTPError as e:
+      # The status only: a response body can echo the request.
+      cloudlog.warning("github_uploader: HTTP %d", e.code)
+      backoff = min(max(2 * backoff, IDLE_S), MAX_BACKOFF_S)
+      time.sleep(backoff)
+    except Exception as e:
+      # The network, a timeout: the type only, since a message can carry a URL.
+      cloudlog.warning("github_uploader: upload failed: %s", type(e).__name__)
+      backoff = min(max(2 * backoff, IDLE_S), MAX_BACKOFF_S)
+      time.sleep(backoff)
+
+
+if __name__ == "__main__":
+  main()
