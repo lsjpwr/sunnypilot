@@ -14,8 +14,9 @@ import urllib.error
 
 import zstandard
 
-from openpilot.sunnypilot.system.github_uploader import (KEEP_DRIVES, SETTLE_S, SWAGLOG_AFTER_S, GithubReleases, GithubUploader, PartialAsset,
-                                                         drive_windows, is_uploaded, mark_uploaded, pending_qlogs, pending_swaglogs)
+from openpilot.sunnypilot.system.github_uploader import (IDLE_S, KEEP_DRIVES, MAX_BACKOFF_S, RATE_LIMIT_BACKOFF_S, SETTLE_S, SWAGLOG_AFTER_S,
+                                                         GithubReleases, GithubUploader, PartialAsset, drive_windows, is_uploaded, mark_uploaded,
+                                                         next_backoff, pending_qlogs, pending_swaglogs)
 from openpilot.system.manager.process_config import procs
 
 NOW = 1_790_000_000.
@@ -369,6 +370,18 @@ class TestGithubUploader(LogDirs):
     releases.upload_error = None
     self.assertTrue(uploader.step())
     self.assertEqual([name for _, name, _ in releases.assets], [f"{route(1)}--1--qlog.zst"])
+
+
+class TestBackoff(unittest.TestCase):
+  def test_doubles_from_idle_up_to_the_cap(self):
+    self.assertEqual([next_backoff(b, None) for b in (0., IDLE_S, 2 * IDLE_S, MAX_BACKOFF_S)],
+                     [IDLE_S, 2 * IDLE_S, 4 * IDLE_S, MAX_BACKOFF_S])
+
+  def test_waits_at_least_a_minute_once_github_rate_limits(self):
+    for status in (403, 429):
+      with self.subTest(status=status):
+        self.assertEqual(next_backoff(0., status), RATE_LIMIT_BACKOFF_S)
+    self.assertEqual(next_backoff(0., 500), IDLE_S)
 
 
 class FakeParams:

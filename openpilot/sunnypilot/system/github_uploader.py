@@ -55,8 +55,9 @@ ROUTE_RE = re.compile(r"^[0-9a-f]{8}--[0-9a-f]{10}$")
 
 SWAGLOG_ZSTD_LEVEL = 10  # the level loggerd writes qlogs with (system/loggerd/logger.h)
 IDLE_S = 10.
-UPLOAD_GAP_S = 1.  # GitHub's secondary rate limit allows 80 content-creating requests a minute
+UPLOAD_GAP_S = 1.  # GitHub's secondary rate limits: 80 content-creating requests a minute, 500 an hour
 MAX_BACKOFF_S = 300.
+RATE_LIMIT_BACKOFF_S = 60.  # once GitHub rate-limits, it asks for at least a minute before the next try
 REPO_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 
 
@@ -290,6 +291,14 @@ class GithubUploader:
     return True
 
 
+def next_backoff(backoff: float, http_status: int | None) -> float:
+  """Seconds to wait after a failed step: doubling from IDLE_S up to MAX_BACKOFF_S, and at least
+  RATE_LIMIT_BACKOFF_S when GitHub rate-limits (403 or 429). The first run's backlog passes the
+  hourly limit, so a few "HTTP 403" warnings then are expected."""
+  floor = RATE_LIMIT_BACKOFF_S if http_status in (403, 429) else IDLE_S
+  return min(max(2 * backoff, floor), MAX_BACKOFF_S)
+
+
 def main() -> None:
   from openpilot.cereal import log, messaging
   from openpilot.common.hardware.hw import Paths
@@ -308,6 +317,7 @@ def main() -> None:
     if (token, repo) != credentials:
       credentials = (token, repo)
       uploader = GithubUploader(GithubReleases(token, repo), Paths.log_root(), Paths.swaglog_root())
+    status = None
     try:
       time.sleep(UPLOAD_GAP_S if uploader.step() else IDLE_S)
       backoff = 0.
@@ -315,10 +325,11 @@ def main() -> None:
     except urllib.error.HTTPError as e:
       # The status only: a response body can echo the request.
       cloudlog.warning("github_uploader: HTTP %d", e.code)
+      status = e.code
     except Exception as e:
       # The network, a timeout: the type only, since a message can carry a URL.
       cloudlog.warning("github_uploader: upload failed: %s", type(e).__name__)
-    backoff = min(max(2 * backoff, IDLE_S), MAX_BACKOFF_S)
+    backoff = next_backoff(backoff, status)
     time.sleep(backoff)
 
 
