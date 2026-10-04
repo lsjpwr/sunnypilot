@@ -4,16 +4,21 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import io
+import json
 import os
 import shutil
 import tempfile
 import unittest
+import urllib.error
 
-from openpilot.sunnypilot.system.github_uploader import (KEEP_DRIVES, SETTLE_S, SWAGLOG_AFTER_S, drive_windows, is_uploaded, mark_uploaded,
-                                                         pending_qlogs, pending_swaglogs)
+from openpilot.sunnypilot.system.github_uploader import (KEEP_DRIVES, SETTLE_S, SWAGLOG_AFTER_S, GithubReleases, drive_windows, is_uploaded,
+                                                         mark_uploaded, pending_qlogs, pending_swaglogs)
 
 NOW = 1_790_000_000.
 OLD = NOW - 3600.  # settled long ago
+TOKEN = "github_pat_TEST"
+REPO = "owner/comma-logs"
 
 
 def route(counter: int) -> str:
@@ -115,6 +120,104 @@ class TestPendingSwaglogs(LogDirs):
     mark_uploaded(self.swaglog(1, NOW - 60))
     self.swaglog(2, NOW)
     self.assertEqual(pending_swaglogs(self.swaglog_root, drive_windows(self.log_root)), [])
+
+
+def http_error(code: int, body: dict | None = None) -> urllib.error.HTTPError:
+  fp = io.BytesIO(json.dumps(body).encode()) if body is not None else None
+  return urllib.error.HTTPError("https://api.github.com", code, "error", None, fp)
+
+
+class FakeResponse:
+  def __init__(self, payload):
+    self._body = b"" if payload is None else json.dumps(payload).encode()
+
+  def read(self):
+    return self._body
+
+  def __enter__(self):
+    return self
+
+  def __exit__(self, *args):
+    return False
+
+
+class ScriptedOpener:
+  """urlopen stand-in: answers requests in order from `answers`, a payload or an exception to raise."""
+
+  def __init__(self, *answers):
+    self.answers = list(answers)
+    self.requests = []
+
+  def __call__(self, request, timeout=None):
+    self.requests.append(request)
+    answer = self.answers.pop(0)
+    if isinstance(answer, Exception):
+      raise answer
+    return FakeResponse(answer)
+
+  def calls(self):
+    return [(r.get_method(), r.full_url) for r in self.requests]
+
+
+def drive_releases(count: int) -> list[dict]:
+  return [{"id": i, "tag_name": route(i), "created_at": f"2026-10-{i:02d}T00:00:00Z"} for i in range(1, count + 1)]
+
+
+class TestGithubReleases(unittest.TestCase):
+  def test_an_existing_release_is_found_by_its_tag(self):
+    opener = ScriptedOpener({"id": 7})
+    self.assertEqual(GithubReleases(TOKEN, REPO, opener).release_id(route(1)), (7, False))
+    self.assertEqual(opener.calls(), [("GET", f"https://api.github.com/repos/{REPO}/releases/tags/{route(1)}")])
+
+  def test_a_missing_release_is_created(self):
+    opener = ScriptedOpener(http_error(404), {"id": 8})
+    self.assertEqual(GithubReleases(TOKEN, REPO, opener).release_id(route(1)), (8, True))
+    self.assertEqual(opener.calls()[1], ("POST", f"https://api.github.com/repos/{REPO}/releases"))
+    self.assertEqual(json.loads(opener.requests[1].data)["tag_name"], route(1))
+
+  def test_other_errors_while_finding_a_release_raise(self):
+    with self.assertRaises(urllib.error.HTTPError):
+      GithubReleases(TOKEN, REPO, ScriptedOpener(http_error(401))).release_id(route(1))
+
+  def test_an_asset_goes_to_the_uploads_host_as_raw_bytes(self):
+    opener = ScriptedOpener({"id": 1})
+    GithubReleases(TOKEN, REPO, opener).upload(7, f"{route(1)}--0--qlog.zst", b"\x28\xb5\x2f\xfd")
+    request = opener.requests[0]
+    self.assertEqual((request.get_method(), request.full_url),
+                     ("POST", f"https://uploads.github.com/repos/{REPO}/releases/7/assets?name={route(1)}--0--qlog.zst"))
+    self.assertEqual(request.data, b"\x28\xb5\x2f\xfd")
+    self.assertEqual(request.get_header("Content-type"), "application/octet-stream")
+
+  def test_an_asset_already_there_counts_as_uploaded(self):
+    already = http_error(422, {"message": "Validation Failed", "errors": [{"resource": "ReleaseAsset", "code": "already_exists", "field": "name"}]})
+    GithubReleases(TOKEN, REPO, ScriptedOpener(already)).upload(7, "a", b"x")
+
+  def test_other_upload_errors_raise(self):
+    for error in (http_error(422, {"message": "Validation Failed", "errors": [{"code": "invalid"}]}), http_error(422), http_error(403)):
+      with self.subTest(code=error.code), self.assertRaises(urllib.error.HTTPError):
+        GithubReleases(TOKEN, REPO, ScriptedOpener(error)).upload(7, "a", b"x")
+
+  def test_prune_keeps_the_newest_drives_and_leaves_other_releases_alone(self):
+    releases = drive_releases(KEEP_DRIVES + 2) + [{"id": 99, "tag_name": "v1.0", "created_at": "2020-01-01T00:00:00Z"}]
+    opener = ScriptedOpener(releases, None, None, None, None)
+    GithubReleases(TOKEN, REPO, opener).prune()
+    self.assertEqual(opener.calls()[1:], [("DELETE", f"https://api.github.com/repos/{REPO}/releases/2"),
+                                          ("DELETE", f"https://api.github.com/repos/{REPO}/git/refs/tags/{route(2)}"),
+                                          ("DELETE", f"https://api.github.com/repos/{REPO}/releases/1"),
+                                          ("DELETE", f"https://api.github.com/repos/{REPO}/git/refs/tags/{route(1)}")])
+
+  def test_a_tag_already_gone_does_not_stop_pruning(self):
+    opener = ScriptedOpener(drive_releases(KEEP_DRIVES + 1), None, http_error(422))
+    GithubReleases(TOKEN, REPO, opener).prune()
+    self.assertEqual(len(opener.requests), 3)
+
+  def test_the_token_goes_in_a_header_never_in_a_url(self):
+    opener = ScriptedOpener(http_error(404), {"id": 8}, {"id": 1})
+    releases = GithubReleases(TOKEN, REPO, opener)
+    releases.upload(releases.release_id(route(1))[0], "a", b"x")
+    for request in opener.requests:
+      self.assertEqual(request.get_header("Authorization"), f"Bearer {TOKEN}")
+      self.assertNotIn(TOKEN, request.full_url)
 
 
 if __name__ == "__main__":

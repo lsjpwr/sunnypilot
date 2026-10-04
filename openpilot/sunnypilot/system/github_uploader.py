@@ -16,8 +16,12 @@ of in one batch at the end.
 All it needs is GithubLogRepo ("owner/name") and GithubLogToken, a fine-grained token for that
 one repo with Contents read and write. Nothing here talks to comma.
 """
+import json
 import os
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
@@ -39,6 +43,11 @@ SWAGLOG_AFTER_S = 600.
 
 SEGMENT_RE = re.compile(r"^([0-9a-f]{8}--[0-9a-f]{10})--(\d+)$")
 SWAGLOG_RE = re.compile(r"^swaglog\.(\d+)$")
+
+API_URL = "https://api.github.com"
+UPLOADS_URL = "https://uploads.github.com"
+HTTP_TIMEOUT_S = 60.  # a qlog is about 0.5 MB, over a phone hotspot
+ROUTE_RE = re.compile(r"^[0-9a-f]{8}--[0-9a-f]{10}$")
 
 
 def is_uploaded(path: str) -> bool:
@@ -126,3 +135,68 @@ def pending_swaglogs(swaglog_root: str, windows: list[tuple[str, float, float]])
     except OSError:
       pass  # rotated away while we looked
   return pending
+
+
+def _already_exists(e: urllib.error.HTTPError) -> bool:
+  """Whether a 422 from an asset upload means the asset is there already."""
+  try:
+    errors = json.loads(e.read()).get("errors") or []
+  except (ValueError, AttributeError):
+    return False
+  return any(isinstance(error, dict) and error.get("code") == "already_exists" for error in errors)
+
+
+class GithubReleases:
+  """The GitHub REST calls the uploader needs. `opener` has urlopen's shape, so tests can script answers.
+
+  The token travels in a header, never in a URL: urllib puts URLs in exception messages, and those
+  reach cloudlog."""
+
+  def __init__(self, token: str, repo: str, opener=urllib.request.urlopen):
+    self._token = token
+    self._repo = repo
+    self._opener = opener
+
+  def _call(self, method: str, url: str, data: bytes | None = None, content_type: str = "application/json"):
+    headers = {"Authorization": f"Bearer {self._token}", "Accept": "application/vnd.github+json",
+               "X-GitHub-Api-Version": "2022-11-28", "User-Agent": "sunnypilot-github-uploader"}
+    if data is not None:
+      headers["Content-Type"] = content_type
+    request = urllib.request.Request(url, data=data, headers=headers, method=method)
+    with self._opener(request, timeout=HTTP_TIMEOUT_S) as response:
+      body = response.read()
+    return json.loads(body) if body else None
+
+  def release_id(self, tag: str) -> tuple[int, bool]:
+    """(id, newly created) of the release for `tag`."""
+    try:
+      return self._call("GET", f"{API_URL}/repos/{self._repo}/releases/tags/{tag}")["id"], False
+    except urllib.error.HTTPError as e:
+      if e.code != 404:
+        raise
+    body = json.dumps({"tag_name": tag, "name": tag, "body": "qlogs and swaglog of one drive, uploaded by the device"}).encode()
+    return self._call("POST", f"{API_URL}/repos/{self._repo}/releases", body)["id"], True
+
+  def upload(self, release_id: int, name: str, data: bytes) -> None:
+    url = f"{UPLOADS_URL}/repos/{self._repo}/releases/{release_id}/assets?{urllib.parse.urlencode({'name': name})}"
+    try:
+      self._call("POST", url, data, "application/octet-stream")
+    except urllib.error.HTTPError as e:
+      if not (e.code == 422 and _already_exists(e)):
+        raise
+
+  def prune(self, keep: int = KEEP_DRIVES) -> None:
+    """Delete the device's releases beyond the `keep` newest, with their tags. Other releases stay.
+
+    Newest by creation time on GitHub, not by route counter: GitHub's clock is the one to trust,
+    and the counter starts over if the device's params are reset."""
+    releases = self._call("GET", f"{API_URL}/repos/{self._repo}/releases?per_page=100") or []
+    drive_releases = sorted((r for r in releases if ROUTE_RE.match(str(r.get("tag_name", "")))),
+                            key=lambda r: r["created_at"], reverse=True)
+    for release in drive_releases[keep:]:
+      self._call("DELETE", f"{API_URL}/repos/{self._repo}/releases/{release['id']}")
+      try:
+        self._call("DELETE", f"{API_URL}/repos/{self._repo}/git/refs/tags/{release['tag_name']}")
+      except urllib.error.HTTPError as e:
+        if e.code not in (404, 422):  # the tag is gone already
+          raise
