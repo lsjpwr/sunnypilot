@@ -32,7 +32,7 @@ from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 
 # ponytail: one asset per segment and per swaglog file, so a drive over about 8 h reaches GitHub's
 # 1000 assets per release. Bundle several segments per asset if drives ever get that long.
-KEEP_DRIVES = 10
+KEEP_DRIVES = 30  # routes, one per onroad cycle: a busy day makes about ten
 UPLOAD_ATTR_NAME = "user.github.upload"  # comma's uploader marks user.upload, sunnylink's user.sunny.upload
 UPLOAD_ATTR_VALUE = b"1"
 # loggerd removes a segment's rlog.lock and only then flushes the segment's files
