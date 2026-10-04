@@ -337,6 +337,18 @@ class TestGithubUploader(LogDirs):
       uploader.step()
     self.assertEqual(len(uploader.pending()), 1)
 
+  def test_a_file_github_refuses_for_good_is_skipped(self):
+    path = self.segment(1, 0)
+    self.segment(1, 1)
+    releases = FakeReleases()
+    releases.upload_error = http_error(422, {"message": "Validation Failed", "errors": [{"resource": "ReleaseAsset", "code": "custom", "field": "size"}]})
+    uploader = self.uploader(releases)
+    self.assertTrue(uploader.step())
+    self.assertTrue(is_uploaded(path))
+    releases.upload_error = None
+    self.assertTrue(uploader.step())
+    self.assertEqual([name for _, name, _ in releases.assets], [f"{route(1)}--1--qlog.zst"])
+
 
 class FakeParams:
   def __init__(self, **values):

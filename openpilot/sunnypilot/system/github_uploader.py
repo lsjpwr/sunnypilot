@@ -257,6 +257,12 @@ class GithubUploader:
     except urllib.error.HTTPError as e:
       if e.code == 404:
         self._release_ids.pop(route, None)  # deleted on GitHub meanwhile; the next step makes it again
+      elif e.code == 422:
+        # GitHub refuses this file for good (an empty qlog left by a power cut, a release's 1001st
+        # asset). Skip it, or it would hold back every file after it.
+        cloudlog.warning("github_uploader: GitHub refused %s (HTTP 422), skipped", name)
+        mark_uploaded(path)
+        return True
       raise
     mark_uploaded(path)
     return True
