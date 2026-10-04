@@ -27,6 +27,7 @@ import urllib.request
 import zstandard
 
 from openpilot.common.swaglog import cloudlog
+from openpilot.system.loggerd.config import SEGMENT_LENGTH
 from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 
 # ponytail: one asset per segment and per swaglog file, so a drive over about 8 h reaches GitHub's
@@ -122,7 +123,10 @@ def drive_windows(log_root: str, keep: int = KEEP_DRIVES) -> list[tuple[str, flo
       except OSError:
         pass
     if mtimes:
-      windows.append((route, min(mtimes) - SWAGLOG_BEFORE_S, max(mtimes) + SWAGLOG_AFTER_S))
+      # A segment closed before timed set the clock (the device boots two months behind) keeps a
+      # bogus early mtime, so the start can't be earlier than the drive's segments allow.
+      start = max(min(mtimes), max(mtimes) - SEGMENT_LENGTH * (len(directories) + 1))
+      windows.append((route, start - SWAGLOG_BEFORE_S, max(mtimes) + SWAGLOG_AFTER_S))
   return windows
 
 

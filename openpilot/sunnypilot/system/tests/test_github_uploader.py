@@ -97,6 +97,10 @@ class TestPendingQlogs(LogDirs):
     os.makedirs(os.path.join(self.log_root, "crash"))
     self.assertEqual(pending_qlogs(self.log_root, NOW), [])
 
+  def test_a_segment_written_before_the_clock_went_back_still_settles(self):
+    path = self.segment(1, 0, mtime=NOW + 3600)  # the clock went back after the segment closed
+    self.assertEqual([p for _, _, p in pending_qlogs(self.log_root, NOW)], [path])
+
 
 class TestPendingSwaglogs(LogDirs):
   def test_each_file_goes_to_the_drive_it_was_written_during(self):
@@ -123,6 +127,15 @@ class TestPendingSwaglogs(LogDirs):
     mark_uploaded(self.swaglog(1, NOW - 60))
     self.swaglog(2, NOW)
     self.assertEqual(pending_swaglogs(self.swaglog_root, drive_windows(self.log_root)), [])
+
+  def test_a_segment_closed_before_the_clock_was_set_does_not_stretch_the_window(self):
+    self.segment(1, 0, mtime=NOW - 60 * 86400)  # closed before timed set the clock: the device boots two months behind
+    self.segment(1, 1, mtime=NOW - 60)
+    self.segment(1, 2, mtime=NOW)
+    self.swaglog(1, NOW - 3 * 3600)  # parked hours before the drive
+    during = self.swaglog(2, NOW - 90)
+    self.swaglog(3, NOW)  # still being written
+    self.assertEqual(pending_swaglogs(self.swaglog_root, drive_windows(self.log_root)), [(route(1), "swaglog.0000000002.zst", during)])
 
 
 def http_error(code: int, body: dict | None = None) -> urllib.error.HTTPError:
