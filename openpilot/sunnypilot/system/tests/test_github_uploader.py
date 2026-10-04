@@ -307,6 +307,22 @@ class TestGithubUploader(LogDirs):
     self.assertTrue(uploader.step())
     self.assertEqual(releases.lookups, 2)
 
+  def test_a_file_deleted_before_it_is_read_is_skipped(self):
+    releases = FakeReleases()
+    uploader = self.uploader(releases)
+    uploader.pending = lambda: [(route(1), f"{route(1)}--0--qlog.zst", os.path.join(self.log_root, "gone"))]
+    self.assertTrue(uploader.step())
+    self.assertEqual(releases.assets, [])
+
+  def test_a_file_that_cannot_be_read_raises_and_stays_pending(self):
+    directory = os.path.join(self.log_root, f"{route(1)}--0")
+    os.makedirs(os.path.join(directory, "qlog.zst"))  # open() fails with IsADirectoryError, not FileNotFoundError
+    os.utime(directory, (OLD, OLD))
+    uploader = self.uploader(FakeReleases())
+    with self.assertRaises(IsADirectoryError):
+      uploader.step()
+    self.assertEqual(len(uploader.pending()), 1)
+
 
 if __name__ == "__main__":
   unittest.main()

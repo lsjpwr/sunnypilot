@@ -235,7 +235,7 @@ class GithubUploader:
     try:
       with open(path, "rb") as f:
         data = f.read()
-    except OSError:
+    except FileNotFoundError:
       return True  # the deleter took it, and the next step moves on
     if name.startswith("swaglog."):
       data = zstandard.ZstdCompressor(level=SWAGLOG_ZSTD_LEVEL).compress(data)
@@ -279,16 +279,15 @@ def main() -> None:
     try:
       time.sleep(UPLOAD_GAP_S if uploader.step() else IDLE_S)
       backoff = 0.
+      continue
     except urllib.error.HTTPError as e:
       # The status only: a response body can echo the request.
       cloudlog.warning("github_uploader: HTTP %d", e.code)
-      backoff = min(max(2 * backoff, IDLE_S), MAX_BACKOFF_S)
-      time.sleep(backoff)
     except Exception as e:
       # The network, a timeout: the type only, since a message can carry a URL.
       cloudlog.warning("github_uploader: upload failed: %s", type(e).__name__)
-      backoff = min(max(2 * backoff, IDLE_S), MAX_BACKOFF_S)
-      time.sleep(backoff)
+    backoff = min(max(2 * backoff, IDLE_S), MAX_BACKOFF_S)
+    time.sleep(backoff)
 
 
 if __name__ == "__main__":
