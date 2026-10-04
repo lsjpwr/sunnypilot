@@ -14,8 +14,8 @@ import urllib.error
 
 import zstandard
 
-from openpilot.sunnypilot.system.github_uploader import (KEEP_DRIVES, SETTLE_S, SWAGLOG_AFTER_S, GithubReleases, GithubUploader, drive_windows,
-                                                         is_uploaded, mark_uploaded, pending_qlogs, pending_swaglogs)
+from openpilot.sunnypilot.system.github_uploader import (KEEP_DRIVES, SETTLE_S, SWAGLOG_AFTER_S, GithubReleases, GithubUploader, PartialAsset,
+                                                         drive_windows, is_uploaded, mark_uploaded, pending_qlogs, pending_swaglogs)
 from openpilot.system.manager.process_config import procs
 
 NOW = 1_790_000_000.
@@ -143,6 +143,10 @@ def http_error(code: int, body: dict | None = None) -> urllib.error.HTTPError:
   return urllib.error.HTTPError("https://api.github.com", code, "error", None, fp)
 
 
+def already_exists() -> urllib.error.HTTPError:
+  return http_error(422, {"message": "Validation Failed", "errors": [{"resource": "ReleaseAsset", "code": "already_exists", "field": "name"}]})
+
+
 class FakeResponse:
   def __init__(self, payload):
     self._body = b"" if payload is None else json.dumps(payload).encode()
@@ -205,8 +209,25 @@ class TestGithubReleases(unittest.TestCase):
     self.assertEqual(request.get_header("Content-type"), "application/octet-stream")
 
   def test_an_asset_already_there_counts_as_uploaded(self):
-    already = http_error(422, {"message": "Validation Failed", "errors": [{"resource": "ReleaseAsset", "code": "already_exists", "field": "name"}]})
-    GithubReleases(TOKEN, REPO, ScriptedOpener(already)).upload(7, "a", b"x")
+    opener = ScriptedOpener(already_exists(), [{"id": 5, "name": "b", "state": "uploaded", "size": 9}],
+                            [{"id": 6, "name": "a", "state": "uploaded", "size": 1}])
+    GithubReleases(TOKEN, REPO, opener).upload(7, "a", b"x")
+    self.assertEqual(opener.calls()[1:], [("GET", f"https://api.github.com/repos/{REPO}/releases/7/assets?per_page=100&page=1"),
+                                          ("GET", f"https://api.github.com/repos/{REPO}/releases/7/assets?per_page=100&page=2")])
+
+  def test_a_half_made_asset_is_deleted_so_the_file_goes_up_again(self):
+    for asset in ({"id": 6, "name": "a", "state": "starter", "size": 0}, {"id": 6, "name": "a", "state": "uploaded", "size": 2}):
+      with self.subTest(asset=asset):
+        opener = ScriptedOpener(already_exists(), [asset], None)
+        with self.assertRaises(PartialAsset):
+          GithubReleases(TOKEN, REPO, opener).upload(7, "a", b"x")
+        self.assertEqual(opener.calls()[-1], ("DELETE", f"https://api.github.com/repos/{REPO}/releases/assets/6"))
+
+  def test_an_asset_github_does_not_list_yet_is_tried_again(self):
+    opener = ScriptedOpener(already_exists(), [])
+    with self.assertRaises(PartialAsset):
+      GithubReleases(TOKEN, REPO, opener).upload(7, "a", b"x")
+    self.assertEqual(len(opener.requests), 2)
 
   def test_other_upload_errors_raise(self):
     for error in (http_error(422, {"message": "Validation Failed", "errors": [{"code": "invalid"}]}), http_error(422), http_error(403)):

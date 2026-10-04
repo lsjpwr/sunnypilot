@@ -159,6 +159,10 @@ def _already_exists(e: urllib.error.HTTPError) -> bool:
   return any(isinstance(error, dict) and error.get("code") == "already_exists" for error in errors)
 
 
+class PartialAsset(Exception):
+  """GitHub held a half-made asset under this name (or doesn't list it yet): the file stays pending and goes up again."""
+
+
 class GithubReleases:
   """The GitHub REST calls the uploader needs. `opener` has urlopen's shape, so tests can script answers.
 
@@ -197,6 +201,24 @@ class GithubReleases:
     except urllib.error.HTTPError as e:
       if not (e.code == 422 and _already_exists(e)):
         raise
+      self._check_existing(release_id, name, len(data))
+
+  def _check_existing(self, release_id: int, name: str, size: int) -> None:
+    """Accept an asset already there only if it is whole.
+
+    An upload cut off midway leaves a half-made asset holding the name, and GitHub answers every
+    retry with already_exists. Such an asset is deleted and PartialAsset raised, so the file stays
+    pending and goes up again."""
+    page = 1
+    while assets := self._call("GET", f"{API_URL}/repos/{self._repo}/releases/{release_id}/assets?per_page=100&page={page}"):
+      asset = next((a for a in assets if a.get("name") == name), None)
+      if asset is not None:
+        if asset.get("state") == "uploaded" and asset.get("size") == size:
+          return
+        self._call("DELETE", f"{API_URL}/repos/{self._repo}/releases/assets/{asset['id']}")
+        raise PartialAsset(name)
+      page += 1
+    raise PartialAsset(name)  # not listed yet: try again later
 
   def prune(self, keep: int = KEEP_DRIVES) -> None:
     """Delete the device's releases beyond the `keep` newest, with their tags. Other releases stay.
