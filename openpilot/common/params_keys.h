@@ -308,6 +308,13 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Offroad_KoreaTeslaAuth", {CLEAR_ON_MANAGER_START, JSON}},
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
 
+    // Written by hand over ssh, read by sunnypilot/system/github_uploader.py: the owner's repo
+    // ("owner/name") and a fine-grained token for it. Not BACKUP: a backup ships the token off the
+    // device. DONT_LOG on the token: loggerd copies every other param's value into initData, the
+    // first record of every qlog, and qlogs are what the uploader sends.
+    {"GithubLogRepo", {PERSISTENT, STRING, ""}},
+    {"GithubLogToken", {PERSISTENT | DONT_LOG, STRING, ""}},
+
     // Speed Limit
     {"SpeedLimitMode", {PERSISTENT | BACKUP, INT, "1"}},
     {"SpeedLimitOffsetType", {PERSISTENT | BACKUP, INT, "0"}},

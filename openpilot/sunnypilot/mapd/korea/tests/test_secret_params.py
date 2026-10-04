@@ -11,7 +11,7 @@ import unittest
 PARAMS_KEYS_H = pathlib.Path(__file__).resolve().parents[4] / "common" / "params_keys.h"
 # loggerd copies the value of every param without DONT_LOG into initData, the first record of
 # every boot log and qlog, and the uploaders send both off the device (system/loggerd/logger.cc).
-SECRETS = ("KoreaMapApiKey", "KoreaRouteApiKey", "KoreaTeslaClientId", "KoreaTeslaOwnerRefreshToken",
+SECRETS = ("GithubLogToken", "KoreaMapApiKey", "KoreaRouteApiKey", "KoreaTeslaClientId", "KoreaTeslaOwnerRefreshToken",
            "KoreaTeslaRefreshToken", "KoreaTeslaVin")
 
 

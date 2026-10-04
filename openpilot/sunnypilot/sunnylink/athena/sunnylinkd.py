@@ -49,6 +49,8 @@ BLOCKED_PARAMS = {
   "AdbEnabled",
   "CompletedSunnylinkConsentVersion",
   "CompletedTrainingVersion",
+  "GithubLogRepo",   # Where every drive's logs go (sunnypilot/system/github_uploader.py)
+  "GithubLogToken",  # Write access to that repo
   "GithubUsername",  # Could grant SSH access
   "GithubSshKeys",   # Direct SSH key injection
   "HasAcceptedTerms",
@@ -91,6 +93,7 @@ SENSITIVE_PARAMS = {
 # Parameters getParams never sends off the device, however it is asked. Keep them out of BACKUP
 # in params_keys.h too.
 REMOTE_READ_DENYLIST = {
+  "GithubLogToken",  # writes to the repo that holds every drive's GPS track (sunnypilot/system/github_uploader.py)
   "KoreaTeslaRefreshToken",  # reads the car's location for three months (korea/tesla.py)
   "KoreaTeslaOwnerRefreshToken",  # the Tesla app's own login: the whole account (korea/tesla.py)
 }

@@ -16,6 +16,7 @@ import zstandard
 
 from openpilot.sunnypilot.system.github_uploader import (KEEP_DRIVES, SETTLE_S, SWAGLOG_AFTER_S, GithubReleases, GithubUploader, drive_windows,
                                                          is_uploaded, mark_uploaded, pending_qlogs, pending_swaglogs)
+from openpilot.system.manager.process_config import procs
 
 NOW = 1_790_000_000.
 OLD = NOW - 3600.  # settled long ago
@@ -322,6 +323,24 @@ class TestGithubUploader(LogDirs):
     with self.assertRaises(IsADirectoryError):
       uploader.step()
     self.assertEqual(len(uploader.pending()), 1)
+
+
+class FakeParams:
+  def __init__(self, **values):
+    self.values = values
+
+  def get(self, key):
+    return self.values.get(key)
+
+
+class TestProcess(unittest.TestCase):
+  def test_runs_only_with_a_repo_and_a_token(self):
+    process = next(p for p in procs if p.name == "github_uploader")
+    self.assertEqual(process.module, "openpilot.sunnypilot.system.github_uploader")
+    for values, expected in (({}, False), ({"GithubLogRepo": REPO}, False), ({"GithubLogToken": TOKEN}, False),
+                             ({"GithubLogRepo": REPO, "GithubLogToken": TOKEN}, True)):
+      with self.subTest(values=values):
+        self.assertEqual(process.should_run(True, FakeParams(**values), None), expected)
 
 
 if __name__ == "__main__":

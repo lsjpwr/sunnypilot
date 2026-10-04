@@ -42,6 +42,12 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
 
     self.assertEqual(len(self.saved_params), 0)
 
+  def test_saveParams_cannot_redirect_the_drive_logs(self):
+    """GithubLogRepo and GithubLogToken decide where every drive's GPS track goes (sunnypilot/system/github_uploader.py)."""
+    sunnylinkd.saveParams({"GithubLogRepo": "attacker/logs", "GithubLogToken": "github_pat_ATTACKER"})
+
+    self.assertEqual(len(self.saved_params), 0)
+
   def test_saveParams_allowed(self):
     allowed_params = {
       "SpeedLimitOffset": "5",
@@ -175,3 +181,12 @@ class TestGetParams(OpenpilotTestCase):
     self.assertNotIn("KoreaTeslaRefreshToken", response)
     self.assertNotIn("KoreaTeslaOwnerRefreshToken", response)
     self.assertEqual([p["key"] for p in json.loads(response["params"])], ["KoreaRouteApiKey"])
+
+  def test_github_log_token_never_leaves_the_device(self):
+    """It can write to the repo that holds every drive's GPS track (sunnypilot/system/github_uploader.py)."""
+    Params().put("GithubLogToken", "github_pat_TEST", block=True)
+    Params().put("GithubLogRepo", "owner/comma-logs", block=True)
+
+    response = sunnylinkd.getParams(["GithubLogToken", "GithubLogRepo"])
+
+    self.assertEqual([p["key"] for p in json.loads(response["params"])], ["GithubLogRepo"])

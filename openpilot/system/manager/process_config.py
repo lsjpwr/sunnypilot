@@ -103,6 +103,9 @@ def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
 
   return always_run(started, params, CP)
 
+def github_uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return bool(params.get("GithubLogToken")) and bool(params.get("GithubLogRepo"))
+
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
 
@@ -173,6 +176,9 @@ procs += [
   # Models
   PythonProcess("models_manager", "openpilot.sunnypilot.models.manager", only_offroad),
   NativeProcess("modeld_tinygrad", "openpilot/sunnypilot/modeld_v2", ["./modeld"], and_(only_onroad, is_tinygrad_model)),
+
+  # Drive logs to the owner's GitHub repo
+  PythonProcess("github_uploader", "openpilot.sunnypilot.system.github_uploader", github_uploader_ready),
 
   # Backup
   PythonProcess("backup_manager", "openpilot.sunnypilot.sunnylink.backups.manager", and_(only_offroad, sunnylink_ready_shim)),
