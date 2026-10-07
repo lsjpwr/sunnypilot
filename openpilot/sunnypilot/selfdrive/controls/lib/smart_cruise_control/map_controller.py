@@ -8,7 +8,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.sunnypilot import PARAMS_UPDATE_PERIOD
 from openpilot.sunnypilot.mapd import MapSource
-from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
+from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS, CAMERA_MAX_DISTANCE_M
 from openpilot.sunnypilot.navd.helpers import coordinate_from_param, Coordinate
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control import MIN_V
 
@@ -32,8 +32,9 @@ TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you rea
 # every camera slowdown hit on 2026-10-03.
 SLOWDOWN_DECEL_MIN = 0.5
 SLOWDOWN_DECEL_MAX = 1.2
-# m/s^2. A camera point says where its slowdown starts (ramp_m); the decel is then what takes the set speed
-# down to the camera's limit over that stretch, never firmer than MapSlowdownDecel and never softer than this.
+# m/s^2. A camera point says when its slowdown starts (start_s: seconds before the camera at the car's speed);
+# the decel is then what takes that speed down to the camera's limit from there, never firmer than
+# MapSlowdownDecel and never softer than this.
 RAMP_DECEL_MIN = 0.05
 
 
@@ -61,6 +62,11 @@ def distance_to_point(ax, ay, bx, by):
   return R * c  # in meters
 
 
+def allowed_speed(tv: float, decel: float, d: float) -> float:
+  """The speed allowed d metres before a point so that a steady decel still reaches tv TARGET_OFFSET seconds early."""
+  return math.sqrt(tv ** 2 + 2. * decel * max(d - tv * TARGET_OFFSET, 0.))
+
+
 class SmartCruiseControlMap:
   v_target: float = 0
   a_target: float = 0.
@@ -82,6 +88,11 @@ class SmartCruiseControlMap:
     self.target_lat = 0.0
     self.target_lon = 0.0
     self.frame = -1
+    # the camera point being slowed for (its lat, lon) and the speed its slowdown is worked out from: the car's
+    # own until the slowdown starts, then held (_camera_allowed)
+    self._camera_key: tuple[float, float] | None = None
+    self._camera_v = 0.
+    self._camera_started = False
 
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
     self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
@@ -156,9 +167,10 @@ class SmartCruiseControlMap:
     forward_points = self.target_velocities[min_idx:]
     forward_distances = distances[min_idx:]
 
-    # The speed allowed here so that a steady slowdown_decel still reaches each point's speed
-    # TARGET_OFFSET seconds before the point; the lowest of them is the target. A point above the
-    # current speed counts too: it keeps the car from speeding up past what it can shed in time.
+    # The speed allowed here so that a steady decel still reaches each point's speed TARGET_OFFSET seconds
+    # before the point; the lowest of them is the target. Bumps and curves slow at slowdown_decel, a camera at
+    # what its start works out to (_camera_allowed). A point above the current speed counts too: it keeps the
+    # car from speeding up past what it can shed in time.
     min_v = 100.0
     target_lat = 0.0
     target_lon = 0.0
@@ -166,7 +178,10 @@ class SmartCruiseControlMap:
       tv = target_velocity["velocity"]
       if tv <= 0.:
         continue  # no speed to slow to: the old state machine ignored a 0 target too
-      v_allowed = math.sqrt(tv ** 2 + 2. * self._decel(target_velocity, tv) * max(d - tv * TARGET_OFFSET, 0.))
+      if "start_s" in target_velocity:
+        v_allowed = self._camera_allowed(target_velocity, tv, d)
+      else:
+        v_allowed = allowed_speed(tv, self.slowdown_decel, d)
       if v_allowed < min_v:
         min_v = v_allowed
         target_lat, target_lon = target_velocity["latitude"], target_velocity["longitude"]
@@ -175,16 +190,27 @@ class SmartCruiseControlMap:
     self.target_lat = target_lat
     self.target_lon = target_lon
 
-  def _decel(self, point: dict, tv: float) -> float:
-    """MapSlowdownDecel, or for a camera point that says where its slowdown starts, the decel that takes the
-    set speed down to tv from there: a little too fast eases off over the whole stretch, far too fast starts
-    earlier at MapSlowdownDecel. The set speed, not v_ego: a decel worked out from v_ego would always let the
-    car keep the speed it has."""
-    ramp = point.get("ramp_m")
-    if ramp is None:
-      return self.slowdown_decel
-    needed = (self.v_cruise ** 2 - tv ** 2) / (2. * max(ramp - tv * TARGET_OFFSET, 1.))
-    return max(RAMP_DECEL_MIN, min(needed, self.slowdown_decel))
+  def _camera_allowed(self, point: dict, tv: float, d: float) -> float:
+    """A camera's slowdown starts start_s seconds before it at the car's speed (1 km at 100 km/h by default,
+    capped where cameras come into view) and is as gentle as reaching tv by the point allows: a little too
+    fast eases off over the whole stretch, far too fast starts earlier at MapSlowdownDecel.
+
+    The speed is the car's until the slowdown starts, then held for this camera. Worked out afresh from a
+    speed the slowdown itself lowers, the start would keep moving in with the car and the braking would bunch
+    up at the camera. Not the set speed: under auto SLA the car often runs well under it, and a start worked
+    out from the set speed came late (615 m instead of 1150 m at 115 under a 125 set speed)."""
+    key = (point["latitude"], point["longitude"])
+    if key != self._camera_key:
+      self._camera_key, self._camera_started = key, False
+    if not self._camera_started:
+      self._camera_v = self.v_ego
+    start = min(point["start_s"] * self._camera_v, CAMERA_MAX_DISTANCE_M)
+    ramp = max(start - point.get("margin_m", 0.), 0.)
+    needed = (self._camera_v ** 2 - tv ** 2) / (2. * max(ramp - tv * TARGET_OFFSET, 1.))
+    v_allowed = allowed_speed(tv, max(RAMP_DECEL_MIN, min(needed, self.slowdown_decel)), d)
+    if v_allowed < self._camera_v:
+      self._camera_started = True  # the slowdown has begun
+    return v_allowed
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, TURNING

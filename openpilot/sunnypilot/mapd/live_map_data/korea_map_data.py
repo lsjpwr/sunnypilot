@@ -53,9 +53,12 @@ BUMP_TRAPEZOID_SPEED_RANGE = (20, 50)
 # m, how far before a camera to be at its limit. Bounds, not the default -- that lives in
 # params_keys.h, like the bump speeds.
 CAMERA_MARGIN_RANGE = (0, 300)
-# m, how far before a camera to start slowing for it. Up to CAMERA_MAX_DISTANCE_M, where cameras come
-# into view; 0 leaves the start to the slowdown strength alone, as before 2026-10-07.
+# m, how far before a camera to start slowing for it at CAMERA_SLOWDOWN_SPEED. SCC-Map scales the start with
+# the car's speed and caps it at CAMERA_MAX_DISTANCE_M, where cameras come into view; 0 leaves the start to the
+# slowdown strength alone, as before 2026-10-07.
 CAMERA_SLOWDOWN_RANGE = (0, 2000)
+# m/s, the speed KoreaCameraSlowdownDistance is the start at
+CAMERA_SLOWDOWN_SPEED = 100 * CV.KPH_TO_MS
 
 # A 구간단속 section is dropped after this many times its straight-line length, plus the slack:
 # the road winds, but a car that has driven well past that has left the section.
@@ -431,9 +434,9 @@ class KoreaMapData(BaseMapData):
     stale car position) forever -- the car keeps moving, SCC-Map keeps seeing a constant
     distance, and the slowdown never releases.
     """
-    # (lat, lon, velocity, extra keys): a camera's point also says how far before it the slowdown starts
-    # (camera_slowdown_m less the margin it already sits short of the camera), and SCC-Map works out how
-    # firmly; bumps and curves keep the slowdown strength
+    # (lat, lon, velocity, extra keys): a camera's point also says when its slowdown starts -- start_s seconds
+    # before the camera at the car's speed, so camera_slowdown_m out at 100 km/h -- and how far short of the
+    # camera it sits; SCC-Map works out the start and how firmly. Bumps and curves keep the slowdown strength
     points: list[tuple[float, float, float, dict]] = []
     if self.localizer_valid and self.last_position is not None:
       if self.bump_enabled and self.bump is not None:
@@ -442,7 +445,8 @@ class KoreaMapData(BaseMapData):
           points.append((self.bump.lat, self.bump.lon, target, {}))
       camera = self.camera_point()
       if camera is not None:
-        points.append((*camera, {"ramp_m": max(self.camera_slowdown_m - self.camera_margin, 0)}))
+        points.append((*camera, {"start_s": self.camera_slowdown_m / CAMERA_SLOWDOWN_SPEED,
+                                 "margin_m": self.camera_margin}))
       points.extend((*curve, {}) for curve in self.curve_points)
       points.sort(key=lambda p: self.last_position.distance_to(Coordinate(p[0], p[1])))
 

@@ -790,16 +790,20 @@ class TestCameraTarget(unittest.TestCase):
     # the camera's own limit: no speed limit offset on this path
     self.assertAlmostEqual(points[0]["velocity"], 50 * CV.KPH_TO_MS)
 
-  def test_the_camera_point_carries_where_its_slowdown_starts(self):
-    # SCC-Map works out the decel: 1000 m before the camera is 950 m before a point 50 m short of it
+  def test_the_camera_point_carries_when_its_slowdown_starts(self):
+    # SCC-Map scales the start with the car's speed: 1000 m at 100 km/h is 36 s. The margin tells it how far
+    # short of the camera the point already sits; bumps and curves carry neither
     data = make_bump_data(bump=Bump(lat=37.5000, lon=127.0217, kind=BUMP_ARCH, distance_m=150.),
                           camera=self.camera(), margin=50, slowdown=1000, position=self.CAR)
     data.curve_points = [(37.5000, 127.0234, 12.)]
-    self.assertEqual([p.get("ramp_m") for p in self.publish(data)], [None, None, 950])
+    points = self.publish(data)
+    self.assertEqual([p.get("margin_m") for p in points], [None, None, 50])
+    self.assertEqual(["start_s" in p for p in points], [False, False, True])
+    self.assertAlmostEqual(points[2]["start_s"], 36.)
 
-  def test_a_slowdown_start_inside_the_margin_leaves_no_ramp(self):
-    points = self.publish(make_bump_data(camera=self.camera(), margin=150, slowdown=100, position=self.CAR))
-    self.assertEqual(points[0]["ramp_m"], 0)
+  def test_no_slowdown_start_is_a_zero_start(self):
+    points = self.publish(make_bump_data(camera=self.camera(), margin=150, slowdown=0, position=self.CAR))
+    self.assertEqual(points[0]["start_s"], 0.)
 
   def test_a_zero_margin_puts_the_point_on_the_camera(self):
     points = self.publish(make_bump_data(camera=self.camera(), margin=0, position=self.CAR))

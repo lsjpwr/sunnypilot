@@ -33,6 +33,10 @@ def ramp(distance_m, velocity, decel):
   return math.sqrt(velocity ** 2 + 2. * decel * max(distance_m - velocity * TARGET_OFFSET, 0.))
 
 
+# s: the default camera slowdown start, 1 km before the camera at 100 km/h (korea_map_data's start_s)
+START_1KM = 1000. / kph(100)
+
+
 class TestSmartCruiseControlMap(OpenpilotTestCase):
 
   def setup_method(self):
@@ -157,13 +161,15 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
       self.scc_m.update(True, False, 0., 0., 0.)
     assert self.scc_m.state == VisionState.enabled
 
-  def put_point(self, distance_m, velocity, ramp_m=None):
-    """One point (camera, bump or curve) straight ahead of a car at 0, 0; a camera's says where its slowdown starts."""
-    lon = (distance_m / R) * (180.0 / math.pi)
-    point = {"latitude": 0.0, "longitude": lon, "velocity": velocity}
-    if ramp_m is not None:
-      point["ramp_m"] = ramp_m
-    self.mem_params.put("LastGPSPosition", json.dumps({"latitude": 0.0, "longitude": 0.0}), block=True)
+  def put_point(self, distance_m, velocity, start_s=None, margin_m=150., car_m=0.):
+    """One point (camera, bump or curve) distance_m ahead of a car car_m east of 0, 0. A camera's says when its
+    slowdown starts and how far short of the camera it sits; the same car_m + distance_m is the same camera."""
+    def lon(m):
+      return (m / R) * (180.0 / math.pi)
+    point = {"latitude": 0.0, "longitude": lon(car_m + distance_m), "velocity": velocity}
+    if start_s is not None:
+      point.update(start_s=start_s, margin_m=margin_m)
+    self.mem_params.put("LastGPSPosition", json.dumps({"latitude": 0.0, "longitude": lon(car_m)}), block=True)
     self.mem_params.put("MapTargetVelocities", json.dumps([point]), block=True)
 
   def run_at(self, v_ego_kph, v_cruise_kph):
@@ -215,29 +221,70 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     assert CURVE_HORIZON_M >= needed(kph(125), MIN_V_MS)  # a hairpin off a 125 km/h road
     slowest_bump = kph(min(BUMP_ARCH_SPEED_RANGE[0], BUMP_TRAPEZOID_SPEED_RANGE[0]))
     assert BUMP_MAX_DISTANCE_M >= needed(kph(60), slowest_bump)  # the slowest bump setting on a 60 road
-    assert CAMERA_MAX_DISTANCE_M >= CAMERA_SLOWDOWN_RANGE[1]  # a camera is seen before its farthest slowdown start
+    # a camera is seen before its slowdown starts at 100 km/h; faster, the start is capped there (test below)
+    assert CAMERA_MAX_DISTANCE_M >= CAMERA_SLOWDOWN_RANGE[1]
 
-  def test_a_camera_slowdown_starts_where_its_point_says_however_little_too_fast(self):
-    # 110 on the set speed, a 100 camera: from 850 m before its point, just firm enough to get there
-    decel = (kph(110) ** 2 - kph(100) ** 2) / (2. * (850. - kph(100) * TARGET_OFFSET))
-    self.put_point(851., kph(100), ramp_m=850.)
-    self.run_at(110, 110)
-    assert self.scc_m.state == MapState.enabled
-    self.put_point(600., kph(100), ramp_m=850.)
-    self.run_at(110, 110)
+  def test_a_camera_slowdown_starts_in_proportion_to_the_speed(self):
+    # 1 km before the camera at 100 km/h: 1.1 km at 110 and 1.2 km at 120, counted from a point 150 m short of
+    # the camera, and just firm enough to reach the limit there however little too fast
+    for v_kph in (110, 120):
+      ramp_m = START_1KM * kph(v_kph) - 150.
+      self.put_point(ramp_m + 5., kph(100), start_s=START_1KM)
+      self.run_at(v_kph, v_kph)
+      assert self.scc_m.state == MapState.enabled, v_kph
+      self.put_point(ramp_m - 10., kph(100), start_s=START_1KM)
+      self.run_at(v_kph, v_kph)
+      assert self.scc_m.is_active, v_kph
+
+  def test_a_camera_slowdown_is_worked_out_from_the_cars_speed_not_the_set_speed(self):
+    # auto SLA holds the car at 115 under a 125 set speed: the slowdown starts 1150 m before the camera, 1000 m
+    # before its point, as if 115 were set
+    decel = (kph(115) ** 2 - kph(100) ** 2) / (2. * (1000. - kph(100) * TARGET_OFFSET))
+    self.put_point(900., kph(100), start_s=START_1KM)
+    self.run_at(115, 125)
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(900., kph(100), decel), places=3)
+
+  def test_a_camera_slowdown_holds_the_speed_it_started_from(self):
+    # started at 120: 500 m on at 105, the target is still on the ramp from 120, not a fresh one from 105
+    decel = (kph(120) ** 2 - kph(100) ** 2) / (2. * (1050. - kph(100) * TARGET_OFFSET))
+    self.put_point(1000., kph(100), start_s=START_1KM)
+    self.run_at(120, 120)
     assert self.scc_m.is_active
-    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(600., kph(100), decel), places=3)
-    # the strength alone would not have started yet
-    assert ramp(600., kph(100), 0.6) > kph(110)
+    self.put_point(500., kph(100), start_s=START_1KM, car_m=500.)
+    self.run_at(105, 120)
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(500., kph(100), decel), places=3)
+
+  def test_the_next_camera_is_worked_out_from_the_cars_speed_again(self):
+    # the hold is per camera: past one held at 120, the next is worked out from the 110 the car has then
+    self.put_point(1000., kph(100), start_s=START_1KM)
+    self.run_at(120, 120)
+    decel = (kph(110) ** 2 - kph(100) ** 2) / (2. * (950. - kph(100) * TARGET_OFFSET))
+    self.put_point(800., kph(100), start_s=START_1KM, car_m=1500.)
+    self.run_at(110, 120)
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(800., kph(100), decel), places=3)
+
+  def test_a_camera_slowdown_starts_no_further_out_than_cameras_are_seen(self):
+    # 2000 m at 100 km/h would be 2400 m at 120, but cameras come into view at CAMERA_MAX_DISTANCE_M: start there,
+    # or the target would step down the moment the camera shows up
+    decel = (kph(120) ** 2 - kph(100) ** 2) / (2. * (CAMERA_MAX_DISTANCE_M - 150. - kph(100) * TARGET_OFFSET))
+    self.put_point(1500., kph(100), start_s=2. * START_1KM)
+    self.run_at(120, 120)
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(1500., kph(100), decel), places=3)
 
   def test_a_camera_slowdown_is_never_firmer_than_the_strength(self):
-    # 145 down to a 30 school zone in 850 m would take 0.9: the strength's 0.6 starts it earlier instead
-    self.put_point(850., kph(30), ramp_m=850.)
+    # 145 down to a 30 school zone from 725 m (500 m at 100 km/h) would take 1.4: the strength's 0.6 starts it earlier
+    self.put_point(850., kph(30), start_s=START_1KM / 2.)
     self.run_at(145, 145)
     self.assertAlmostEqual(self.scc_m.output_v_target, ramp(850., kph(30), 0.6), places=3)
 
-  def test_a_camera_over_the_set_speed_does_not_slow_the_car(self):
-    self.put_point(300., kph(100), ramp_m=850.)
+  def test_no_slowdown_start_leaves_a_camera_to_the_strength(self):
+    # KoreaCameraSlowdownDistance 0: the slowdown starts where the strength alone puts it, as before 2026-10-07
+    self.put_point(300., kph(80), start_s=0.)
+    self.run_at(110, 125)
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300., kph(80), 0.6), places=3)
+
+  def test_a_camera_limit_over_the_cars_speed_does_not_slow_it(self):
+    self.put_point(300., kph(100), start_s=START_1KM)
     self.run_at(90, 90)
     assert self.scc_m.state == MapState.enabled
 
