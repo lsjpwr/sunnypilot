@@ -11,10 +11,10 @@ V_CRUISE_UNSET = 255.
 NUDGE_MIN_SPEED = 8.33
 # m/s. The Tesla set speed moves in whole km/h or mph, so anything smaller is noise.
 SCROLL_EPSILON = 1e-3
-# s. Inside a 구간단속 section, time lost to a slowdown comes back above the section's pace and a
+# s. Inside a 구간단속 section, time lost to a slowdown comes back above the section's limit and a
 # lead the driver took is given back below it, at credit / SECTION_CREDIT_TAU.
 SECTION_CREDIT_TAU = 60.
-# m/s (10 km/h). Giving a lead back never takes the target further under the pace than this.
+# m/s (10 km/h). Giving a lead back never takes the target further under the limit than this.
 SECTION_PAYBACK_MAX = 2.78
 
 
@@ -40,12 +40,10 @@ class AutoSpeedLimit:
   the driver scrolls in while engaged moves the target by the same amount (the nudge), and the
   nudge lasts until cruise is canceled.
 
-  Inside a 구간단속 section (from korea mapd) the target is also capped at the section's pace: its
-  exact limit, moved only by scrolls made inside it and only from then on. Those scrolls move the
-  pace and the road target, each by the same rules as the drive's nudge, and end with the section or
-  a cancel, but for the part of a scroll up that undid a scroll down made before the section: that
-  part stays. Time lost against that pace comes back above it and a lead taken over it is given back
-  below it, so the section average lands on the pace.
+  Inside a 구간단속 section (from korea mapd) the target is also capped at the section's limit, so
+  that the section average lands on it: time lost under it comes back above it, and a lead taken over
+  it is given back below it. A scroll moves no section pace: the set speed it sets is the ceiling
+  there as anywhere.
   """
 
   def __init__(self):
@@ -58,34 +56,24 @@ class AutoSpeedLimit:
 
   def reset(self, limit: float) -> None:
     """Engagement: take the limit as it is, with no hold and no nudge. A 구간단속 section and its
-    credit carry on (track_section keeps them), but a scroll made in it before the cancel is gone."""
+    credit carry on (track_section keeps them)."""
     self.limit = limit
     self.nudge = 0.
-    self.drop_section_scrolls()
     self.changed = False
     self._pending = limit
     self._pending_frames = 0
     self._cluster_prev: float | None = None
 
-  def drop_section_scrolls(self) -> None:
-    """A cancel or a new section: scrolls made in the section are gone."""
-    self.section_nudge = self.section_road_nudge = 0.
-
   @property
   def v_target(self) -> float:
     targets = []
     if self.limit > 0.:
-      # the road target, plus what scrolls made inside a section moved it by
-      targets.append(self.limit + self.nudge + self.section_road_nudge)
+      targets.append(self.limit + self.nudge)
     if self.section > 0.:
-      # a 구간단속 section: its pace, raised by time lost in it or lowered to give a lead back
+      # a 구간단속 section: its limit, raised by time lost in it or lowered to give a lead back
       adjust = max(self.section_credit / SECTION_CREDIT_TAU, -SECTION_PAYBACK_MAX)
-      targets.append(max(self._section_pace + adjust, min(self.section, NUDGE_MIN_SPEED)))
+      targets.append(max(self.section + adjust, min(self.section, NUDGE_MIN_SPEED)))
     return min(targets) if targets else V_CRUISE_UNSET
-
-  @property
-  def _section_pace(self) -> float:
-    return self.section + self.section_nudge
 
   @property
   def section_average(self) -> float:
@@ -97,14 +85,11 @@ class AutoSpeedLimit:
     a new start (a section right after another of the same limit) starts from nothing."""
     if section != self.section or start != self.section_start:
       self.section, self.section_start = section, start
-      # a scroll up made in the section stays only as far as it undid a scroll down from before it
-      self.nudge += min(max(self.section_road_nudge, 0.), max(-self.nudge, 0.))
-      self.drop_section_scrolls()
       self.section_credit = self._section_time = self._section_dist = 0.
     if self.section <= 0.:
       return
-    # credit: how far the car is behind the pace it was asked to keep, in m
-    self.section_credit += (self._section_pace - v_ego) * dt
+    # credit: how far the car is behind the section's limit, in m
+    self.section_credit += (self.section - v_ego) * dt
     self._section_time += dt
     self._section_dist += v_ego * dt
 
@@ -128,26 +113,14 @@ class AutoSpeedLimit:
 
   def _update_nudge(self, v_cruise_cluster: float, scroll_allowed: bool) -> None:
     prev, self._cluster_prev = self._cluster_prev, v_cruise_cluster
-    if prev is None or not scroll_allowed:
+    if prev is None or not scroll_allowed or self.limit <= 0.:
       return
     if abs(v_cruise_cluster - prev) < SCROLL_EPSILON:
       return
-    if self.section > 0.:
-      # inside a section a scroll moves the section's pace and the road target from now on, each
-      # measured from itself; the drive's nudge waits
-      self.section_nudge = _scrolled(self.section_nudge, self.section, prev, v_cruise_cluster)
-      if self.limit > 0.:
-        self.section_road_nudge = _scrolled(self.nudge + self.section_road_nudge, self.limit, prev, v_cruise_cluster) - self.nudge
-    elif self.limit > 0.:
-      self.nudge = _scrolled(self.nudge, self.limit, prev, v_cruise_cluster)
+    self.nudge = _scrolled(self.nudge, self.limit, prev, v_cruise_cluster)
 
   def _clamp_nudge(self) -> None:
-    # a new limit keeps the road target at the floor or above, so a scroll up moves it at once: the
-    # drive's nudge on its own and with the section's scrolls. With no limit there is no road target,
-    # so the clamp waits for the next limit.
-    if self.limit <= 0.:
-      return
-    floor = min(self.limit, NUDGE_MIN_SPEED) - self.limit
-    road = max(self.nudge + self.section_road_nudge, floor)
-    self.nudge = max(self.nudge, floor)
-    self.section_road_nudge = road - self.nudge
+    # a new limit keeps the road target at the floor or above, so a scroll up moves it at once. With
+    # no limit there is no road target, so the clamp waits for the next limit.
+    if self.limit > 0.:
+      self.nudge = max(self.nudge, min(self.limit, NUDGE_MIN_SPEED) - self.limit)

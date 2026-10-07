@@ -434,10 +434,8 @@ class SpeedLimitAssist:
     planner takes the min); under it AutoSpeedLimit gives the road limit TeslaAutoSpeedLimitRoadMode
     lets through, plus offset, held and nudged."""
     if not self.long_enabled or not self.enabled:
+      # the cameras keep timing the section while cruise is off (update_section)
       self.state = SpeedLimitAssistState.disabled
-      # the cameras keep timing the section while cruise is off (update_section), but a scroll made
-      # in it is gone: count the time off against the section's own limit
-      self.auto.drop_section_scrolls()
       return False, False
 
     limit = self._road_limit()

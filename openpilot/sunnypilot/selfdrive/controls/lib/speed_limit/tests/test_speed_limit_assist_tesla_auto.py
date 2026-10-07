@@ -230,33 +230,21 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.drive(1., limit_kph=115, set_kph=125, v_kph=100)
     assert self.target_kph == 100
 
-  def test_a_scroll_inside_a_section_moves_its_pace_from_then_on(self):
-    self.drive(1., limit_kph=115, set_kph=115)
-    self.drive(0.5, limit_kph=115, set_kph=125)
+  def test_a_scroll_inside_a_section_moves_no_pace(self):
+    # the set speed is the ceiling there as anywhere (2026-10-07): a scroll up does not lift the limit,
+    # and time spent under it on a scroll down comes back above it, for the set speed to cap
     self.enter_section(100)
-    self.drive(1., limit_kph=115, set_kph=125, v_kph=100)
-    self.drive(0.5, limit_kph=115, set_kph=130, v_kph=105)
-    assert self.target_kph == 105
-    # the time already driven at 100 is not counted again at 105, so nothing jumps
-    self.drive(60., limit_kph=115, set_kph=130, v_kph=105)
-    assert self.target_kph == 105
-    self.enter_section(0)
-    self.drive(1., limit_kph=115, set_kph=130)
-    assert self.target_kph == 125
+    self.drive(1., limit_kph=0, set_kph=125, v_kph=100)
+    self.drive(0.5, limit_kph=0, set_kph=130, v_kph=100)
+    assert self.target_kph == 100
+    self.drive(12., limit_kph=0, set_kph=70, v_kph=70)
+    # 100 m behind: 100 + 100 m / 60 s = 106
+    assert self.target_kph == 106
 
   def test_a_lower_limit_inside_a_section_still_wins(self):
     self.enter_section(100)
     self.drive(1., limit_kph=92, set_kph=115)
     assert self.target_kph == 92
-
-  def test_cancel_inside_a_section_drops_the_scroll_but_keeps_the_section(self):
-    self.enter_section(100)
-    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
-    self.drive(0.5, limit_kph=115, set_kph=120, v_kph=105)
-    assert self.target_kph == 105
-    self.drive(0.5, limit_kph=115, set_kph=120, v_kph=105, engaged=False)
-    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
-    assert self.target_kph == 100
 
   def test_a_section_holds_even_without_a_road_limit(self):
     self.enter_section(100)
@@ -281,14 +269,8 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     # the driver's foot took the car 50 m ahead: 100 - 50 m / 60 s = 97
     assert self.target_kph == 97
     self.drive(24., limit_kph=115, set_kph=115, v_kph=130)
-    # 250 m ahead would be 85, but paying back stops 10 under the pace
+    # 250 m ahead would be 85, but paying back stops 10 under the limit
     assert self.target_kph == 90
-
-  def test_a_scroll_up_in_a_section_is_not_paid_back(self):
-    self.enter_section(100)
-    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
-    self.drive(60., limit_kph=115, set_kph=120, v_kph=105)
-    assert self.target_kph == 105
 
   def test_the_section_counts_while_cruise_is_off(self):
     self.enter_section(100)
@@ -330,45 +312,12 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
     assert self.target_kph == 100
 
-  def test_cancel_inside_a_section_stops_the_scroll_counting_while_off(self):
-    self.enter_section(100)
-    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
-    self.drive(0.5, limit_kph=115, set_kph=125, v_kph=110)
-    assert self.target_kph == 110
-    # the driver holds the limit with cruise off: nothing to make up when it comes back on
-    self.drive(60., limit_kph=115, set_kph=125, v_kph=100, engaged=False)
-    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
-    assert self.target_kph == 100
-
-  def test_a_scroll_inside_a_section_works_when_the_road_target_is_the_limit(self):
-    # no offset: the road target and the section limit are both 100
-    self.enter_section(100)
-    self.drive(1., limit_kph=100, set_kph=115, v_kph=100)
-    self.drive(0.5, limit_kph=100, set_kph=120, v_kph=105)
-    assert self.target_kph == 105
-
-  def test_a_scroll_down_inside_a_section_takes_effect_at_once(self):
-    self.enter_section(100)
-    self.drive(1., limit_kph=100, set_kph=115, v_kph=100)
-    self.drive(120., limit_kph=100, set_kph=125, v_kph=110)
-    assert self.target_kph == 110
-    self.drive(0.5, limit_kph=100, set_kph=105, v_kph=90)
-    assert self.target_kph == 90
-
   def test_raising_the_set_speed_to_the_section_limit_is_not_a_scroll(self):
     # the Tesla number held the car under the section limit; raising it to the limit adds no pace
     self.enter_section(100)
     self.drive(1., limit_kph=115, set_kph=92, v_kph=92)
     self.drive(0.5, limit_kph=115, set_kph=100, v_kph=100)
     assert self.target_kph == 100
-
-  def test_a_scroll_up_after_the_floor_responds_at_once(self):
-    self.enter_section(100)
-    self.drive(1., limit_kph=115, set_kph=115, v_kph=100)
-    self.drive(0.5, limit_kph=115, set_kph=30, v_kph=30)
-    assert self.target_kph == 30
-    self.drive(0.5, limit_kph=115, set_kph=40, v_kph=30)
-    assert self.target_kph == 40
 
   def test_a_scroll_down_inside_a_section_moves_a_road_target_holding_the_car(self):
     # no offset, and a jam left the car 15 km/h behind: the road target holds it while it catches up
@@ -394,17 +343,6 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     assert self.target_kph == 30
     self.drive(0.5, limit_kph=92, set_kph=40, v_kph=30)
     assert self.target_kph == 40
-
-  def test_raising_the_set_speed_over_a_lower_road_target_moves_it_as_outside_a_section(self):
-    # the Tesla number sat on the tunnel's road target: raising it moves the target the same way it
-    # would outside a section, while the section's pace takes only the part above the section limit
-    self.enter_section(100)
-    self.drive(1., limit_kph=92, set_kph=92, v_kph=92)
-    self.drive(0.5, limit_kph=92, set_kph=102, v_kph=92)
-    assert self.target_kph == 102
-    # out of the tunnel: the pace is 102, not 110
-    self.drive(3., limit_kph=115, set_kph=102, v_kph=102)
-    assert self.target_kph == 102
 
   def test_a_lower_road_limit_keeps_a_scrolled_down_road_target_at_the_floor(self):
     self.enter_section(100)
@@ -435,32 +373,7 @@ class TestTeslaAutoSpeedLimitAssist(OpenpilotTestCase):
     self.drive(3., limit_kph=92, set_kph=105, v_kph=82)
     assert self.target_kph == 82
 
-  def test_a_scroll_up_in_a_section_that_undid_one_before_it_outlasts_the_section(self):
-    # limit 115, Tesla 125, scroll to 50 (target 40), then to 130 inside a 100 section (target 120):
-    # after the section the 75 that undid the scroll down stays, the 5 above 115 was the section's own
-    self.drive(1., limit_kph=115, set_kph=125, v_kph=115)
-    self.drive(0.5, limit_kph=115, set_kph=50, v_kph=50)
-    assert self.target_kph == 40
-    self.enter_section(100)
-    self.drive(1., limit_kph=115, set_kph=50, v_kph=50)
-    self.drive(0.5, limit_kph=115, set_kph=130, v_kph=100)
-    self.drive(30., limit_kph=115, set_kph=130, v_kph=120)
-    assert self.target_kph == 120
-    self.enter_section(0)
-    self.drive(1., limit_kph=115, set_kph=130, v_kph=120)
-    assert self.target_kph == 115
 
-  def test_a_section_ending_in_a_tunnel_keeps_the_undone_scroll_down_undone(self):
-    self.drive(1., limit_kph=115, set_kph=125, v_kph=100)
-    self.drive(0.5, limit_kph=115, set_kph=50, v_kph=40)
-    self.enter_section(100)
-    self.drive(0.5, limit_kph=115, set_kph=50, v_kph=40)
-    self.drive(0.5, limit_kph=115, set_kph=130, v_kph=100)
-    self.drive(3., limit_kph=92, set_kph=130, v_kph=92)
-    assert self.target_kph == 97
-    self.enter_section(0)
-    self.drive(1., limit_kph=92, set_kph=130, v_kph=92)
-    assert self.target_kph == 92
 
   # TeslaAutoSpeedLimitRoadMode: outside what the mode lets through, the car runs at the Tesla set speed
   def use_mode(self, mode):
