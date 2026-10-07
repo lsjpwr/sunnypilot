@@ -156,9 +156,10 @@ class SpeedLimitSettingsLayout(Widget):
       title=lambda: tr("Camera Slowdown Start"),
       param="KoreaCameraSlowdownDistance",
       min_value=0, max_value=2000, value_change_step=100,
-      description=tr("Start slowing this far before a speed camera, as gently as reaching its limit by the " +
-                     "arrival margin allows. Slowdown Strength is the firmest it gets. 0 leaves the start to " +
-                     "Slowdown Strength alone."),
+      description=tr("Where to start slowing for a speed camera at 100 km/h. The start moves with your speed " +
+                     "(1000 m is 1.2 km at 120 km/h and 600 m at 60 km/h), and the slowdown is as gentle as " +
+                     "reaching the limit by the arrival margin allows. Slowdown Strength is the firmest it gets. " +
+                     "0 leaves the start to Slowdown Strength alone."),
       label_callback=lambda value: f"{value} m")
 
     self._speed_bump = toggle_item_sp(

@@ -407,8 +407,10 @@ sections:
   - key: KoreaCameraSlowdownDistance
     widget: option
     title: Camera Slowdown Start
-    description: Start slowing this far before a speed camera, as gently as reaching its limit by the arrival
-      margin allows. Slowdown Strength is the firmest it gets. 0 leaves the start to Slowdown Strength alone.
+    description: Where to start slowing for a speed camera at 100 km/h. The start moves with your speed (1000 m
+      is 1.2 km at 120 km/h and 600 m at 60 km/h), and the slowdown is as gentle as reaching the limit by the
+      arrival margin allows. Slowdown Strength is the firmest it gets. 0 leaves the start to Slowdown Strength
+      alone.
     min: 0
     max: 2000
     step: 100
