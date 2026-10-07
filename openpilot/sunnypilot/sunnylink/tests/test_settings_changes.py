@@ -544,7 +544,7 @@ class TestKoreaSectionsOnCruise(OpenpilotTestCase):
   def test_each_section_holds_its_items_in_order(self, schema):
     assert _section_keys(schema, "cruise", "korea_speed_cameras") == [
       "KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled",
-      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "MapSlowdownDecel", "KoreaMapApiKey"]
+      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "KoreaCameraSlowdownDistance", "MapSlowdownDecel", "KoreaMapApiKey"]
     assert _section_keys(schema, "cruise", "korea_speed_bumps") == [
       "KoreaSpeedBumpEnabled", "KoreaSpeedBumpArchSpeed", "KoreaSpeedBumpTrapezoidSpeed"]
     assert _section_keys(schema, "cruise", "korea_route_map_data") == [

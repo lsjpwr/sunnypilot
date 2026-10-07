@@ -281,6 +281,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // korea map
     {"KoreaCameraMargin", {PERSISTENT | BACKUP, INT, "50"}},              // m, 제한속도 도달 여유 거리
+    {"KoreaCameraSlowdownDistance", {PERSISTENT | BACKUP, INT, "1000"}},  // m, 카메라 감속 시작 거리 (0: 감속 세기만)
     {"KoreaCameraSectionEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},      // 구간단속 시점·종점
     {"KoreaCameraSignalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},       // 신호·과속
     {"KoreaCameraSpeedEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},        // 과속

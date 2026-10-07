@@ -152,6 +152,15 @@ class SpeedLimitSettingsLayout(Widget):
                      "often sit tens of metres ahead of the pole."),
       label_callback=lambda value: f"{value} m")
 
+    self._camera_slowdown = option_item_sp(
+      title=lambda: tr("Camera Slowdown Start"),
+      param="KoreaCameraSlowdownDistance",
+      min_value=0, max_value=2000, value_change_step=100,
+      description=tr("Start slowing this far before a speed camera, as gently as reaching its limit by the " +
+                     "arrival margin allows. Slowdown Strength is the firmest it gets. 0 leaves the start to " +
+                     "Slowdown Strength alone."),
+      label_callback=lambda value: f"{value} m")
+
     self._speed_bump = toggle_item_sp(
       title=lambda: tr("Speed Bump Slowdown"),
       description=tr("Slow down for speed bumps from the Korean public database. Needs " +
@@ -208,6 +217,7 @@ class SpeedLimitSettingsLayout(Widget):
       self._route_api_key,
       *self._camera_kinds,
       self._camera_margin,
+      self._camera_slowdown,
       self._speed_bump,
       self._bump_arch_speed,
       self._bump_trapezoid_speed,
@@ -308,11 +318,12 @@ class SpeedLimitSettingsLayout(Widget):
     self._bump_trapezoid_speed.action_item.set_enabled(bump_on)
 
     # The kind toggles are not gated on longitudinal control: a kind that is off also leaves
-    # the speed limit ahead sign, which every car shows. The margin only moves the SCC-Map
-    # slowdown, so it gets the same gate as Speed Bump Slowdown.
+    # the speed limit ahead sign, which every car shows. The margin and the slowdown start only
+    # move the SCC-Map slowdown, so they get the same gate as Speed Bump Slowdown.
     for toggle in self._camera_kinds:
       toggle.action_item.set_enabled(is_korea)
     self._camera_margin.action_item.set_enabled(is_korea and has_long_or_icbm)
+    self._camera_slowdown.action_item.set_enabled(is_korea and has_long_or_icbm)
 
     speed_limit_mode_param = ui_state.params.get("SpeedLimitMode", return_default=True)
     if ui_state.CP is not None and ui_state.CP_SP is not None:

@@ -1186,10 +1186,42 @@
               ]
             },
             {
+              "key": "KoreaCameraSlowdownDistance",
+              "widget": "option",
+              "title": "Camera Slowdown Start",
+              "description": "Start slowing this far before a speed camera, as gently as reaching its limit by the arrival margin allows. Slowdown Strength is the firmest it gets. 0 leaves the start to Slowdown Strength alone.",
+              "min": 0,
+              "max": 2000,
+              "step": 100,
+              "unit": "m",
+              "enablement": [
+                {
+                  "type": "any",
+                  "conditions": [
+                    {
+                      "type": "capability",
+                      "field": "has_longitudinal_control",
+                      "equals": true
+                    },
+                    {
+                      "type": "capability",
+                      "field": "has_icbm",
+                      "equals": true
+                    }
+                  ]
+                },
+                {
+                  "type": "param",
+                  "key": "MapDataSource",
+                  "equals": 1
+                }
+              ]
+            },
+            {
               "key": "MapSlowdownDecel",
               "widget": "option",
               "title": "Slowdown Strength",
-              "description": "How firmly the car slows for speed cameras, speed bumps and route curves. Lower starts earlier and brakes more gently; 0.6 takes 110 km/h down to 80 over about 14 seconds.",
+              "description": "How firmly the car slows for speed bumps and route curves, and the firmest it slows for speed cameras. Lower starts earlier and brakes more gently; 0.6 takes 110 km/h down to 80 over about 14 seconds.",
               "min": 0.5,
               "max": 1.2,
               "step": 0.1,

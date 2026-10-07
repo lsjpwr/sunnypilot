@@ -53,6 +53,9 @@ BUMP_TRAPEZOID_SPEED_RANGE = (20, 50)
 # m, how far before a camera to be at its limit. Bounds, not the default -- that lives in
 # params_keys.h, like the bump speeds.
 CAMERA_MARGIN_RANGE = (0, 300)
+# m, how far before a camera to start slowing for it. Up to CAMERA_MAX_DISTANCE_M, where cameras come
+# into view; 0 leaves the start to the slowdown strength alone, as before 2026-10-07.
+CAMERA_SLOWDOWN_RANGE = (0, 2000)
 
 # A 구간단속 section is dropped after this many times its straight-line length, plus the slack:
 # the road winds, but a car that has driven well past that has left the section.
@@ -114,6 +117,7 @@ class KoreaMapData(BaseMapData):
     # read_camera_params overwrites both on the first tick, before anything reads them
     self.camera_kinds: frozenset[int] = frozenset(CAMERA_KIND_PARAMS)
     self.camera_margin = 0
+    self.camera_slowdown_m = 0
 
   def _db_mtimes(self) -> tuple[float | None, ...]:
     """When each database file was last written; None for one that is not there."""
@@ -374,6 +378,7 @@ class KoreaMapData(BaseMapData):
     """Same 1 Hz as read_bump_params, for the same reason."""
     self.camera_kinds = frozenset(kind for kind, key in CAMERA_KIND_PARAMS.items() if self.params.get_bool(key))
     self.camera_margin = get_sanitize_int_param("KoreaCameraMargin", *CAMERA_MARGIN_RANGE, self.params)
+    self.camera_slowdown_m = get_sanitize_int_param("KoreaCameraSlowdownDistance", *CAMERA_SLOWDOWN_RANGE, self.params)
 
   def camera_point(self) -> tuple[float, float, float] | None:
     """The slowdown camera as an SCC-Map target: its limit, camera_margin metres short of it.
@@ -426,20 +431,23 @@ class KoreaMapData(BaseMapData):
     stale car position) forever -- the car keeps moving, SCC-Map keeps seeing a constant
     distance, and the slowdown never releases.
     """
-    points: list[tuple[float, float, float]] = []
+    # (lat, lon, velocity, extra keys): a camera's point also says how far before it the slowdown starts
+    # (camera_slowdown_m less the margin it already sits short of the camera), and SCC-Map works out how
+    # firmly; bumps and curves keep the slowdown strength
+    points: list[tuple[float, float, float, dict]] = []
     if self.localizer_valid and self.last_position is not None:
       if self.bump_enabled and self.bump is not None:
         target = self.bump_targets.get(self.bump.kind, 0.)
         if target > 0.:
-          points.append((self.bump.lat, self.bump.lon, target))
+          points.append((self.bump.lat, self.bump.lon, target, {}))
       camera = self.camera_point()
       if camera is not None:
-        points.append(camera)
-      points.extend(self.curve_points)
+        points.append((*camera, {"ramp_m": max(self.camera_slowdown_m - self.camera_margin, 0)}))
+      points.extend((*curve, {}) for curve in self.curve_points)
       points.sort(key=lambda p: self.last_position.distance_to(Coordinate(p[0], p[1])))
 
     self.mem_params.put("MapTargetVelocities", json.dumps(
-      [{"latitude": lat, "longitude": lon, "velocity": velocity} for lat, lon, velocity in points]))
+      [{"latitude": lat, "longitude": lon, "velocity": velocity, **extra} for lat, lon, velocity, extra in points]))
     if self.last_position is not None:
       self.mem_params.put("LastGPSPosition", json.dumps(self.last_position.as_dict()))
 

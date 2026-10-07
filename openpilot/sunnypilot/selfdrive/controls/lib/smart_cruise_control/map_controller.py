@@ -32,6 +32,9 @@ TARGET_OFFSET = 1.0  # seconds - This controls how soon before the curve you rea
 # every camera slowdown hit on 2026-10-03.
 SLOWDOWN_DECEL_MIN = 0.5
 SLOWDOWN_DECEL_MAX = 1.2
+# m/s^2. A camera point says where its slowdown starts (ramp_m); the decel is then what takes the set speed
+# down to the camera's limit over that stretch, never firmer than MapSlowdownDecel and never softer than this.
+RAMP_DECEL_MIN = 0.05
 
 
 def velocities_from_param(param: str, params: Params):
@@ -163,7 +166,7 @@ class SmartCruiseControlMap:
       tv = target_velocity["velocity"]
       if tv <= 0.:
         continue  # no speed to slow to: the old state machine ignored a 0 target too
-      v_allowed = math.sqrt(tv ** 2 + 2. * self.slowdown_decel * max(d - tv * TARGET_OFFSET, 0.))
+      v_allowed = math.sqrt(tv ** 2 + 2. * self._decel(target_velocity, tv) * max(d - tv * TARGET_OFFSET, 0.))
       if v_allowed < min_v:
         min_v = v_allowed
         target_lat, target_lon = target_velocity["latitude"], target_velocity["longitude"]
@@ -171,6 +174,17 @@ class SmartCruiseControlMap:
     self.v_target = min_v
     self.target_lat = target_lat
     self.target_lon = target_lon
+
+  def _decel(self, point: dict, tv: float) -> float:
+    """MapSlowdownDecel, or for a camera point that says where its slowdown starts, the decel that takes the
+    set speed down to tv from there: a little too fast eases off over the whole stretch, far too fast starts
+    earlier at MapSlowdownDecel. The set speed, not v_ego: a decel worked out from v_ego would always let the
+    car keep the speed it has."""
+    ramp = point.get("ramp_m")
+    if ramp is None:
+      return self.slowdown_decel
+    needed = (self.v_cruise ** 2 - tv ** 2) / (2. * max(ramp - tv * TARGET_OFFSET, 1.))
+    return max(RAMP_DECEL_MIN, min(needed, self.slowdown_decel))
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, TURNING

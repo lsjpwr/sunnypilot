@@ -66,6 +66,7 @@ def make_data(link=None, camera=None, external=None):
   data.bump_targets = {}
   data.camera_kinds = frozenset(CAMERA_KIND_PARAMS)
   data.camera_margin = 50
+  data.camera_slowdown_m = 0
   data.localizer_valid = True
   data.section = None
   data._section_prev = None
@@ -96,7 +97,7 @@ class StubMemParams:
 
 
 def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, position=None, localizer_valid=True,
-                   camera=None, margin=50):
+                   camera=None, margin=50, slowdown=0):
   """A KoreaMapData wired only far enough to exercise publish_targets."""
   data = KoreaMapData.__new__(KoreaMapData)
   data.mem_params = StubMemParams()
@@ -106,6 +107,7 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
   data.slowdown_camera = camera
   data._camera_anchor = None
   data.camera_margin = margin
+  data.camera_slowdown_m = slowdown
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
   data.localizer_valid = localizer_valid
   data.curve_points = []
@@ -756,6 +758,11 @@ class TestReadCameraParams(OpenpilotTestCase):
     Params().put("KoreaCameraMargin", 500, block=True)
     self.assertEqual(self.read().camera_margin, 300)
 
+  def test_the_slowdown_start_falls_back_to_1_km_and_is_clamped(self):
+    self.assertEqual(self.read().camera_slowdown_m, 1000)
+    Params().put("KoreaCameraSlowdownDistance", 5000, block=True)
+    self.assertEqual(self.read().camera_slowdown_m, 2000)
+
 
 class TestCameraTarget(unittest.TestCase):
   """The next camera's SCC-Map point: its limit, camera_margin metres short of the camera."""
@@ -782,6 +789,17 @@ class TestCameraTarget(unittest.TestCase):
     self.assertAlmostEqual(point.distance_to(self.AT), 50., delta=0.5)
     # the camera's own limit: no speed limit offset on this path
     self.assertAlmostEqual(points[0]["velocity"], 50 * CV.KPH_TO_MS)
+
+  def test_the_camera_point_carries_where_its_slowdown_starts(self):
+    # SCC-Map works out the decel: 1000 m before the camera is 950 m before a point 50 m short of it
+    data = make_bump_data(bump=Bump(lat=37.5000, lon=127.0217, kind=BUMP_ARCH, distance_m=150.),
+                          camera=self.camera(), margin=50, slowdown=1000, position=self.CAR)
+    data.curve_points = [(37.5000, 127.0234, 12.)]
+    self.assertEqual([p.get("ramp_m") for p in self.publish(data)], [None, None, 950])
+
+  def test_a_slowdown_start_inside_the_margin_leaves_no_ramp(self):
+    points = self.publish(make_bump_data(camera=self.camera(), margin=150, slowdown=100, position=self.CAR))
+    self.assertEqual(points[0]["ramp_m"], 0)
 
   def test_a_zero_margin_puts_the_point_on_the_camera(self):
     points = self.publish(make_bump_data(camera=self.camera(), margin=0, position=self.CAR))
