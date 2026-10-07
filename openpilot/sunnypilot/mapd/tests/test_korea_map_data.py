@@ -960,6 +960,22 @@ class TestSection(unittest.TestCase):
     data.update_section(37.6200, 127.0000)  # ~2.2 km north, nowhere near the end camera
     self.assertIsNone(data.section)
 
+  def test_a_start_across_a_divided_road_opens_nothing(self):
+    # the other carriageway's start, 20 m left of our heading line: 3 of the 5 sections opened on 2026-10-07
+    across = Camera(lat=37.60018, lon=127.0000, limit_kph=100, distance_m=20., section_m=0, kind=CAMERA_SECTION)
+    data = self.make(starts=[across], end=self.END)
+    data.update_section(37.6000, 127.0000)
+    self.assertIsNone(data.section)
+
+  def test_a_start_on_our_side_or_in_the_median_still_opens(self):
+    # our gantries stood 4 m left to 13 m right of the car on 2026-10-07; one in the median, 6 m left
+    for name, lat in (("13 m right", 37.59988), ("6 m left", 37.60005)):
+      with self.subTest(name):
+        start = Camera(lat=lat, lon=127.0000, limit_kph=100, distance_m=13., section_m=0, kind=CAMERA_SECTION)
+        data = self.make(starts=[start], end=self.END)
+        data.update_section(37.6000, 127.0000)
+        self.assertIsNotNone(data.section)
+
   def test_section_cameras_off_means_no_section(self):
     data = self.make(starts=[self.START], end=self.END)
     data.camera_kinds = frozenset()

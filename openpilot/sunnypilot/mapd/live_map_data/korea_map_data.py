@@ -32,7 +32,7 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
                                                  CAMERA_SECTION, ROUTE_CORRIDOR_M, SECTION_PASS_M, Bump, Camera,
-                                                 KoreaMapDB, Link, at_section_end, mtime_or_none)
+                                                 KoreaMapDB, Link, across_the_road, at_section_end, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
@@ -284,7 +284,8 @@ class KoreaMapData(BaseMapData):
     """Track the 구간단속 section we are in, for SpeedLimitAssist to hold its limit.
 
     A start camera alone cannot say we are entering: both directions of a section share their
-    end points, so the other direction's start stands beside our end. A section opens only when
+    end points, so the other direction's start stands beside our end. On a divided road it stands
+    on the other carriageway, left of us, and is skipped (across_the_road). A section opens only when
     a same-limit end camera lies ahead on our road, and when in doubt it does not open at all:
     the start and end cameras still brake the car through SCC-Map, as before.
 
@@ -315,6 +316,8 @@ class KoreaMapData(BaseMapData):
 
     if self.section is None:
       for start in self.db.section_starts_near(lat, lon):
+        if across_the_road(start, lat, lon, self.last_bearing):
+          continue
         by_passed = passed is not None and at_section_end(start, passed, self.last_bearing)
         if by_passed and distance_to_route(self.route, lat, lon) > ROUTE_CORRIDOR_M:
           continue

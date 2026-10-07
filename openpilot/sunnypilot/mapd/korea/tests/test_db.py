@@ -587,6 +587,14 @@ class TestSections(KoreaMapDBTestCase):
   def test_the_end_kind_answers_to_the_section_toggle(self):
     self.assertEqual(CAMERA_KIND_PARAMS[CAMERA_SECTION_END], CAMERA_KIND_PARAMS[CAMERA_SECTION])
 
+  def test_an_end_under_a_kilometre_ahead_is_not_ours(self):
+    # the other carriageway's end, staggered ~320 m past our start as on 2026-10-07: ours lies further on
+    db = self.open_with_cameras([*SECTION_CAMERAS, (37.6000, 127.0036, 100, 0, CAMERA_SECTION_END)])
+    for name, route in (("off a route", None), ("on a route", [(37.6000, 126.9990), (37.6000, 127.0700)])):
+      with self.subTest(name):
+        end = db.section_end_ahead(*SEC_A, 90., 100, route=route)
+        self.assertEqual((end.lat, end.lon), SEC_B)
+
   def test_the_nearest_of_two_ends_ahead_wins(self):
     db = self.open_with_cameras([*SECTION_CAMERAS, (37.6000, 127.0400, 100, 0, CAMERA_SECTION_END)])
     end = db.section_end_ahead(*SEC_A, 90., 100)

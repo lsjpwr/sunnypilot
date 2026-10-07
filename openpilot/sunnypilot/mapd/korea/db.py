@@ -116,7 +116,13 @@ ROUTE_FILTER_M = 10.
 # only when a same-limit end camera lies ahead on our road (section_end_ahead).
 SECTION_PASS_M = 60.            # this close to a camera is passing it; 1 Hz at 125 km/h is 35 m a tick
 SECTION_NEAR_DEG = 0.001        # ~90 m box around the car for the start camera
-SECTION_MIN_M = 300.            # an end camera nearer than this is the other direction's, beside our start
+# An end camera nearer than this is the other direction's, beside our start or staggered up to ~600 m from it
+# (322 m on 2026-10-07). Real sections this short are rare: 6 of the 374 pairs by management number in 2026-04.
+SECTION_MIN_M = 1000.
+# A start camera further left of our heading line than this stands on the other carriageway. On 2026-10-07
+# our gantries stood 4 m left to 13 m right of the car, the other carriageway's 13 to 48 m left; one in the
+# median read 6 m left from both sides.
+SECTION_SIDE_M = 10.
 SECTION_MAX_M = 45000.          # the longest section in the 2026-08 data is about 43 km
 SECTION_SEARCH_DEG = 0.51       # ~45 km box in longitude at 37 N
 SECTION_AHEAD_TOLERANCE = 30.   # off a route, how far off our heading the end camera may lie
@@ -248,6 +254,16 @@ def at_section_end(start: Camera, end: tuple[float, float], heading_deg: float) 
   if distance <= SECTION_PASS_M:
     return True
   return distance <= 2 * SECTION_PASS_M and bearing_delta(heading_deg, bearing(end[0], end[1], start.lat, start.lon)) >= 90.
+
+
+def across_the_road(camera: Camera, lat: float, lon: float, heading_deg: float) -> bool:
+  """Does this camera stand on the other carriageway, more than SECTION_SIDE_M left of our heading line?
+
+  Korea drives on the right, so a divided road puts the other direction's cameras on our left. On an
+  undivided road both directions' cameras stand within a few metres of us, and this cannot tell them apart.
+  """
+  left = haversine(lat, lon, camera.lat, camera.lon) * math.sin(math.radians(heading_deg - bearing(lat, lon, camera.lat, camera.lon)))
+  return left > SECTION_SIDE_M
 
 
 class KoreaMapDB:
