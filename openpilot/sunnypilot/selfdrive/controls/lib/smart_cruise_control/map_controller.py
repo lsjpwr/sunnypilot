@@ -89,7 +89,7 @@ class SmartCruiseControlMap:
     self.target_lon = 0.0
     self.frame = -1
     # the camera point being slowed for (its lat, lon) and the speed its slowdown is worked out from: the car's
-    # own until the slowdown starts, then held (_camera_allowed)
+    # own (or the speed whose start is here, if higher) until the slowdown starts, then held (_camera_allowed)
     self._camera_key: tuple[float, float] | None = None
     self._camera_v = 0.
     self._camera_started = False
@@ -198,18 +198,26 @@ class SmartCruiseControlMap:
     The speed is the car's until the slowdown starts, then held for this camera. Worked out afresh from a
     speed the slowdown itself lowers, the start would keep moving in with the car and the braking would bunch
     up at the camera. Not the set speed: under auto SLA the car often runs well under it, and a start worked
-    out from the set speed came late (615 m instead of 1150 m at 115 under a 125 set speed)."""
+    out from the set speed came late (615 m instead of 1150 m at 115 under a 125 set speed).
+
+    Before the start it is never under the speed whose start is where the car is: slowed by traffic or a red
+    light short of the start, the car may pick up to that speed, as one arriving at it would. Worked out from
+    the lower speed, the slowdown came out at its gentlest and held the car a few km/h over the camera's
+    limit all the way in (39 km/h 650 m before a 30 camera after a red light, 2026-10-09)."""
+    margin = point.get("margin_m", 0.)
+    if point["start_s"] <= 0.:
+      return allowed_speed(tv, self.slowdown_decel, d)  # no start set: the strength alone, as before 2026-10-07
     key = (point["latitude"], point["longitude"])
     if key != self._camera_key:
       self._camera_key, self._camera_started = key, False
     if not self._camera_started:
-      self._camera_v = self.v_ego
+      self._camera_v = max(self.v_ego, (d + margin) / point["start_s"])
     start = min(point["start_s"] * self._camera_v, CAMERA_MAX_DISTANCE_M)
-    ramp = max(start - point.get("margin_m", 0.), 0.)
+    ramp = max(start - margin, 0.)
     needed = (self._camera_v ** 2 - tv ** 2) / (2. * max(ramp - tv * TARGET_OFFSET, 1.))
     v_allowed = allowed_speed(tv, max(RAMP_DECEL_MIN, min(needed, self.slowdown_decel)), d)
-    if v_allowed < self._camera_v:
-      self._camera_started = True  # the slowdown has begun
+    if v_allowed < self.v_ego:
+      self._camera_started = True  # the slowdown has begun: it holds the car under its own speed
     return v_allowed
 
   def _update_state_machine(self) -> tuple[bool, bool]:

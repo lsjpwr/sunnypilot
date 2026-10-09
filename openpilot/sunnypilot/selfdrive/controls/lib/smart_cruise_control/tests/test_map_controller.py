@@ -254,6 +254,20 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     self.run_at(105, 120)
     self.assertAlmostEqual(self.scc_m.output_v_target, ramp(500., kph(100), decel), places=3)
 
+  def test_a_stop_short_of_the_start_does_not_hold_the_car_near_the_limit(self):
+    # stopped at a red light 650 m before a 30 camera (500 m before its point): the car may pick up to the 65 km/h
+    # whose slowdown starts there, not to the 39 a slowdown worked out from standstill allowed (2026-10-09)
+    self.put_point(500., kph(30), start_s=START_1KM)
+    self.run_at(0, 85)
+    self.assertAlmostEqual(self.scc_m.output_v_target, 650. / START_1KM, places=3)
+    # pulling away at 40, the car meets that speed 400 m before the camera and slows from 40 down to 30 from there
+    decel = (kph(40) ** 2 - kph(30) ** 2) / (2. * (START_1KM * kph(40) - 150. - kph(30) * TARGET_OFFSET))
+    self.put_point(240., kph(30), start_s=START_1KM, car_m=260.)
+    self.run_at(40, 85)
+    self.put_point(100., kph(30), start_s=START_1KM, car_m=400.)
+    self.run_at(35, 85)
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(100., kph(30), decel), places=3)
+
   def test_the_next_camera_is_worked_out_from_the_cars_speed_again(self):
     # the hold is per camera: past one held at 120, the next is worked out from the 110 the car has then
     self.put_point(1000., kph(100), start_s=START_1KM)
@@ -278,10 +292,12 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     self.assertAlmostEqual(self.scc_m.output_v_target, ramp(850., kph(30), 0.6), places=3)
 
   def test_no_slowdown_start_leaves_a_camera_to_the_strength(self):
-    # KoreaCameraSlowdownDistance 0: the slowdown starts where the strength alone puts it, as before 2026-10-07
+    # KoreaCameraSlowdownDistance 0: the slowdown starts where the strength alone puts it, as before 2026-10-07,
+    # from a stop too
     self.put_point(300., kph(80), start_s=0.)
-    self.run_at(110, 125)
-    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300., kph(80), 0.6), places=3)
+    for v_ego_kph in (0, 110):
+      self.run_at(v_ego_kph, 125)
+      self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300., kph(80), 0.6), places=3)
 
   def test_a_camera_limit_over_the_cars_speed_does_not_slow_it(self):
     self.put_point(300., kph(100), start_s=START_1KM)
