@@ -15,6 +15,7 @@ Deliberately free of openpilot imports so it runs under a bare Python interprete
 same rule as db.py and geo.py.
 """
 import bisect
+from collections import Counter
 import glob
 import json
 import logging
@@ -170,7 +171,43 @@ def fetch_route(api_key: str, start: tuple[float, float], dest: tuple[float, flo
     LOG.warning("route: request failed", exc_info=True)
     return []
 
-  return parse_route(payload) if isinstance(payload, dict) else []
+  if not isinstance(payload, dict):
+    return []
+  LOG.info("route: answer %s", summarize_route(payload))
+  return parse_route(payload)
+
+
+# What a camera or enforcement point would say in a TMAP text field (description, name)
+CAMERA_WORDS = ("카메라", "단속", "과속")
+
+
+def summarize_route(payload: dict) -> str:
+  """What a routing answer carries besides its geometry: the property keys of each feature kind, the counts
+  of every *Type code, and which text fields name a camera. Logged to find out whether TMAP sends the cameras
+  along the route (2026-10-09). No coordinates and no text values -- those place the car."""
+  counts: Counter = Counter()
+  keys: dict[str, set[str]] = {}
+  codes: dict[str, dict[str, Counter]] = {}
+  words: Counter = Counter()
+  try:
+    for feat in payload.get("features") or []:
+      props = feat.get("properties") or {}
+      kind = str((feat.get("geometry") or {}).get("type"))
+      counts[kind] += 1
+      keys.setdefault(kind, set()).update(props)
+      for key, value in props.items():
+        if key.endswith("Type") and (isinstance(value, int) or (isinstance(value, str) and len(value) <= 4)):
+          codes.setdefault(kind, {}).setdefault(key, Counter())[value] += 1
+        if isinstance(value, str) and any(word in value for word in CAMERA_WORDS):
+          words[key] += 1
+  except (AttributeError, TypeError):
+    return f"keys {sorted(payload)}, features unreadable"
+  parts = [f"keys {sorted(payload)}"]
+  for kind in sorted(counts):
+    parts.append(" ".join([f"{kind} x{counts[kind]} keys {sorted(keys[kind])}",
+                           *(f"{key} {dict(sorted(c.items(), key=str))}" for key, c in sorted(codes.get(kind, {}).items()))]))
+  parts.append(f"camera words {dict(words)}")
+  return "; ".join(parts)
 
 
 # Wider than the 30 m corridor the lookups use: the corridor decides whether a camera is

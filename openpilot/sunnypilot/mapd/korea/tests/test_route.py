@@ -22,7 +22,7 @@ from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP,
                                                    OFF_ROUTE_TICKS, REROUTE_BACKOFF_S, RequestBudget, RouteSource,
                                                    RouteState, arrived, build_request, curve_targets,
                                                    distance_to_route, fetch_route, in_korea, parse_route,
-                                                   route_progress, save_route)
+                                                   route_progress, save_route, summarize_route)
 
 
 def feature(coords, kind="LineString"):
@@ -218,6 +218,26 @@ class TestFetchRoute(unittest.TestCase):
                             opener=fake_opener(SAMPLE, capture), budget=budget)
     self.assertEqual(result2, [])
     self.assertEqual(capture, [])
+
+
+class TestSummarizeRoute(unittest.TestCase):
+  def test_it_counts_codes_and_camera_words_but_never_places_the_car(self):
+    start = feature([126.9780, 37.5665], kind="Point")
+    start["properties"] = {"turnType": 200, "pointType": "S", "name": "시청", "description": "세종대로 과속카메라 지나 출발"}
+    road = feature([[126.9780, 37.5665], [126.9800, 37.5600]])
+    road["properties"] = {"facilityType": 11, "roadType": 2, "name": "세종대로"}
+    summary = summarize_route({"type": "FeatureCollection", "features": [start, road]})
+    self.assertIn("Point x1 keys ['description', 'name', 'pointType', 'turnType'] pointType {'S': 1} turnType {200: 1}", summary)
+    self.assertIn("LineString x1 keys ['facilityType', 'name', 'roadType'] facilityType {11: 1} roadType {2: 1}", summary)
+    self.assertIn("camera words {'description': 1}", summary)
+    for leak in ("126.97", "37.56", "세종", "시청"):
+      self.assertNotIn(leak, summary)
+    self.assertEqual(summarize_route({"features": [7]}), "keys ['features'], features unreadable")
+
+  def test_every_answer_is_logged(self):
+    with self.assertLogs(route.LOG, level="INFO") as logs:
+      fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276), opener=fake_opener(SAMPLE))
+    self.assertTrue(any("route: answer keys ['features', 'type']" in line for line in logs.output))
 
 
 # A 1.1 km straight leg north-east of Seoul city hall. ~0.001 deg lat is ~111 m.
