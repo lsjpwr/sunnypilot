@@ -73,6 +73,11 @@ CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.
 CAMERA_AHEAD_TOLERANCE = 60.
 
+# KoreaCameraExclude skips a camera this close to a listed point. Small on purpose: an enforcing
+# camera at the same junction must not vanish with it, and the points are copied from the same
+# dataset the database is built from.
+CAMERA_EXCLUDE_M = 10.
+
 # How far off the heading line a camera may sit and still be a slowdown target. The speed
 # limit ahead sign keeps the plain cone above -- showing a camera on a side street costs
 # nothing -- but braking for a camera on a parallel road or the opposite carriageway is a
@@ -470,7 +475,8 @@ class KoreaMapDB:
   def next_camera(self, lat: float, lon: float, heading_deg: float | None,
                   route: list[tuple[float, float]] | None = None,
                   kinds: Collection[int] | None = None,
-                  corridor_m: float | None = None) -> Camera | None:
+                  corridor_m: float | None = None,
+                  exclude: Collection[tuple[float, float]] = ()) -> Camera | None:
     """Nearest speed camera ahead of us, or None. Needs a heading to know what 'ahead' means.
 
     With a route, 'ahead' stops being a bearing cone and becomes the road we will actually
@@ -486,6 +492,10 @@ class KoreaMapDB:
     corridor_m, when given, also rejects a camera farther than that from the heading line
     (see _on_path). korea_map_data passes CAMERA_CORRIDOR_M for the camera it brakes for when
     the car is not on a route, and nothing for the speed limit ahead sign.
+
+    exclude holds (lat, lon) points of cameras the driver has found not to enforce
+    (KoreaCameraExclude). A camera within CAMERA_EXCLUDE_M of one is skipped before it can
+    become the best, so like a kind that is off it never hides the camera behind it.
     """
     if heading_deg is None:
       return None
@@ -506,6 +516,8 @@ class KoreaMapDB:
         continue
       distance = haversine(lat, lon, clat, clon)
       if distance > CAMERA_MAX_DISTANCE_M or (best is not None and distance >= best.distance_m):
+        continue
+      if any(haversine(clat, clon, elat, elon) <= CAMERA_EXCLUDE_M for elat, elon in exclude):
         continue
       if not _on_path(lat, lon, clat, clon, heading_deg, route, CAMERA_AHEAD_TOLERANCE, corridor_m=corridor_m):
         continue

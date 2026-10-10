@@ -66,6 +66,15 @@ SECTION_TRAVEL_FACTOR = 1.5
 SECTION_TRAVEL_SLACK_M = 2000.
 
 
+def parse_camera_exclude(raw: str) -> tuple[tuple[float, float], ...] | None:
+  """KoreaCameraExclude, a JSON list of [lat, lon] pairs: cameras the driver has found not to
+  enforce. Empty means none. None when it is not such a list, so a typo excludes nothing."""
+  try:
+    return tuple((float(lat), float(lon)) for lat, lon in json.loads(raw or "[]"))
+  except (TypeError, ValueError):
+    return None
+
+
 @dataclass
 class Section:
   """The 구간단속 section we are in: its limit, its end camera, and how far we may drive before giving up on it."""
@@ -121,6 +130,8 @@ class KoreaMapData(BaseMapData):
     self.camera_kinds: frozenset[int] = frozenset(CAMERA_KIND_PARAMS)
     self.camera_margin = 0
     self.camera_slowdown_m = 0
+    self.camera_exclude: tuple[tuple[float, float], ...] = ()
+    self._camera_exclude_raw: str | None = None  # parsed and logged only when it changes
 
   def _db_mtimes(self) -> tuple[float | None, ...]:
     """When each database file was last written; None for one that is not there."""
@@ -261,7 +272,8 @@ class KoreaMapData(BaseMapData):
     lat, lon = self.last_position.latitude, self.last_position.longitude
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing, route=self.route)
-      self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds)
+      self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds,
+                                        exclude=self.camera_exclude)
       # The sign keeps the wide cone, but only a camera on our road may brake the car. While
       # the car is on the route, next_camera has already held the sign's camera to
       # ROUTE_CORRIDOR_M of the polyline, which bends with the road -- the heading line would
@@ -272,7 +284,8 @@ class KoreaMapData(BaseMapData):
         self.slowdown_camera = self.camera
       else:
         self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
-                                                   kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M)
+                                                   kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M,
+                                                   exclude=self.camera_exclude)
       self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
       self.update_section(lat, lon)
     except Exception:
@@ -382,6 +395,16 @@ class KoreaMapData(BaseMapData):
     self.camera_kinds = frozenset(kind for kind, key in CAMERA_KIND_PARAMS.items() if self.params.get_bool(key))
     self.camera_margin = get_sanitize_int_param("KoreaCameraMargin", *CAMERA_MARGIN_RANGE, self.params)
     self.camera_slowdown_m = get_sanitize_int_param("KoreaCameraSlowdownDistance", *CAMERA_SLOWDOWN_RANGE, self.params)
+    raw = self.params.get("KoreaCameraExclude") or ""
+    if raw != self._camera_exclude_raw:
+      self._camera_exclude_raw = raw
+      points = parse_camera_exclude(raw)
+      self.camera_exclude = points or ()
+      # the count only, never the points: they are where the driver goes
+      if points is None:
+        cloudlog.warning("korea_map: KoreaCameraExclude is not a JSON list of [lat, lon]; no camera excluded")
+      else:
+        cloudlog.info("korea_map: %d camera exclusion point(s)", len(points))
 
   def camera_point(self) -> tuple[float, float, float] | None:
     """The slowdown camera as an SCC-Map target: its limit, camera_margin metres short of it.

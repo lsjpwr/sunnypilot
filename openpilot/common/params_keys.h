@@ -280,6 +280,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RoadName", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
 
     // korea map
+    {"KoreaCameraExclude", {PERSISTENT, STRING, ""}},                   // JSON [[lat, lon], ...]: 단속하지 않는 카메라. 좌표라서 BACKUP에서 뺀다
     {"KoreaCameraMargin", {PERSISTENT | BACKUP, INT, "50"}},              // m, 제한속도 도달 여유 거리
     {"KoreaCameraSlowdownDistance", {PERSISTENT | BACKUP, INT, "1000"}},  // m, 100 km/h 기준 카메라 감속 시작 거리, 속도에 비례 (0: 감속 세기만)
     {"KoreaCameraSectionEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},      // 구간단속 시점·종점

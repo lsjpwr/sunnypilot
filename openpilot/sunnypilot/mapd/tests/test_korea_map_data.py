@@ -67,6 +67,8 @@ def make_data(link=None, camera=None, external=None):
   data.camera_kinds = frozenset(CAMERA_KIND_PARAMS)
   data.camera_margin = 50
   data.camera_slowdown_m = 0
+  data.camera_exclude = ()
+  data._camera_exclude_raw = None
   data.localizer_valid = True
   data.section = None
   data._section_prev = None
@@ -345,7 +347,7 @@ class StubDB:
   def current_link(self, lat, lon, heading_deg=None, route=None):
     return None
 
-  def next_camera(self, lat, lon, heading_deg, route=None, kinds=None, corridor_m=None):
+  def next_camera(self, lat, lon, heading_deg, route=None, kinds=None, corridor_m=None, exclude=()):
     return None
 
   def next_bump(self, lat, lon, heading_deg, route=None):
@@ -727,6 +729,27 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     data.update_location()
     self.assertEqual(seen["kinds"], frozenset({CAMERA_ZONE}))
 
+  def test_the_exclusions_reach_both_next_camera_calls(self):
+    """Off a route there are two lookups, the sign's and the slowdown's: an excluded camera
+    must leave both."""
+    data = make_data()
+    data.sm = SingleLocationSM(valid_llk())
+    data.last_position = Coordinate(37.5000, 127.0200)
+    data.camera_exclude = ((37.5000, 127.0223),)
+
+    seen = []
+    data.db = SimpleNamespace(
+      reload_if_changed=lambda: False,
+      current_link=lambda *a, **k: None,
+      next_camera=lambda *a, **k: seen.append(k.get("exclude")),
+      next_bump=lambda *a, **k: None,
+      section_starts_near=lambda *a, **k: [],
+      section_end_ahead=lambda *a, **k: None,
+    )
+
+    data.update_location()
+    self.assertEqual(seen, [((37.5000, 127.0223),)] * 2)
+
 
 class TestReadCameraParams(OpenpilotTestCase):
   """Round-trips the real Params keys, like TestReadBumpParams: a wrong key name or a lost
@@ -735,6 +758,8 @@ class TestReadCameraParams(OpenpilotTestCase):
   def read(self):
     data = KoreaMapData.__new__(KoreaMapData)
     data.params = Params()
+    data.camera_exclude = ()
+    data._camera_exclude_raw = None
     data.read_camera_params()
     return data
 
@@ -762,6 +787,16 @@ class TestReadCameraParams(OpenpilotTestCase):
     self.assertEqual(self.read().camera_slowdown_m, 1000)
     Params().put("KoreaCameraSlowdownDistance", 5000, block=True)
     self.assertEqual(self.read().camera_slowdown_m, 2000)
+
+  def test_the_exclusions_are_read_as_points(self):
+    self.assertEqual(self.read().camera_exclude, ())  # unset: no camera excluded
+    Params().put("KoreaCameraExclude", "[[37.5, 127.02], [37.6, 127.1]]", block=True)
+    self.assertEqual(self.read().camera_exclude, ((37.5, 127.02), (37.6, 127.1)))
+
+  def test_an_unreadable_list_excludes_nothing(self):
+    for raw in ("37.5, 127.02", "[37.5, 127.02]", '[["a", "b"]]', "null"):
+      Params().put("KoreaCameraExclude", raw, block=True)
+      self.assertEqual(self.read().camera_exclude, (), raw)
 
 
 class TestCameraTarget(unittest.TestCase):

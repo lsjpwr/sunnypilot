@@ -829,6 +829,28 @@ class TestCameraKindFilter(KoreaMapDBTestCase):
     self.assertEqual((camera.lat, camera.lon), CAM_AHEAD[:2])
 
 
+class TestCameraExclude(KoreaMapDBTestCase):
+  """next_camera(exclude=...): KoreaCameraExclude, the cameras the driver has found not to enforce."""
+
+  def setUp(self):
+    super().setUp()
+    cams = str(self.tmp_path / "korea_cameras.sqlite")
+    links = str(self.tmp_path / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_ZONE_NEAR, CAM_AHEAD]))
+    write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [ROAD_60]))
+    self.db = self.open_db(cams, links)
+
+  def test_an_excluded_camera_does_not_hide_the_next_one(self):
+    # the point is ~4 m north of CAM_ZONE_NEAR: inside CAMERA_EXCLUDE_M
+    camera = self.db.next_camera(37.5000, 127.0200, 90., exclude=[(37.50004, 127.0223)])
+    self.assertEqual((camera.lat, camera.lon), CAM_AHEAD[:2])
+
+  def test_a_point_20_m_away_keeps_the_camera(self):
+    """An enforcing camera at the same junction must not vanish with the listed one."""
+    camera = self.db.next_camera(37.5000, 127.0200, 90., exclude=[(37.50018, 127.0223)])
+    self.assertEqual((camera.lat, camera.lon), CAM_ZONE_NEAR[:2])
+
+
 class TestCameraDatabaseWithoutKind(KoreaMapDBTestCase):
   """A camera file built before the kind column. It must work exactly as it did before."""
 
