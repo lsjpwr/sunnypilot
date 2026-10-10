@@ -271,6 +271,11 @@ def across_the_road(camera: Camera, lat: float, lon: float, heading_deg: float) 
   return left > SECTION_SIDE_M
 
 
+def excluded(lat: float, lon: float, exclude: Collection[tuple[float, float]]) -> bool:
+  """Is a camera here on KoreaCameraExclude, within CAMERA_EXCLUDE_M of one of its points?"""
+  return any(haversine(lat, lon, elat, elon) <= CAMERA_EXCLUDE_M for elat, elon in exclude)
+
+
 class KoreaMapDB:
   """Read-only lookups against the camera, link and (optional) bump databases.
 
@@ -517,7 +522,7 @@ class KoreaMapDB:
       distance = haversine(lat, lon, clat, clon)
       if distance > CAMERA_MAX_DISTANCE_M or (best is not None and distance >= best.distance_m):
         continue
-      if any(haversine(clat, clon, elat, elon) <= CAMERA_EXCLUDE_M for elat, elon in exclude):
+      if excluded(clat, clon, exclude):
         continue
       if not _on_path(lat, lon, clat, clon, heading_deg, route, CAMERA_AHEAD_TOLERANCE, corridor_m=corridor_m):
         continue

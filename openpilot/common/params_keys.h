@@ -281,6 +281,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // korea map
     {"KoreaCameraExclude", {PERSISTENT, STRING, ""}},                   // JSON [[lat, lon], ...]: 단속하지 않는 카메라. 좌표라서 BACKUP에서 뺀다
+    {"KoreaCameraExcludeAdd", {PERSISTENT, INT, "0"}},                  // sunnylink 버튼: 최근 카메라 1~3번을 제외한다. mapd가 처리하고 0으로 되돌린다
+    {"KoreaCameraExcludeCount", {PERSISTENT, INT, "0"}},                // sunnylink 표시: 제외한 카메라 수. mapd가 쓴다
+    {"KoreaCameraExcludeUndo", {PERSISTENT, INT, "0"}},                 // sunnylink 버튼: 1이면 마지막 하나, 2면 전부 되살린다. mapd가 처리하고 0으로 되돌린다
+    {"KoreaCameraRecent", {PERSISTENT, STRING, ""}},                    // JSON [[lat, lon, limit, "HH:MM"], ...]: 최근 지난 감속 카메라 3대. 좌표라서 BACKUP에서 뺀다
+    {"KoreaCameraRecentLabel", {PERSISTENT, STRING, "-"}},              // sunnylink 표시: "① 30 17:46 ✕ ...", 좌표 없음. mapd가 쓴다
     {"KoreaCameraMargin", {PERSISTENT | BACKUP, INT, "50"}},              // m, 제한속도 도달 여유 거리
     {"KoreaCameraSlowdownDistance", {PERSISTENT | BACKUP, INT, "1000"}},  // m, 100 km/h 기준 카메라 감속 시작 거리, 속도에 비례 (0: 감속 세기만)
     {"KoreaCameraSectionEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},      // 구간단속 시점·종점

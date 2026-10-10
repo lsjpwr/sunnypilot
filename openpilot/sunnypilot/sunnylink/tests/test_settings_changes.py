@@ -39,7 +39,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.long_cost_tuning import (
   LEAD_VELOCITY_COST_MIN,
 )
 from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
-from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import CAMERA_MARGIN_RANGE
+from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import CAMERA_MARGIN_RANGE, CAMERA_RECENT_MARKS
 from openpilot.common.test import OpenpilotTestCase
 
 
@@ -544,7 +544,9 @@ class TestKoreaSectionsOnCruise(OpenpilotTestCase):
   def test_each_section_holds_its_items_in_order(self, schema):
     assert _section_keys(schema, "cruise", "korea_speed_cameras") == [
       "KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled",
-      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "KoreaCameraSlowdownDistance", "MapSlowdownDecel", "KoreaMapApiKey"]
+      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "KoreaCameraSlowdownDistance", "MapSlowdownDecel",
+      "KoreaCameraRecentLabel", "KoreaCameraExcludeAdd", "KoreaCameraExcludeCount", "KoreaCameraExcludeUndo",
+      "KoreaMapApiKey"]
     assert _section_keys(schema, "cruise", "korea_speed_bumps") == [
       "KoreaSpeedBumpEnabled", "KoreaSpeedBumpArchSpeed", "KoreaSpeedBumpTrapezoidSpeed"]
     assert _section_keys(schema, "cruise", "korea_route_map_data") == [
@@ -636,6 +638,44 @@ class TestKoreaCameraKindsRemote(OpenpilotTestCase):
     assert _references_capability_field(item.get("enablement"), "has_longitudinal_control")
     assert _references_capability_field(item.get("enablement"), "has_icbm")
     assert _references_param_equals(item.get("enablement"), "MapDataSource", 1)
+
+
+class TestKoreaCameraExcludeRemote(OpenpilotTestCase):
+  """KoreaCameraExclude from a phone. The app has no text widget, so it shows the last cameras the car
+  slowed for (info rows korea_map_data writes) and picks one by its number (multiple_buttons
+  korea_map_data carries out and sets back to 0)."""
+
+  def test_the_info_rows_show_the_recent_cameras_and_the_count(self, schema):
+    for key in ("KoreaCameraRecentLabel", "KoreaCameraExcludeCount"):
+      item = _find_item(schema, key)
+      assert item is not None, f"{key} missing from settings_ui schema"
+      assert item["widget"] == "info"
+
+  def test_the_buttons_pick_a_recent_camera_or_bring_them_back(self, schema):
+    add = _find_item(schema, "KoreaCameraExcludeAdd")
+    undo = _find_item(schema, "KoreaCameraExcludeUndo")
+    assert add is not None and undo is not None
+    assert add["widget"] == undo["widget"] == "multiple_button"
+    # the label numbers its cameras with the same marks
+    assert [(o["value"], o["label"]) for o in add["options"]] == list(enumerate(["-", *CAMERA_RECENT_MARKS]))
+    assert [(o["value"], o["label"]) for o in undo["options"]] == [(0, "-"), (1, "Last"), (2, "All")]
+
+  def test_the_buttons_grey_out_while_engaged(self, schema):
+    """sunnylinkd.saveParams drops every write while engaged, so a live button would do nothing."""
+    for key in ("KoreaCameraExcludeAdd", "KoreaCameraExcludeUndo"):
+      assert "not_engaged" in _flatten_rule_types(_find_item(schema, key).get("enablement")), key
+
+  @parameterized.expand(["KoreaCameraRecentLabel", "KoreaCameraExcludeAdd", "KoreaCameraExcludeCount",
+                         "KoreaCameraExcludeUndo"], names=["key"])
+  def test_each_row_needs_only_the_korea_source(self, schema, key):
+    """Like the kind toggles: an excluded camera leaves the speed limit ahead sign too, so no
+    longitudinal gate. korea_map_data reads the buttons every tick, offroad too, so no cycle."""
+    item = _find_item(schema, key)
+    assert item is not None, f"{key} missing from settings_ui schema"
+    assert _references_param_equals(item.get("enablement"), "MapDataSource", 1)
+    assert not _references_capability_field(item.get("enablement"), "has_longitudinal_control")
+    assert "offroad_only" not in _flatten_rule_types(item.get("enablement"))
+    assert not item.get("needs_onroad_cycle")
 
 
 class TestLongitudinalCostSplit(OpenpilotTestCase):

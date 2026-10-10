@@ -1250,6 +1250,96 @@
               ]
             },
             {
+              "key": "KoreaCameraRecentLabel",
+              "widget": "info",
+              "title": "Recent Slowdown Cameras",
+              "description": "The last three cameras the car slowed for and passed, newest first, with their limit and the time they were passed. \u2715 marks one that is excluded.",
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "MapDataSource",
+                  "equals": 1
+                }
+              ]
+            },
+            {
+              "key": "KoreaCameraExcludeAdd",
+              "widget": "multiple_button",
+              "title": "Exclude a Camera",
+              "description": "Pick a camera above that you have found does not enforce. The car stops slowing for it and the speed limit ahead sign leaves it out. Its location stays on the device.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "-"
+                },
+                {
+                  "value": 1,
+                  "label": "\u2460"
+                },
+                {
+                  "value": 2,
+                  "label": "\u2461"
+                },
+                {
+                  "value": 3,
+                  "label": "\u2462"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "not_engaged"
+                },
+                {
+                  "type": "param",
+                  "key": "MapDataSource",
+                  "equals": 1
+                }
+              ]
+            },
+            {
+              "key": "KoreaCameraExcludeCount",
+              "widget": "info",
+              "title": "Excluded Cameras",
+              "description": "How many cameras are excluded, from here or over ssh.",
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "MapDataSource",
+                  "equals": 1
+                }
+              ]
+            },
+            {
+              "key": "KoreaCameraExcludeUndo",
+              "widget": "multiple_button",
+              "title": "Bring Back Excluded Cameras",
+              "description": "Last brings back the camera excluded most recently, All brings back every one.",
+              "options": [
+                {
+                  "value": 0,
+                  "label": "-"
+                },
+                {
+                  "value": 1,
+                  "label": "Last"
+                },
+                {
+                  "value": 2,
+                  "label": "All"
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "not_engaged"
+                },
+                {
+                  "type": "param",
+                  "key": "MapDataSource",
+                  "equals": 1
+                }
+              ]
+            },
+            {
               "key": "KoreaMapApiKey",
               "widget": "text",
               "secret": true,

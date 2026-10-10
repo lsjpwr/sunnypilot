@@ -96,6 +96,8 @@ REMOTE_READ_DENYLIST = {
   "GithubLogToken",  # writes to the repo that holds every drive's GPS track (sunnypilot/system/github_uploader.py)
   "KoreaTeslaRefreshToken",  # reads the car's location for three months (korea/tesla.py)
   "KoreaTeslaOwnerRefreshToken",  # the Tesla app's own login: the whole account (korea/tesla.py)
+  "KoreaCameraExclude",  # cameras on the driver's own roads; sunnylink sees only KoreaCameraExcludeCount
+  "KoreaCameraRecent",  # the last cameras passed, so where the car was; sunnylink sees KoreaCameraRecentLabel
 }
 
 

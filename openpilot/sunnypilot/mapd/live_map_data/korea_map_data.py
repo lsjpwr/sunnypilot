@@ -30,9 +30,10 @@ from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
-from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
-                                                 CAMERA_SECTION, ROUTE_CORRIDOR_M, SECTION_PASS_M, Bump, Camera,
-                                                 KoreaMapDB, Link, across_the_road, at_section_end, mtime_or_none)
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_EXCLUDE_M,
+                                                 CAMERA_KIND_PARAMS, CAMERA_SECTION, ROUTE_CORRIDOR_M, SECTION_PASS_M,
+                                                 Bump, Camera, KoreaMapDB, Link, across_the_road, at_section_end,
+                                                 excluded, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
@@ -65,6 +66,10 @@ CAMERA_SLOWDOWN_SPEED = 100 * CV.KPH_TO_MS
 SECTION_TRAVEL_FACTOR = 1.5
 SECTION_TRAVEL_SLACK_M = 2000.
 
+# KoreaCameraRecent holds the last slowdown cameras the car passed, newest first, and sunnylink excludes one
+# by its mark (KoreaCameraExcludeAdd). Three: the app's multiple_button takes four choices, one of them "-".
+CAMERA_RECENT_MARKS = "①②③"
+
 
 def parse_camera_exclude(raw: str) -> tuple[tuple[float, float], ...] | None:
   """KoreaCameraExclude, a JSON list of [lat, lon] pairs: cameras the driver has found not to
@@ -73,6 +78,29 @@ def parse_camera_exclude(raw: str) -> tuple[tuple[float, float], ...] | None:
     return tuple((float(lat), float(lon)) for lat, lon in json.loads(raw or "[]"))
   except (TypeError, ValueError):
     return None
+
+
+def parse_camera_recent(raw: str) -> list[tuple[float, float, int, str]]:
+  """KoreaCameraRecent, a JSON list of [lat, lon, limit, "HH:MM"], newest first. Empty when it is not one."""
+  try:
+    return [(float(lat), float(lon), int(limit), str(at))
+            for lat, lon, limit, at in json.loads(raw or "[]")][:len(CAMERA_RECENT_MARKS)]
+  except (TypeError, ValueError):
+    return []
+
+
+def camera_recent_label(recent: list[tuple[float, float, int, str]], exclude: tuple[tuple[float, float], ...]) -> str:
+  """KoreaCameraRecent as sunnylink shows it: "① 30 17:46 ✕  ② 50 17:40", ✕ on an excluded camera.
+  No points: sunnylink reads this, never KoreaCameraRecent (sunnylinkd.REMOTE_READ_DENYLIST)."""
+  return "  ".join(f"{mark} {limit} {at}" + (" ✕" if excluded(lat, lon, exclude) else "")
+                   for mark, (lat, lon, limit, at) in zip(CAMERA_RECENT_MARKS, recent, strict=False)) or "-"
+
+
+def kst_clock() -> str:
+  """HH:MM as the driver reads it, for when a camera was passed: the device clock runs on UTC, and Korea
+  keeps UTC+9 all year."""
+  utc = time.gmtime()
+  return f"{(utc.tm_hour + 9) % 24:02d}:{utc.tm_min:02d}"
 
 
 @dataclass
@@ -132,6 +160,9 @@ class KoreaMapData(BaseMapData):
     self.camera_slowdown_m = 0
     self.camera_exclude: tuple[tuple[float, float], ...] = ()
     self._camera_exclude_raw: str | None = None  # parsed and logged only when it changes
+    # kept across restarts: the driver may exclude one only after the next boot
+    self.camera_recent = parse_camera_recent(self.params.get("KoreaCameraRecent") or "")
+    self._slowdown_last: Camera | None = None  # last tick's slowdown_camera, for note_passed_camera
 
   def _db_mtimes(self) -> tuple[float | None, ...]:
     """When each database file was last written; None for one that is not there."""
@@ -184,7 +215,7 @@ class KoreaMapData(BaseMapData):
     self.db = None
     self.link = None
     self.camera = None
-    self.slowdown_camera = None
+    self.slowdown_camera = self._slowdown_last = None
     self._camera_anchor = None
     self.bump = None
     self._drop_section("map source closed")
@@ -286,6 +317,7 @@ class KoreaMapData(BaseMapData):
         self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
                                                    kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M,
                                                    exclude=self.camera_exclude)
+      self.note_passed_camera()
       self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
       self.update_section(lat, lon)
     except Exception:
@@ -299,6 +331,24 @@ class KoreaMapData(BaseMapData):
       self._give_up()
       self.close()
       cloudlog.exception("korea_map: dropping the database after a query error")
+
+  def note_passed_camera(self) -> None:
+    """Put the slowdown camera the car has just passed at the front of KoreaCameraRecent.
+
+    Passed: it left the slot from within SECTION_PASS_M, and not to a nearer camera, which only stands
+    in front of it, nor while it still holds the slot -- stopped beside a camera, GPS noise moves its
+    distance both ways."""
+    prev, cur = self._slowdown_last, self.slowdown_camera
+    self._slowdown_last = cur
+    if prev is None or prev.distance_m > SECTION_PASS_M:
+      return
+    if cur is not None and ((cur.lat, cur.lon) == (prev.lat, prev.lon) or cur.distance_m <= prev.distance_m):
+      return
+    others = [r for r in self.camera_recent if haversine(r[0], r[1], prev.lat, prev.lon) > CAMERA_EXCLUDE_M]
+    self.camera_recent = [(prev.lat, prev.lon, prev.limit_kph, kst_clock()), *others][:len(CAMERA_RECENT_MARKS)]
+    self.params.put("KoreaCameraRecent", json.dumps(self.camera_recent))
+    self.write_camera_labels()
+    cloudlog.info("korea_map: passed a %d km/h camera", prev.limit_kph)
 
   def update_section(self, lat: float, lon: float) -> None:
     """Track the 구간단속 section we are in, for SpeedLimitAssist to hold its limit.
@@ -395,6 +445,7 @@ class KoreaMapData(BaseMapData):
     self.camera_kinds = frozenset(kind for kind, key in CAMERA_KIND_PARAMS.items() if self.params.get_bool(key))
     self.camera_margin = get_sanitize_int_param("KoreaCameraMargin", *CAMERA_MARGIN_RANGE, self.params)
     self.camera_slowdown_m = get_sanitize_int_param("KoreaCameraSlowdownDistance", *CAMERA_SLOWDOWN_RANGE, self.params)
+    pressed = self.apply_exclude_buttons()
     raw = self.params.get("KoreaCameraExclude") or ""
     if raw != self._camera_exclude_raw:
       self._camera_exclude_raw = raw
@@ -405,6 +456,47 @@ class KoreaMapData(BaseMapData):
         cloudlog.warning("korea_map: KoreaCameraExclude is not a JSON list of [lat, lon]; no camera excluded")
       else:
         cloudlog.info("korea_map: %d camera exclusion point(s)", len(points))
+      self.write_camera_labels()
+    if pressed:
+      # sunnylink re-reads every value when this moves, so its rows show what the button did
+      self.params.put("ParamsVersion", (self.params.get("ParamsVersion") or 0) + 1, block=True)
+
+  def apply_exclude_buttons(self) -> bool:
+    """Carry out sunnylink's buttons once each, then set them back to 0. KoreaCameraExcludeAdd n
+    excludes the n-th camera of KoreaCameraRecent; KoreaCameraExcludeUndo 1 brings back the newest
+    exclusion, 2 all of them. False when neither was pressed."""
+    add = self.params.get("KoreaCameraExcludeAdd") or 0
+    undo = self.params.get("KoreaCameraExcludeUndo") or 0
+    if not (add or undo):
+      return False
+    points = parse_camera_exclude(self.params.get("KoreaCameraExclude") or "")
+    if points is None:
+      # a typo made over ssh excludes nothing, but it is the driver's to fix, not this to overwrite
+      cloudlog.warning("korea_map: KoreaCameraExclude is unreadable; sunnylink button ignored")
+    else:
+      new = list(points)
+      if 1 <= add <= len(self.camera_recent):
+        lat, lon, limit, _ = self.camera_recent[add - 1]
+        if not excluded(lat, lon, new):
+          new.append((lat, lon))
+          cloudlog.info("korea_map: sunnylink excluded a %d km/h camera", limit)
+      if undo in (1, 2) and new:
+        cloudlog.info("korea_map: sunnylink restored %d camera(s)", 1 if undo == 1 else len(new))
+        new = new[:-1] if undo == 1 else []
+      if new != list(points):
+        # blocking: read_camera_params reads it back in this same tick
+        self.params.put("KoreaCameraExclude", json.dumps(new), block=True)
+    self.params.put("KoreaCameraExcludeAdd", 0, block=True)
+    self.params.put("KoreaCameraExcludeUndo", 0, block=True)
+    return True
+
+  def write_camera_labels(self) -> None:
+    """The info rows sunnylink shows: the recent cameras and how many are excluded. Never a point.
+
+    Blocking, like the ParamsVersion bump after them, so sunnylink's re-read finds them on flash. They
+    change only on a pass, a button or an ssh edit."""
+    self.params.put("KoreaCameraRecentLabel", camera_recent_label(self.camera_recent, self.camera_exclude), block=True)
+    self.params.put("KoreaCameraExcludeCount", len(self.camera_exclude), block=True)
 
   def camera_point(self) -> tuple[float, float, float] | None:
     """The slowdown camera as an SCC-Map target: its limit, camera_margin metres short of it.
