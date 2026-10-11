@@ -14,7 +14,7 @@ import unittest
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMERAS, SCHEMA_LINKS,
                                                       insert_bumps, insert_cameras, insert_links, write_db)
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
-                                                 CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SPEED, CAMERA_ZONE,
+                                                 CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE,
                                                  KoreaMapDB, has_camera_kind, has_split_sections, verify)
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
@@ -848,6 +848,44 @@ class TestCameraExclude(KoreaMapDBTestCase):
   def test_a_point_20_m_away_keeps_the_camera(self):
     """An enforcing camera at the same junction must not vanish with the listed one."""
     camera = self.db.next_camera(37.5000, 127.0200, 90., exclude=[(37.50018, 127.0223)])
+    self.assertEqual((camera.lat, camera.lon), CAM_ZONE_NEAR[:2])
+
+
+# ~260 m east on ROAD_60: a 신호·과속 camera between CAM_ZONE_NEAR (~200 m) and CAM_AHEAD (~500 m)
+CAM_SIGNAL_NEAR = (37.5000, 127.0230, 30, 0, CAMERA_SIGNAL)
+# the route along ROAD_60, and its stretch over an overpass from ~90 m to ~350 m east of the car
+ROUTE_OVER = [(37.5000, 127.0200), (37.5000, 127.0210), (37.5000, 127.0240), (37.5000, 127.0320)]
+OVERPASS = ROUTE_OVER[1:3]
+
+
+class TestGradeSeparated(KoreaMapDBTestCase):
+  """next_camera(grade_separated=...): the route's tunnels, overpasses and underpasses."""
+
+  def setUp(self):
+    super().setUp()
+    cams = str(self.tmp_path / "korea_cameras.sqlite")
+    links = str(self.tmp_path / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [CAM_ZONE_NEAR, CAM_SIGNAL_NEAR, CAM_AHEAD]))
+    write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [ROAD_60]))
+    self.db = self.open_db(cams, links)
+
+  def test_street_level_cameras_under_an_overpass_do_not_hide_the_next_one(self):
+    camera = self.db.next_camera(37.5000, 127.0200, 90., route=ROUTE_OVER, grade_separated=[OVERPASS])
+    self.assertEqual((camera.lat, camera.lon), CAM_AHEAD[:2])
+
+  def test_a_speed_camera_under_one_still_counts(self):
+    """과속 cameras can stand on the structure itself: the route's level says nothing about them."""
+    camera = self.db.next_camera(37.5000, 127.0200, 90., route=ROUTE_OVER, grade_separated=[ROUTE_OVER[1:]])
+    self.assertEqual((camera.lat, camera.lon), CAM_AHEAD[:2])
+
+  def test_a_street_level_camera_short_of_the_overpass_counts(self):
+    later = [(37.5000, 127.0226), (37.5000, 127.0240)]  # starts ~26 m past CAM_ZONE_NEAR
+    route = [ROUTE_OVER[0], *later, ROUTE_OVER[-1]]
+    camera = self.db.next_camera(37.5000, 127.0200, 90., route=route, grade_separated=[later])
+    self.assertEqual((camera.lat, camera.lon), CAM_ZONE_NEAR[:2])
+
+  def test_spans_without_a_route_change_nothing(self):
+    camera = self.db.next_camera(37.5000, 127.0200, 90., grade_separated=[OVERPASS])
     self.assertEqual((camera.lat, camera.lon), CAM_ZONE_NEAR[:2])
 
 

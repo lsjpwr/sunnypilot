@@ -171,6 +171,7 @@ class KoreaMapData(BaseMapData):
     # already empty.
     self._last_written_destination: tuple[float, float] | None = None
     self.route: list[tuple[float, float]] = []
+    self.grade_separated: list[list[tuple[float, float]]] = []  # the route's tunnels, overpasses, underpasses
     self.curve_points: list[tuple[float, float, float]] = []
     self.link: Link | None = None
     self.camera: Camera | None = None
@@ -323,7 +324,7 @@ class KoreaMapData(BaseMapData):
     # still being copied down or has just been dropped after a corrupt read -- neither is a
     # reason to feed the lookups (and next_camera/next_bump, gated on self.db below) a route
     # that stopped following the driver.
-    self.route = self.route_source.latest() if self.route_source is not None else []
+    self.route, self.grade_separated = self.route_source.latest() if self.route_source is not None else ([], [])
     if self.route_source is not None and self.localizer_valid:
       self.route_source.set_position(self.last_position.latitude, self.last_position.longitude)
 
@@ -339,7 +340,7 @@ class KoreaMapData(BaseMapData):
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing, route=self.route)
       self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds,
-                                        exclude=self.camera_exclude)
+                                        exclude=self.camera_exclude, grade_separated=self.grade_separated)
       # The sign keeps the wide cone, but only a camera on our road may brake the car. While
       # the car is on the route, next_camera has already held the sign's camera to
       # ROUTE_CORRIDOR_M of the polyline, which bends with the road -- the heading line would
@@ -351,7 +352,7 @@ class KoreaMapData(BaseMapData):
       else:
         self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
                                                    kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M,
-                                                   exclude=self.camera_exclude)
+                                                   exclude=self.camera_exclude, grade_separated=self.grade_separated)
       self.note_passed_camera()
       self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
       self.update_section(lat, lon)

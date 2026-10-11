@@ -56,6 +56,7 @@ def make_data(link=None, camera=None, external=None):
   data.params.values["KoreaRouteCurveEnabled"] = True  # on by default, like params_keys.h
   data._last_written_destination = None
   data.route = []
+  data.grade_separated = []
   data.curve_points = []
   data.link = link
   data.camera = camera
@@ -350,7 +351,7 @@ class StubDB:
   def current_link(self, lat, lon, heading_deg=None, route=None):
     return None
 
-  def next_camera(self, lat, lon, heading_deg, route=None, kinds=None, corridor_m=None, exclude=()):
+  def next_camera(self, lat, lon, heading_deg, route=None, kinds=None, corridor_m=None, exclude=(), grade_separated=()):
     return None
 
   def next_bump(self, lat, lon, heading_deg, route=None):
@@ -686,7 +687,7 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     data.last_bearing = 90.
     data.curve_points = []
     route = [(37.5000, 127.0200), (37.5000, 127.0320)]
-    data.route_source = SimpleNamespace(latest=lambda: route, set_position=lambda lat, lon: None)
+    data.route_source = SimpleNamespace(latest=lambda: (route, []), set_position=lambda lat, lon: None)
 
     seen = {}
     data.db = SimpleNamespace(
@@ -710,8 +711,10 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     data.route_source = None
     data.db = None
     data.route = [(37.5000, 127.0200)]  # a previously-held route must be dropped, not kept
+    data.grade_separated = [[(37.5000, 127.0200), (37.5000, 127.0210)]]  # and its spans with it
     data.update_location()
     self.assertEqual(data.route, [])
+    self.assertEqual(data.grade_separated, [])
 
   def test_the_enabled_kinds_reach_next_camera(self):
     data = make_data()
@@ -752,6 +755,28 @@ class TestRouteReachesTheLookups(unittest.TestCase):
 
     data.update_location()
     self.assertEqual(seen, [((37.5000, 127.0223),)] * 2)
+
+  def test_the_route_spans_reach_both_next_camera_calls(self):
+    """The car ~1.1 km off its route still makes both lookups, and both must know the route's levels."""
+    data = make_data()
+    data.sm = SingleLocationSM(valid_llk())
+    data.last_position = Coordinate(37.5000, 127.0200)
+    route = [(37.5100, 127.0200), (37.5100, 127.0320)]
+    spans = [route]
+    data.route_source = SimpleNamespace(latest=lambda: (route, spans), set_position=lambda lat, lon: None)
+
+    seen = []
+    data.db = SimpleNamespace(
+      reload_if_changed=lambda: False,
+      current_link=lambda *a, **k: None,
+      next_camera=lambda *a, **k: seen.append(k.get("grade_separated")),
+      next_bump=lambda *a, **k: None,
+      section_starts_near=lambda *a, **k: [],
+      section_end_ahead=lambda *a, **k: None,
+    )
+
+    data.update_location()
+    self.assertEqual(seen, [spans] * 2)
 
 
 class TestReadCameraParams(OpenpilotTestCase):
@@ -1101,7 +1126,7 @@ class TestSideRoadCamera(unittest.TestCase):
              lambda con: insert_links(con, [(80, "올림픽대로", [(37.5000, 127.0200), (37.5000, 127.0320)])]))
     data = make_data()
     if route is not None:
-      data.route_source = SimpleNamespace(latest=lambda: route, set_position=lambda lat, lon: None)
+      data.route_source = SimpleNamespace(latest=lambda: (route, []), set_position=lambda lat, lon: None)
     data.db = KoreaMapDB(cams, links)
     self.addCleanup(data.db.close)
     data.sm = SingleLocationSM(valid_llk(37.5000, 127.0200, heading_deg=90.))

@@ -78,6 +78,12 @@ CAMERA_AHEAD_TOLERANCE = 60.
 # dataset the database is built from.
 CAMERA_EXCLUDE_M = 10.
 
+# 신호·과속 and 보호구역 cameras stand only at street level: a tunnel, an overpass or an underpass has
+# no signal and no school. One that a route passes on such a span watches the road on the other level
+# -- on 2026-10-11 two 30 cameras on the road under an overpass held the car on it to 30 for 50 s.
+# 과속 and 구간단속 cameras stay: they can stand on the structure itself.
+STREET_LEVEL_KINDS = frozenset({CAMERA_SIGNAL, CAMERA_ZONE})
+
 # How far off the heading line a camera may sit and still be a slowdown target. The speed
 # limit ahead sign keeps the plain cone above -- showing a camera on a side street costs
 # nothing -- but braking for a camera on a parallel road or the opposite carriageway is a
@@ -274,6 +280,15 @@ def across_the_road(camera: Camera, lat: float, lon: float, heading_deg: float) 
 def excluded(lat: float, lon: float, exclude: Collection[tuple[float, float]]) -> bool:
   """Is a camera here on KoreaCameraExclude, within CAMERA_EXCLUDE_M of one of its points?"""
   return any(haversine(lat, lon, elat, elon) <= CAMERA_EXCLUDE_M for elat, elon in exclude)
+
+
+def on_grade_separated(route: list[tuple[float, float]] | None, grade_separated: Collection[list[tuple[float, float]]],
+                       lat: float, lon: float) -> bool:
+  """Is the route's nearest point to (lat, lon) on one of its tunnel, overpass or underpass spans?
+  The spans are cut from the route's own points (route.parse_grade_separated), so a tie is the same segment."""
+  if not route or not grade_separated:
+    return False
+  return min(distance_to_route(span, lat, lon) for span in grade_separated) <= distance_to_route(route, lat, lon)
 
 
 class KoreaMapDB:
@@ -481,7 +496,8 @@ class KoreaMapDB:
                   route: list[tuple[float, float]] | None = None,
                   kinds: Collection[int] | None = None,
                   corridor_m: float | None = None,
-                  exclude: Collection[tuple[float, float]] = ()) -> Camera | None:
+                  exclude: Collection[tuple[float, float]] = (),
+                  grade_separated: Collection[list[tuple[float, float]]] = ()) -> Camera | None:
     """Nearest speed camera ahead of us, or None. Needs a heading to know what 'ahead' means.
 
     With a route, 'ahead' stops being a bearing cone and becomes the road we will actually
@@ -501,6 +517,10 @@ class KoreaMapDB:
     exclude holds (lat, lon) points of cameras the driver has found not to enforce
     (KoreaCameraExclude). A camera within CAMERA_EXCLUDE_M of one is skipped before it can
     become the best, so like a kind that is off it never hides the camera behind it.
+
+    grade_separated holds the route's tunnel, overpass and underpass spans (RouteSource.latest).
+    A STREET_LEVEL_KINDS camera whose nearest route point lies on one is skipped the same way:
+    the route passes it on another level.
     """
     if heading_deg is None:
       return None
@@ -525,6 +545,8 @@ class KoreaMapDB:
       if excluded(clat, clon, exclude):
         continue
       if not _on_path(lat, lon, clat, clon, heading_deg, route, CAMERA_AHEAD_TOLERANCE, corridor_m=corridor_m):
+        continue
+      if kind in STREET_LEVEL_KINDS and on_grade_separated(route, grade_separated, clat, clon):
         continue
       best = Camera(lat=clat, lon=clon, limit_kph=limit_kph, distance_m=distance, section_m=section_m, kind=kind)
 

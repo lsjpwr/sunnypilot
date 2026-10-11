@@ -6,10 +6,11 @@ See the LICENSE.md file in the root directory for more details.
 
 route: turns a destination into a polyline, and the polyline into slowdown targets.
 
-Only the geometry is taken from the routing provider. Speed limits and cameras already
-live in the local sqlite databases, so the route's single job is telling the lookups
-which way we go at a fork. That keeps the parser thin enough to swap providers by
-editing parse_route alone.
+Only the geometry, and which parts of it are tunnels, overpasses or underpasses, is taken
+from the routing provider. Speed limits and cameras already live in the local sqlite
+databases, so the route's job is telling the lookups which way we go at a fork, and on
+which level. That keeps the parser thin enough to swap providers by editing parse_route
+and parse_grade_separated alone.
 
 Deliberately free of openpilot imports so it runs under a bare Python interpreter --
 same rule as db.py and geo.py.
@@ -88,6 +89,25 @@ def parse_route(payload: dict) -> list[tuple[float, float]]:
   return points
 
 
+# TMAP's LineString facilityType for a road on a level of its own: 2 터널, 3 고가도로, 4 지하도로
+# (tmapRouteDoc; ints in the live answers). 1 교량 is left out: a bridge has junctions at both ends.
+GRADE_SEPARATED_FACILITIES = frozenset({2, 3, 4})
+
+
+def parse_grade_separated(payload: dict) -> list[list[tuple[float, float]]]:
+  """The route's tunnels, overpasses and underpasses: each LineString TMAP marks with one of
+  GRADE_SEPARATED_FACILITIES, as (lat, lon), in route order. [] for anything unreadable, which
+  is what an answer without them gives too. Read only from an answer parse_route accepted."""
+  try:
+    return [[(float(lat), float(lon)) for lon, lat in feat["geometry"]["coordinates"]]
+            for feat in payload.get("features") or []
+            if (feat.get("properties") or {}).get("facilityType") in GRADE_SEPARATED_FACILITIES
+            and (feat.get("geometry") or {}).get("type") == "LineString"]
+  except (AttributeError, KeyError, TypeError, ValueError):
+    LOG.warning("route: unreadable facility spans, using none")
+    return []
+
+
 ROUTE_URL = "https://apis.openapi.sk.com/tmap/routes?version=1&format=json"
 # Much shorter than camera_refresh's 30 s: that one runs offroad with all day to finish,
 # this one is a driver waiting for a reroute. A request that has not answered in 10 s has
@@ -144,20 +164,21 @@ def build_request(api_key: str, start: tuple[float, float],
 
 def fetch_route(api_key: str, start: tuple[float, float], dest: tuple[float, float],
                 opener=urllib.request.urlopen, budget: RequestBudget | None = None
-                ) -> list[tuple[float, float]]:
-  """One routing request. [] for anything that does not produce a route we trust.
+                ) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
+  """One routing request: the polyline and its grade-separated spans (parse_grade_separated).
+  ([], []) for anything that does not produce a route we trust.
 
   Every reason to not make the request is checked before the socket is touched, so a
   missing key or a bad destination costs nothing.
   """
   if not api_key:
     LOG.warning("route: no KoreaRouteApiKey set")
-    return []
+    return [], []
   if not in_korea(*start) or not in_korea(*dest):
-    return []
+    return [], []
   if budget is not None and not budget.allow():
     LOG.warning("route: daily request cap reached")
-    return []
+    return [], []
 
   try:
     if budget is not None:
@@ -169,12 +190,13 @@ def fetch_route(api_key: str, start: tuple[float, float], dest: tuple[float, flo
     # truncated body can raise almost anything -- all of them mean the same thing here,
     # and this runs on a thread whose death would silently disable the feature.
     LOG.warning("route: request failed", exc_info=True)
-    return []
+    return [], []
 
   if not isinstance(payload, dict):
-    return []
+    return [], []
   LOG.info("route: answer %s", summarize_route(payload))
-  return parse_route(payload)
+  points = parse_route(payload)
+  return points, (parse_grade_separated(payload) if points else [])
 
 
 # What a camera or enforcement point would say in a TMAP text field (description, name)
@@ -250,13 +272,15 @@ class RouteState:
 
   def __init__(self, clock=time.monotonic):
     self.route: list[tuple[float, float]] = []
+    self.grade_separated: list[list[tuple[float, float]]] = []  # route's tunnels, overpasses, underpasses
     self._clock = clock
     self._off_ticks = 0
     self._failures = 0
     self._last_request = None  # None means 'never asked', which must not be a cooldown
 
-  def set_route(self, route: list[tuple[float, float]]) -> None:
+  def set_route(self, route: list[tuple[float, float]], grade_separated: list[list[tuple[float, float]]] | None = None) -> None:
     self.route = route
+    self.grade_separated = grade_separated or []  # spans of another route never outlive it
     self._off_ticks = 0
 
   def note_request(self) -> None:
@@ -458,12 +482,13 @@ class RouteSource:
     with self._lock:
       self._position = (lat, lon)
 
-  def latest(self) -> list[tuple[float, float]]:
+  def latest(self) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
+    """The route and its grade-separated spans, read under one lock so both come from the same answer."""
     # RouteState is single-owner and documents no lock of its own -- this is the boundary
     # where the control loop's reads and the route thread's writes actually cross, so the
     # lock belongs here, not inside RouteState.
     with self._lock:
-      return self.state.route
+      return self.state.route, self.state.grade_separated
 
   def _destination(self, params) -> tuple[float, float] | None:
     """The destination athenad's setNavDestination RPC, the UDP socket and korea/tesla.py write."""
@@ -513,11 +538,11 @@ class RouteSource:
             self.state.set_route([])
         elif self.state.update(*position):
           api_key = params.get("KoreaRouteApiKey", return_default=True) or ""
-          route = fetch_route(api_key, position, destination, budget=self.budget)
+          route, grade_separated = fetch_route(api_key, position, destination, budget=self.budget)
           self.state.note_request()
           if route:
             with self._lock:
-              self.state.set_route(route)
+              self.state.set_route(route, grade_separated)
             if self._save_dir is not None:
               try:
                 save_route(self._save_dir, route)

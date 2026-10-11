@@ -21,12 +21,17 @@ from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, MIN_V_MS,
                                                    OFF_ROUTE_TICKS, REROUTE_BACKOFF_S, RequestBudget, RouteSource,
                                                    RouteState, arrived, build_request, curve_targets,
-                                                   distance_to_route, fetch_route, in_korea, parse_route,
-                                                   route_progress, save_route, summarize_route)
+                                                   distance_to_route, fetch_route, in_korea, parse_grade_separated,
+                                                   parse_route, route_progress, save_route, summarize_route)
 
 
 def feature(coords, kind="LineString"):
   return {"type": "Feature", "geometry": {"type": kind, "coordinates": coords}}
+
+
+def road(coords, facility):
+  """A LineString the way TMAP sends it, with its facilityType."""
+  return {**feature(coords), "properties": {"facilityType": facility}}
 
 
 # TMAP answers GeoJSON: coordinates are [lon, lat], LineString features carry the road
@@ -84,6 +89,30 @@ class TestParseRoute(unittest.TestCase):
                 {"features": [feature([["nope", "nope"]])]}):
       with self.assertLogs(route.LOG, level="DEBUG"):
         self.assertEqual(parse_route(bad), [])
+
+
+class TestParseGradeSeparated(unittest.TestCase):
+  def test_tunnels_overpasses_and_underpasses_are_kept_in_route_order(self):
+    payload = {"features": [
+      road([[126.9780, 37.5665], [126.9800, 37.5600]], 0),  # 일반도로
+      road([[126.9800, 37.5600], [126.9850, 37.5500]], 3),  # 고가도로
+      road([[126.9850, 37.5500], [126.9900, 37.5450]], 1),  # 교량: junctions at both ends, left out
+      road([[126.9900, 37.5450], [126.9950, 37.5400]], 4),  # 지하도로
+      road([[126.9950, 37.5400], [127.0000, 37.5350]], 2),  # 터널
+      feature([126.9800, 37.5600], kind="Point"),
+    ]}
+    self.assertEqual(parse_grade_separated(payload), [
+      [(37.5600, 126.9800), (37.5500, 126.9850)],
+      [(37.5450, 126.9900), (37.5400, 126.9950)],
+      [(37.5400, 126.9950), (37.5350, 127.0000)],
+    ])
+
+  def test_an_answer_without_facility_codes_has_none(self):
+    self.assertEqual(parse_grade_separated(SAMPLE), [])
+
+  def test_unreadable_spans_are_none_not_an_exception(self):
+    with self.assertLogs(route.LOG, level="WARNING"):
+      self.assertEqual(parse_grade_separated({"features": [{"properties": "x"}]}), [])
 
 
 class FakeResponse:
@@ -169,20 +198,28 @@ class TestRequestBudget(unittest.TestCase):
 class TestFetchRoute(unittest.TestCase):
   def test_a_good_answer_becomes_a_polyline(self):
     with self.assertLogs(route.LOG, level="DEBUG"):
-      result = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276), opener=fake_opener(SAMPLE))
-    self.assertEqual(len(result), 4)
+      points, grade_separated = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276), opener=fake_opener(SAMPLE))
+    self.assertEqual(len(points), 4)
+    self.assertEqual(grade_separated, [])
+
+  def test_the_overpasses_come_with_the_polyline(self):
+    payload = {"features": [road([[126.9780, 37.5665], [126.9800, 37.5600]], 0), road([[126.9800, 37.5600], [126.9850, 37.5500]], 3)]}
+    with self.assertLogs(route.LOG, level="DEBUG"):
+      points, grade_separated = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276), opener=fake_opener(payload))
+    self.assertEqual(len(points), 3)
+    self.assertEqual(grade_separated, [[(37.5600, 126.9800), (37.5500, 126.9850)]])
 
   def test_an_http_failure_is_an_empty_route(self):
     def boom(request, timeout=None):
       raise OSError("no network")
     with self.assertLogs(route.LOG, level="DEBUG"):
-      self.assertEqual(fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276), opener=boom), [])
+      self.assertEqual(fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276), opener=boom), ([], []))
 
   def test_a_destination_outside_korea_is_never_requested(self):
     capture = []
     route = fetch_route("K", (37.5665, 126.9780), (35.6762, 139.6503),
                         opener=fake_opener(SAMPLE, capture))
-    self.assertEqual(route, [])
+    self.assertEqual(route, ([], []))
     self.assertEqual(capture, [])
 
   def test_an_empty_key_is_never_requested(self):
@@ -190,7 +227,7 @@ class TestFetchRoute(unittest.TestCase):
     with self.assertLogs(route.LOG, level="DEBUG"):
       result = fetch_route("", (37.5665, 126.9780), (37.4979, 127.0276),
                            opener=fake_opener(SAMPLE, capture))
-    self.assertEqual(result, [])
+    self.assertEqual(result, ([], []))
     self.assertEqual(capture, [])
 
   def test_the_budget_stops_the_request_before_the_socket(self):
@@ -199,7 +236,7 @@ class TestFetchRoute(unittest.TestCase):
     with self.assertLogs(route.LOG, level="DEBUG"):
       result = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276),
                            opener=fake_opener(SAMPLE, capture), budget=budget)
-    self.assertEqual(result, [])
+    self.assertEqual(result, ([], []))
     self.assertEqual(capture, [])
 
   def test_budget_spend_is_enforced_on_subsequent_requests(self):
@@ -209,14 +246,14 @@ class TestFetchRoute(unittest.TestCase):
     with self.assertLogs(route.LOG, level="DEBUG"):
       result1 = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276),
                             opener=fake_opener(SAMPLE, capture), budget=budget)
-    self.assertEqual(len(result1), 4)
+    self.assertEqual(len(result1[0]), 4)
     self.assertEqual(len(capture), 1)
     # Second call should be blocked by the spent budget
     capture.clear()
     with self.assertLogs(route.LOG, level="DEBUG"):
       result2 = fetch_route("K", (37.5665, 126.9780), (37.4979, 127.0276),
                             opener=fake_opener(SAMPLE, capture), budget=budget)
-    self.assertEqual(result2, [])
+    self.assertEqual(result2, ([], []))
     self.assertEqual(capture, [])
 
 
@@ -362,6 +399,11 @@ class TestRouteState(unittest.TestCase):
     # like arriving back on the route does, with the clock never having moved.
     state.reset_backoff()
     self.assertTrue(state.update(37.5675, 126.9780))
+
+  def test_dropping_the_route_drops_its_spans(self):
+    self.state.set_route(STRAIGHT, [STRAIGHT[2:5]])
+    self.state.set_route([])
+    self.assertEqual(self.state.grade_separated, [])
 
 
 class TestRouteSourceDestination(unittest.TestCase):
@@ -623,7 +665,7 @@ class TestRouteSourceLoopDestinationChange(unittest.TestCase):
 
     def fake_fetch_route(api_key, start, dest, budget=None):
       fetch_calls.append(dest)
-      return STRAIGHT  # a route with the car (STRAIGHT[0]) already sitting on it
+      return STRAIGHT, []  # a route with the car (STRAIGHT[0]) already sitting on it
 
     source = RouteSource(clock=FakeClock())
     source.set_position(*STRAIGHT[0])
@@ -681,10 +723,11 @@ class TestSaveRoute(unittest.TestCase):
       source = RouteSource(clock=FakeClock(), save_dir=d)
       source.set_position(*STRAIGHT[0])
       source._stop = OneTickStop()
-      with mock.patch.object(route, "fetch_route", lambda *a, **k: STRAIGHT):
+      with mock.patch.object(route, "fetch_route", lambda *a, **k: (STRAIGHT, [STRAIGHT[2:5]])):
         with mock.patch.dict(sys.modules, {"openpilot.common.params": params_mod}):
           source._loop()
       self.assertEqual(len(os.listdir(d)), 1)
+      self.assertEqual(source.latest(), (STRAIGHT, [STRAIGHT[2:5]]))  # the spans travel with their route
 
 
 class TestRouteProgress(unittest.TestCase):
