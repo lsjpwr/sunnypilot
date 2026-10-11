@@ -28,8 +28,8 @@ from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_
                                                  CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED,
                                                  CAMERA_ZONE, Bump, Camera, KoreaMapDB, Link)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
-from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KoreaMapData, camera_recent_label, kst_clock,
-                                                                    parse_camera_recent)
+from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KoreaMapData, camera_page, camera_recent_label,
+                                                                    kst_clock, parse_camera_recent)
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
@@ -871,6 +871,10 @@ class TestRecentCameras(unittest.TestCase):
     data = self.drive(zone_camera(30, 40., *self.A), None, exclude=(self.A,))
     self.assertEqual(data.params.values["KoreaCameraRecentLabel"], "① 30 17:46 ✕")
 
+  def test_a_pass_updates_the_log_repo_page(self):
+    data = self.drive(zone_camera(30, 40., *self.A), None)
+    self.assertIn("[Road View](https://map.kakao.com/link/roadview/37.500900,127.022800)", data.params.values["KoreaCameraPage"])
+
   def test_the_label_numbers_the_cameras_and_says_none_when_empty(self):
     recent = [(*self.A, 30, "17:46"), (*self.B, 50, "17:40")]
     self.assertEqual(camera_recent_label(recent, (self.B,)), "① 30 17:46  ② 50 17:40 ✕")
@@ -885,6 +889,43 @@ class TestRecentCameras(unittest.TestCase):
     """The device clock runs on UTC; the driver reads Korean time, past midnight too."""
     with mock.patch("time.gmtime", return_value=time.gmtime(15 * 3600 + 30 * 60)):
       self.assertEqual(kst_clock(), "00:30")
+
+
+class TestCameraPage(unittest.TestCase):
+  """cameras.md, which github_uploader puts in the log repo: the recent and excluded cameras as Kakao Map
+  and Road View links, and a map GitHub draws from the geojson block."""
+
+  RECENT = [(37.5001, 127.0201, 30, "17:46"), (37.5101, 127.0301, 50, "17:40"), (37.5201, 127.0401, 60, "17:31")]
+  EXCLUDE = ((37.4001, 127.1001), (37.5101, 127.0301))
+
+  def test_each_recent_camera_is_a_row_marked_when_excluded(self):
+    rows = [line.split(" | ")[:3] for line in camera_page(self.RECENT, self.EXCLUDE).splitlines() if line[:3] in ("| ①", "| ②", "| ③")]
+    self.assertEqual(rows, [["| ①", "30", "17:46"], ["| ② ✕", "50", "17:40"], ["| ③", "60", "17:31"]])
+
+  def test_the_links_open_kakao_map_and_road_view_at_the_camera(self):
+    page = camera_page(self.RECENT, self.EXCLUDE)
+    self.assertIn("[Kakao Map](https://map.kakao.com/link/map/%E2%91%A030,37.500100,127.020100)", page)  # ①30
+    self.assertIn("[Road View](https://map.kakao.com/link/roadview/37.500100,127.020100)", page)
+
+  def test_excluded_cameras_are_numbered_and_the_one_last_brings_back_is_marked(self):
+    page = camera_page(self.RECENT, self.EXCLUDE)
+    self.assertIn("## Excluded Cameras (2)", page)
+    self.assertIn("| 1 | [Kakao Map](https://map.kakao.com/link/map/%E2%9C%951,37.400100,127.100100)", page)  # ✕1
+    self.assertIn("| 2 (Last) | [Kakao Map](https://map.kakao.com/link/map/%E2%9C%952,37.510100,127.030100)", page)
+
+  def test_the_map_holds_every_camera_longitude_first(self):
+    block = camera_page(self.RECENT, self.EXCLUDE).split("```geojson\n")[1].split("\n```")[0]
+    features = [(f["properties"]["title"], f["properties"]["marker-color"], f["geometry"]["coordinates"])
+                for f in json.loads(block)["features"]]
+    self.assertEqual(features, [("① 30 17:46", "#1e66f5", [127.0201, 37.5001]), ("② 50 17:40", "#1e66f5", [127.0301, 37.5101]),
+                                ("③ 60 17:31", "#1e66f5", [127.0401, 37.5201]), ("✕1", "#d20f39", [127.1001, 37.4001]),
+                                ("✕2", "#d20f39", [127.0301, 37.5101])])
+
+  def test_with_no_cameras_it_says_so_and_draws_no_map(self):
+    page = camera_page([], ())
+    self.assertEqual(page.count("None yet."), 2)
+    self.assertNotIn("## Map", page)
+    self.assertNotIn("|", page)
 
 
 class TestExcludeCommands(OpenpilotTestCase):
@@ -943,6 +984,7 @@ class TestExcludeCommands(OpenpilotTestCase):
     self.tick(KoreaCameraExclude="[[37.5001, 127.0201]]")
     self.assertEqual(Params().get("KoreaCameraExcludeCount"), 1)
     self.assertEqual(Params().get("KoreaCameraRecentLabel"), "① 30 17:46 ✕  ② 50 17:40")
+    self.assertIn("## Excluded Cameras (1)", Params().get("KoreaCameraPage"))
 
   def test_a_button_tells_sunnylink_to_read_again(self):
     """The app re-reads every value when ParamsVersion moves, so the rows show what was just done."""

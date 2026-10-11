@@ -98,6 +98,7 @@ REMOTE_READ_DENYLIST = {
   "KoreaTeslaOwnerRefreshToken",  # the Tesla app's own login: the whole account (korea/tesla.py)
   "KoreaCameraExclude",  # cameras on the driver's own roads; sunnylink sees only KoreaCameraExcludeCount
   "KoreaCameraRecent",  # the last cameras passed, so where the car was; sunnylink sees KoreaCameraRecentLabel
+  "KoreaCameraPage",  # both of the above as map links, for the log repo only (sunnypilot/system/github_uploader.py)
 }
 
 

@@ -22,6 +22,7 @@ import math
 import os
 import platform
 import time
+import urllib.parse
 from dataclasses import dataclass
 
 from openpilot.cereal import log
@@ -94,6 +95,40 @@ def camera_recent_label(recent: list[tuple[float, float, int, str]], exclude: tu
   No points: sunnylink reads this, never KoreaCameraRecent (sunnylinkd.REMOTE_READ_DENYLIST)."""
   return "  ".join(f"{mark} {limit} {at}" + (" ✕" if excluded(lat, lon, exclude) else "")
                    for mark, (lat, lon, limit, at) in zip(CAMERA_RECENT_MARKS, recent, strict=False)) or "-"
+
+
+def camera_page(recent: list[tuple[float, float, int, str]], exclude: tuple[tuple[float, float], ...]) -> str:
+  """cameras.md, which github_uploader puts in the owner's GitHub log repo: where the recent and the
+  excluded cameras are, as Kakao Map and Road View links (apis.map.kakao.com/web/guide, 지도 URL) and a
+  map GitHub draws from the geojson block. It holds the points, so sunnylink never reads it
+  (sunnylinkd.REMOTE_READ_DENYLIST); the log repo holds every drive's GPS track already."""
+  def links(name: str, lat: float, lon: float) -> str:
+    return (f"[Kakao Map](https://map.kakao.com/link/map/{urllib.parse.quote(name, safe='')},{lat:.6f},{lon:.6f}) · " +
+            f"[Road View](https://map.kakao.com/link/roadview/{lat:.6f},{lon:.6f})")
+
+  marked = list(zip(CAMERA_RECENT_MARKS, recent, strict=False))
+  lines = ["# Speed Cameras", "", "## Recent Slowdown Cameras"]
+  if marked:
+    lines += ["Newest first, numbered as in sunnylink. ✕ = excluded.", "", "| | Limit | Passed | Location |", "|---|---|---|---|"]
+    lines += [f"| {mark}{' ✕' if excluded(lat, lon, exclude) else ''} | {limit} | {at} | {links(f'{mark}{limit}', lat, lon)} |"
+              for mark, (lat, lon, limit, at) in marked]
+  else:
+    lines.append("None yet.")
+  lines += ["", f"## Excluded Cameras ({len(exclude)})"]
+  if exclude:
+    lines += ['"Last" in sunnylink brings back the bottom one.', "", "| | Location |", "|---|---|"]
+    lines += [f"| {i}{' (Last)' if i == len(exclude) else ''} | {links(f'✕{i}', lat, lon)} |" for i, (lat, lon) in enumerate(exclude, 1)]
+  else:
+    lines.append("None yet.")
+
+  points = [(f"{mark} {limit} {at}", "#1e66f5", lat, lon) for mark, (lat, lon, limit, at) in marked]  # blue
+  points += [(f"✕{i}", "#d20f39", lat, lon) for i, (lat, lon) in enumerate(exclude, 1)]  # red
+  if points:
+    features = [{"type": "Feature", "properties": {"title": title, "marker-color": color},
+                 "geometry": {"type": "Point", "coordinates": [round(lon, 6), round(lat, 6)]}}  # GeoJSON is lon, lat
+                for title, color, lat, lon in points]
+    lines += ["", "## Map", "```geojson", json.dumps({"type": "FeatureCollection", "features": features}, ensure_ascii=False), "```"]
+  return "\n".join(lines) + "\n"
 
 
 def kst_clock() -> str:
@@ -491,12 +526,14 @@ class KoreaMapData(BaseMapData):
     return True
 
   def write_camera_labels(self) -> None:
-    """The info rows sunnylink shows: the recent cameras and how many are excluded. Never a point.
+    """The info rows sunnylink shows: the recent cameras and how many are excluded, never a point. And
+    cameras.md with the points, for github_uploader alone to put in the log repo (camera_page).
 
     Blocking, like the ParamsVersion bump after them, so sunnylink's re-read finds them on flash. They
     change only on a pass, a button or an ssh edit."""
     self.params.put("KoreaCameraRecentLabel", camera_recent_label(self.camera_recent, self.camera_exclude), block=True)
     self.params.put("KoreaCameraExcludeCount", len(self.camera_exclude), block=True)
+    self.params.put("KoreaCameraPage", camera_page(self.camera_recent, self.camera_exclude), block=True)
 
   def camera_point(self) -> tuple[float, float, float] | None:
     """The slowdown camera as an SCC-Map target: its limit, camera_margin metres short of it.

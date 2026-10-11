@@ -15,7 +15,12 @@ of in one batch at the end.
 
 All it needs is GithubLogRepo ("owner/name") and GithubLogToken, a fine-grained token for that
 one repo with Contents read and write. Nothing here talks to comma.
+
+It also keeps cameras.md at the top of that repo: the recent and the excluded speed cameras as map
+links, which mapd writes to KoreaCameraPage (korea_map_data.camera_page). That goes up while parked,
+once no log file is waiting.
 """
+import base64
 import json
 import os
 import re
@@ -59,6 +64,7 @@ UPLOAD_GAP_S = 1.  # GitHub's secondary rate limits: 80 content-creating request
 MAX_BACKOFF_S = 300.
 RATE_LIMIT_BACKOFF_S = 60.  # once GitHub rate-limits, it asks for at least a minute before the next try
 REPO_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
+PAGE_PATH = "cameras.md"
 
 
 def is_uploaded(path: str) -> bool:
@@ -237,9 +243,28 @@ class GithubReleases:
         if e.code not in (404, 422):  # the tag is gone already
           raise
 
+  def put_file(self, path: str, text: str) -> bool:
+    """Make `path` on the default branch hold `text`. False, and no commit, when it does already, as
+    after a restart."""
+    url = f"{API_URL}/repos/{self._repo}/contents/{path}"
+    try:
+      current = self._call("GET", url)
+    except urllib.error.HTTPError as e:
+      if e.code != 404:
+        raise
+      current = None
+    data = text.encode()
+    body = {"message": f"update {path}", "content": base64.b64encode(data).decode()}
+    if current is not None:
+      if base64.b64decode(current.get("content", "")) == data:  # GitHub breaks it into lines, which b64decode skips
+        return False
+      body["sha"] = current["sha"]
+    self._call("PUT", url, json.dumps(body).encode())
+    return True
+
 
 class GithubUploader:
-  """Uploads the oldest pending file per step: finished qlogs first, then closed swaglog files."""
+  """Uploads the oldest pending file per step: finished qlogs first, then closed swaglog files, then cameras.md."""
 
   # The wall clock on purpose: segment_closed compares it with file mtimes.
   def __init__(self, releases, log_root: str, swaglog_root: str, clock=time.time):  # noqa: TID251
@@ -249,15 +274,22 @@ class GithubUploader:
     self._clock = clock
     self._release_ids: dict[str, int] = {}
     self._prune_due = False
+    self._page_sent: str | None = None
 
   def pending(self) -> list[tuple[str, str, str]]:
     return pending_qlogs(self.log_root, self._clock()) + pending_swaglogs(self.swaglog_root, drive_windows(self.log_root))
 
-  def step(self) -> bool:
-    """Upload the oldest pending file. False when nothing is pending; a failed request raises."""
+  def step(self, page: str | None = None) -> bool:
+    """Upload the oldest pending file, or with none pending, `page` as cameras.md if it changed: last, so
+    it never holds up a drive's logs. False when there is nothing to do; a failed request raises."""
     pending = self.pending()
     if not pending:
-      return False
+      if not page or page == self._page_sent:
+        return False
+      if self.releases.put_file(PAGE_PATH, page):
+        cloudlog.info("github_uploader: %s updated", PAGE_PATH)
+      self._page_sent = page
+      return True
     route, name, path = pending[0]
     try:
       with open(path, "rb") as f:
@@ -317,9 +349,11 @@ def main() -> None:
     if (token, repo) != credentials:
       credentials = (token, repo)
       uploader = GithubUploader(GithubReleases(token, repo), Paths.log_root(), Paths.swaglog_root())
+    # cameras.md only while parked: on the road it changes, and would be a commit, at every camera passed
+    page = None if sm["deviceState"].started else params.get("KoreaCameraPage")
     status = None
     try:
-      time.sleep(UPLOAD_GAP_S if uploader.step() else IDLE_S)
+      time.sleep(UPLOAD_GAP_S if uploader.step(page) else IDLE_S)
       backoff = 0.
       continue
     except urllib.error.HTTPError as e:

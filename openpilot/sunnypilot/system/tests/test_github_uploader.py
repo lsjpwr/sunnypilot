@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import base64
 import io
 import json
 import os
@@ -257,6 +258,31 @@ class TestGithubReleases(unittest.TestCase):
       self.assertEqual(request.get_header("Authorization"), f"Bearer {TOKEN}")
       self.assertNotIn(TOKEN, request.full_url)
 
+  def test_a_missing_file_is_created(self):
+    opener = ScriptedOpener(http_error(404), {"content": {"sha": "new"}})
+    self.assertTrue(GithubReleases(TOKEN, REPO, opener).put_file("cameras.md", "# Speed Cameras\n"))
+    url = f"https://api.github.com/repos/{REPO}/contents/cameras.md"
+    self.assertEqual(opener.calls(), [("GET", url), ("PUT", url)])
+    self.assertEqual(json.loads(opener.requests[1].data),
+                     {"message": "update cameras.md", "content": base64.b64encode(b"# Speed Cameras\n").decode()})
+
+  def test_a_different_file_is_replaced_by_its_sha(self):
+    opener = ScriptedOpener({"sha": "old", "content": base64.b64encode(b"old\n").decode()}, {"content": {"sha": "new"}})
+    self.assertTrue(GithubReleases(TOKEN, REPO, opener).put_file("cameras.md", "new\n"))
+    body = json.loads(opener.requests[1].data)
+    self.assertEqual((body["sha"], base64.b64decode(body["content"])), ("old", b"new\n"))
+
+  def test_a_file_that_holds_the_text_already_gets_no_commit(self):
+    """As after a restart. GitHub sends the content as base64 broken into lines."""
+    text = "① 30 17:46 " * 20 + "\n"
+    opener = ScriptedOpener({"sha": "old", "content": base64.encodebytes(text.encode()).decode()})
+    self.assertFalse(GithubReleases(TOKEN, REPO, opener).put_file("cameras.md", text))
+    self.assertEqual(len(opener.requests), 1)
+
+  def test_other_errors_while_reading_a_file_raise(self):
+    with self.assertRaises(urllib.error.HTTPError):
+      GithubReleases(TOKEN, REPO, ScriptedOpener(http_error(500))).put_file("cameras.md", "x")
+
 
 class FakeReleases:
   """GithubReleases stand-in: hands out release ids and records the uploads."""
@@ -264,10 +290,12 @@ class FakeReleases:
   def __init__(self):
     self.ids: dict[str, int] = {}
     self.assets: list[tuple[int, str, bytes]] = []
+    self.files: list[tuple[str, str]] = []
     self.lookups = 0
     self.prunes = 0
     self.upload_error: Exception | None = None
     self.prune_error: Exception | None = None
+    self.put_error: Exception | None = None
 
   def release_id(self, tag):
     self.lookups += 1
@@ -286,6 +314,13 @@ class FakeReleases:
       error, self.prune_error = self.prune_error, None
       raise error
     self.prunes += 1
+
+  def put_file(self, path, text):
+    if self.put_error is not None:
+      error, self.put_error = self.put_error, None
+      raise error
+    self.files.append((path, text))
+    return True
 
 
 class TestGithubUploader(LogDirs):
@@ -370,6 +405,31 @@ class TestGithubUploader(LogDirs):
     releases.upload_error = None
     self.assertTrue(uploader.step())
     self.assertEqual([name for _, name, _ in releases.assets], [f"{route(1)}--1--qlog.zst"])
+
+  def test_the_camera_page_waits_for_the_log_files_and_goes_up_once_per_change(self):
+    self.segment(1, 0)
+    releases = FakeReleases()
+    uploader = self.uploader(releases)
+    self.assertTrue(uploader.step("PAGE 1"))  # the qlog
+    self.assertEqual(releases.files, [])
+    self.assertEqual([uploader.step("PAGE 1"), uploader.step("PAGE 1"), uploader.step("PAGE 2")], [True, False, True])
+    self.assertEqual(releases.files, [("cameras.md", "PAGE 1"), ("cameras.md", "PAGE 2")])
+
+  def test_no_camera_page_while_driving_or_without_one(self):
+    """main passes None on the road; "" is the param before mapd first writes it."""
+    releases = FakeReleases()
+    uploader = self.uploader(releases)
+    self.assertEqual([uploader.step(None), uploader.step(""), uploader.step()], [False, False, False])
+    self.assertEqual(releases.files, [])
+
+  def test_a_failed_camera_page_raises_and_goes_up_on_the_next_step(self):
+    releases = FakeReleases()
+    releases.put_error = http_error(500)
+    uploader = self.uploader(releases)
+    with self.assertRaises(urllib.error.HTTPError):
+      uploader.step("PAGE")
+    self.assertTrue(uploader.step("PAGE"))
+    self.assertEqual(releases.files, [("cameras.md", "PAGE")])
 
 
 class TestBackoff(unittest.TestCase):
