@@ -26,7 +26,8 @@ from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LIN
                                                       insert_links, write_db)
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_KIND_PARAMS,
                                                  CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED,
-                                                 CAMERA_ZONE, Bump, Camera, KoreaMapDB, Link)
+                                                 CAMERA_ZONE, FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN,
+                                                 Bump, Camera, KoreaMapDB, Link)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KoreaMapData, camera_page, camera_recent_label,
                                                                     kst_clock, parse_camera_recent)
@@ -73,6 +74,8 @@ def make_data(link=None, camera=None, external=None):
   data._camera_exclude_raw = None
   data.camera_recent = []
   data._slowdown_last = None
+  data._pass_hold = None
+  data.camera_pass_hold = 60
   data.localizer_valid = True
   data.section = None
   data._section_prev = None
@@ -114,6 +117,8 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
   data._camera_anchor = None
   data.camera_margin = margin
   data.camera_slowdown_m = slowdown
+  data.camera_pass_hold = 60
+  data._pass_hold = None
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
   data.localizer_valid = localizer_valid
   data.curve_points = []
@@ -817,6 +822,12 @@ class TestReadCameraParams(OpenpilotTestCase):
     Params().put("KoreaCameraSlowdownDistance", 5000, block=True)
     self.assertEqual(self.read().camera_slowdown_m, 2000)
 
+  def test_the_pass_hold_falls_back_to_60_m_and_is_clamped(self):
+    self.assertEqual(Params().get_default_value("KoreaCameraPassHold"), 60)
+    self.assertEqual(self.read().camera_pass_hold, 60)
+    Params().put("KoreaCameraPassHold", 500, block=True)
+    self.assertEqual(self.read().camera_pass_hold, 300)
+
   def test_the_exclusions_are_read_as_points(self):
     self.assertEqual(self.read().camera_exclude, ())  # unset: no camera excluded
     Params().put("KoreaCameraExclude", "[[37.5, 127.02], [37.6, 127.1]]", block=True)
@@ -1435,3 +1446,82 @@ class TestSectionAtItsEnd(unittest.TestCase):
         seen = self.drive(self.CAMERAS + [self.NEXT_START], route=route)
         self.assertEqual(self.ends_open(seen, 127.0596, 127.1492), set())
         self.assertEqual(self.ends_open(seen, 127.1496, 127.2048), {127.2100})
+
+
+def signal_camera(limit, distance, lat, lon, facing=FACING_UNKNOWN):
+  return Camera(lat=lat, lon=lon, limit_kph=limit, distance_m=distance, section_m=0, kind=CAMERA_SIGNAL, facing=facing)
+
+
+class TestCameraPassHold(unittest.TestCase):
+  """Past a camera not known to face the front, its limit holds at the car until camera_pass_hold metres past it:
+  a 후면 camera photographs the rear plate after the car has passed."""
+
+  POLE = (37.5000, 127.0204)  # ~35 m east of where valid_llk puts the car
+  M_PER_DEG_LON = 88200.      # at 37.5 N
+
+  def pass_pole(self, camera, hold=60):
+    """Two update_locations: next_camera answers the camera, then lets it go."""
+    data = make_data()
+    data.sm = SingleLocationSM(valid_llk())
+    data.camera_pass_hold = hold
+    ahead = [camera]
+    data.db = SimpleNamespace(
+      reload_if_changed=lambda: False,
+      current_link=lambda *a, **k: None,
+      next_camera=lambda *a, **k: ahead[0],
+      next_bump=lambda *a, **k: None,
+      section_starts_near=lambda *a, **k: [],
+      section_end_ahead=lambda *a, **k: None,
+      close=lambda: None,
+    )
+    data.update_location()
+    ahead[0] = None
+    data.update_location()
+    return data
+
+  def targets(self, data, past_m):
+    """MapTargetVelocities with the car past_m metres east of the pole."""
+    data.last_position = Coordinate(self.POLE[0], self.POLE[1] + past_m / self.M_PER_DEG_LON)
+    data.publish_targets()
+    return json.loads(data.mem_params.values["MapTargetVelocities"])
+
+  def test_the_limit_holds_at_the_car_past_a_camera_not_known_to_face_the_front(self):
+    for facing in (FACING_UNKNOWN, FACING_REAR, FACING_BOTH):
+      with self.subTest(facing=facing):
+        data = self.pass_pole(signal_camera(50, 35., *self.POLE, facing=facing))
+        points = self.targets(data, 40.)
+        self.assertEqual(len(points), 1)
+        self.assertEqual((points[0]["latitude"], points[0]["longitude"]), (data.last_position.latitude, data.last_position.longitude))
+        self.assertAlmostEqual(points[0]["velocity"], 50 * CV.KPH_TO_MS)
+        self.assertNotIn("start_s", points[0])
+
+  def test_a_front_facing_camera_lets_go_at_the_pole(self):
+    self.assertEqual(self.targets(self.pass_pole(signal_camera(50, 35., *self.POLE, facing=FACING_FRONT)), 10.), [])
+
+  def test_it_lets_go_past_the_hold_for_good(self):
+    data = self.pass_pole(signal_camera(50, 35., *self.POLE))
+    self.assertEqual(self.targets(data, 70.), [])
+    self.assertEqual(self.targets(data, 40.), [])  # a fix jumping back does not bring it back
+
+  def test_zero_turns_it_off(self):
+    self.assertEqual(self.targets(self.pass_pole(signal_camera(50, 35., *self.POLE), hold=0), 10.), [])
+
+  def test_the_camera_ahead_keeps_its_own_ramp(self):
+    data = self.pass_pole(signal_camera(50, 35., *self.POLE))
+    data.slowdown_camera = signal_camera(30, 290., self.POLE[0], self.POLE[1] + 300. / self.M_PER_DEG_LON)
+    points = self.targets(data, 10.)
+    self.assertEqual([p["velocity"] for p in points], [50 * CV.KPH_TO_MS, 30 * CV.KPH_TO_MS])
+    self.assertEqual(["start_s" in p for p in points], [False, True])
+
+  def test_closing_the_source_drops_it(self):
+    data = self.pass_pole(signal_camera(50, 35., *self.POLE))
+    data.close()
+    self.assertEqual(self.targets(data, 10.), [])
+
+  def test_the_pass_is_logged_with_the_facing_and_the_hold_but_not_where(self):
+    with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.cloudlog") as log:
+      self.pass_pole(signal_camera(50, 35., *self.POLE, facing=FACING_REAR))
+      self.pass_pole(signal_camera(50, 35., *self.POLE, facing=FACING_FRONT))
+    lines = [call.args[0] % call.args[1:] for call in log.info.call_args_list]
+    self.assertEqual([line for line in lines if "passed" in line],
+                     ["korea_map: passed a 50 km/h camera facing rear, holding 60 m", "korea_map: passed a 50 km/h camera facing front"])

@@ -17,6 +17,7 @@ on its next tick. Nothing here needs a lock.
 stdlib only, on purpose -- this module runs on the device, where pyshp and pyproj are
 not installed.
 """
+import collections
 import json
 import logging
 import os
@@ -26,8 +27,11 @@ import time
 import urllib.parse
 import urllib.request
 
-from openpilot.sunnypilot.mapd.korea.build_db import CAMERA_API_KIND_FIELDS, SCHEMA_CAMERAS, insert_cameras, load_cameras_api, write_db
-from openpilot.sunnypilot.mapd.korea.db import has_camera_kind, has_split_sections
+from openpilot.sunnypilot.mapd.korea import police_cameras
+from openpilot.sunnypilot.mapd.korea.build_db import (CAMERA_API_KIND_FIELDS, SCHEMA_CAMERAS, inherit_facing, insert_cameras,
+                                                      load_cameras_api, write_db)
+from openpilot.sunnypilot.mapd.korea.db import (FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN, has_camera_facing,
+                                                 has_camera_kind, has_split_sections)
 
 API_URL = "https://api.data.go.kr/openapi/tn_pubr_public_unmanned_traffic_camera_api"
 PAGE_SIZE = 1000
@@ -44,6 +48,9 @@ STARTUP_WAIT_S = 30.
 # Refuse a result this much smaller than what we already have. A partial API outage
 # answers 200 with a short page; without this it would quietly wipe the cameras.
 MIN_KEEP_RATIO = 0.8
+
+# police_facing's last good answer, beside the camera database
+POLICE_CACHE = "korea_police_facing.json"
 
 LOG = logging.getLogger(__name__)
 
@@ -107,6 +114,24 @@ def current_has_kind(path: str) -> bool:
   return _read_live(path, has_camera_kind, False)
 
 
+def current_has_facing(path: str) -> bool:
+  """Whether the live database carries the facing column. False when there is no usable database."""
+  return _read_live(path, has_camera_facing, False)
+
+
+def police_facing(cache_path: str, opener) -> dict[str, int]:
+  """The 경기남부 police list's facings by number (police_cameras.fetch), cached. When the website fails,
+  the cache's, or none at all: every camera unknown, held past its pole. Either way the refresh goes on."""
+  try:
+    facing = police_cameras.fetch(opener)
+    police_cameras.save_cache(cache_path, facing)
+    return facing
+  except Exception:
+    facing = police_cameras.load_cache(cache_path)
+    LOG.warning("camera refresh: the police list failed, using %d cached facings", len(facing), exc_info=True)
+    return facing
+
+
 def current_has_split_sections(path: str) -> bool:
   """Whether the live database tells 구간단속 ends from starts. True when there is no usable
   database or no kind column: the age and kind checks already fetch those."""
@@ -141,7 +166,8 @@ def refresh(cameras_path: str, api_key: str, opener=urllib.request.urlopen) -> i
     # without regltSe, for one, signal cameras fall back to CAMERA_SPEED.
     LOG.warning("camera refresh: the api stopped sending %s -- building a first database without kinds", missing)
 
-  rows = list(load_cameras_api(items))
+  facing = police_facing(os.path.join(os.path.dirname(cameras_path), POLICE_CACHE), opener)
+  rows = inherit_facing(list(load_cameras_api(items, facing)))
   floor = int(current_row_count(cameras_path) * MIN_KEEP_RATIO)
   if len(rows) < floor:
     LOG.warning("camera refresh: got %d rows, need at least %d -- keeping the existing database",
@@ -152,10 +178,14 @@ def refresh(cameras_path: str, api_key: str, opener=urllib.request.urlopen) -> i
     return 0
 
   try:
-    return write_db(cameras_path, SCHEMA_CAMERAS, lambda con: insert_cameras(con, rows))
+    count = write_db(cameras_path, SCHEMA_CAMERAS, lambda con: insert_cameras(con, rows))
   except Exception:
     LOG.exception("camera refresh: failed to write %s", cameras_path)
     return 0
+  faces = collections.Counter(row[5] for row in rows)
+  LOG.info("camera refresh: %d cameras, facing front %d, rear %d, both %d, unknown %d", count,
+           faces[FACING_FRONT], faces[FACING_REAR], faces[FACING_BOTH], faces[FACING_UNKNOWN])
+  return count
 
 
 class CameraRefresher:
@@ -191,9 +221,10 @@ class CameraRefresher:
     except OSError:
       return True  # no database at all: fetch one
     # A database from before the kind column, or from before section ends got their own kind,
-    # opens fine but cannot do what the toggles ask, so replace it on the next unmetered tick.
+    # opens fine but cannot do what the toggles ask, so replace it on the next unmetered tick. One
+    # from before the facing column holds the car past every camera, front-facing ones included.
     return age >= REFRESH_INTERVAL_S or not current_has_kind(self.cameras_path) or \
-      not current_has_split_sections(self.cameras_path)
+      not current_has_split_sections(self.cameras_path) or not current_has_facing(self.cameras_path)
 
   def _loop(self) -> None:
     # imported here so the module stays importable without the device stack, which is

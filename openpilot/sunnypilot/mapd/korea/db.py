@@ -68,6 +68,14 @@ CAMERA_KIND_PARAMS = {
   CAMERA_SECTION_END: "KoreaCameraSectionEnabled",
 }
 
+# Which way a camera faces, from the 경기남부 police list (police_cameras): the public standard data says
+# nothing about it. A 후면 camera photographs the rear plate after the car has passed, so korea_map_data
+# holds the limit past every camera not known to face the front. Here for the same reason as CAMERA_*.
+FACING_UNKNOWN = 0
+FACING_FRONT = 1
+FACING_REAR = 2   # 후면
+FACING_BOTH = 3   # 양방향, front and rear
+
 # ~3.3 km box, then filtered down to CAMERA_MAX_DISTANCE_M
 CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.
@@ -162,6 +170,9 @@ class Camera:
 
   kind is db.CAMERA_*, or None for a camera database built before the kind column --
   those cameras pass every kind filter, which is how every camera behaved before.
+
+  facing is db.FACING_*: FACING_UNKNOWN for any camera off the 경기남부 police list, and for
+  every camera of a database built before the facing column.
   """
   lat: float
   lon: float
@@ -169,6 +180,7 @@ class Camera:
   distance_m: float
   section_m: int  # raw 과속단속구간길이 -- see docstring. kind, not this, says 구간단속
   kind: int | None
+  facing: int = FACING_UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -222,6 +234,11 @@ def has_camera_kind(con: sqlite3.Connection) -> bool:
   too, to rebuild such a file without waiting out the week.
   """
   return any(row[1] == "kind" for row in con.execute("PRAGMA table_info(cameras)"))
+
+
+def has_camera_facing(con: sqlite3.Connection) -> bool:
+  """Was this camera database built with the facing column? Asked the way has_camera_kind is, for the same reason."""
+  return any(row[1] == "facing" for row in con.execute("PRAGMA table_info(cameras)"))
 
 
 def has_split_sections(con: sqlite3.Connection) -> bool:
@@ -318,6 +335,7 @@ class KoreaMapDB:
     self._bumps_mtime = mtime_or_none(bumps_path)
     self.cam = self._open(cameras_path)
     self._cam_has_kind = has_camera_kind(self.cam)
+    self._cam_has_facing = has_camera_facing(self.cam)
     if not self._cam_has_kind:
       # camera_refresh rebuilds such a file on the next unmetered connection; a device with
       # no API key keeps it until the file is replaced by hand.
@@ -379,6 +397,7 @@ class KoreaMapDB:
     try:
       con = self._open(path)
       cam_has_kind = has_camera_kind(con) if con_attr == "cam" else None
+      cam_has_facing = has_camera_facing(con) if con_attr == "cam" else None
     except (sqlite3.Error, ValueError):
       if con is not None:
         con.close()
@@ -394,8 +413,9 @@ class KoreaMapDB:
     setattr(self, con_attr, con)
     setattr(self, mtime_attr, mtime)
     if con_attr == "cam":
-      # A refresh replaces a file from before the kind column with one that has it.
+      # A refresh replaces a file from before the kind or facing column with one that has it.
       self._cam_has_kind = cam_has_kind
+      self._cam_has_facing = cam_has_facing
     if con_attr == "lnk":
       # The builder assigns link ids by insertion order, so the same id names a different
       # road after a rebuild. Inside the tie band a surviving id would pick that road.
@@ -528,15 +548,16 @@ class KoreaMapDB:
       return None  # every kind off: no camera at all, an old kind-less database included
 
     kind_column = "c.kind" if self._cam_has_kind else "NULL"
+    facing_column = "c.facing" if self._cam_has_facing else str(FACING_UNKNOWN)
     rows = self.cam.execute(
-      f"SELECT c.lat, c.lon, c.limit_kph, c.section_m, {kind_column} FROM cameras_idx i JOIN cameras c ON c.id = i.id " +
-      _RTREE_OVERLAP,
+      f"SELECT c.lat, c.lon, c.limit_kph, c.section_m, {kind_column}, {facing_column} " +
+      "FROM cameras_idx i JOIN cameras c ON c.id = i.id " + _RTREE_OVERLAP,
       (lat - CAMERA_SEARCH_DEG, lat + CAMERA_SEARCH_DEG, lon - CAMERA_SEARCH_DEG, lon + CAMERA_SEARCH_DEG),
     ).fetchall()
 
     best: Camera | None = None
 
-    for clat, clon, limit_kph, section_m, kind in rows:
+    for clat, clon, limit_kph, section_m, kind, facing in rows:
       if kinds is not None and kind is not None and kind not in kinds:
         continue
       distance = haversine(lat, lon, clat, clon)
@@ -548,7 +569,7 @@ class KoreaMapDB:
         continue
       if kind in STREET_LEVEL_KINDS and on_grade_separated(route, grade_separated, clat, clon):
         continue
-      best = Camera(lat=clat, lon=clon, limit_kph=limit_kph, distance_m=distance, section_m=section_m, kind=kind)
+      best = Camera(lat=clat, lon=clon, limit_kph=limit_kph, distance_m=distance, section_m=section_m, kind=kind, facing=facing)
 
     return best
 

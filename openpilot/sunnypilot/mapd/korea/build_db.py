@@ -25,13 +25,16 @@ Usage:
 """
 import argparse
 import csv
+import math
 import os
 import sqlite3
 import struct
 from collections.abc import Iterator
 
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_SECTION,
-                                                 CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE)
+                                                 CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE, FACING_UNKNOWN)
+from openpilot.sunnypilot.mapd.korea.geo import haversine
+from openpilot.sunnypilot.mapd.korea.police_cameras import POLICE_INSTITUTIONS
 
 SCHEMA_VERSION = "1"
 
@@ -67,6 +70,10 @@ SIGNAL_CODES = frozenset({2})
 SECTION_START_CODES = frozenset({1})
 SECTION_END_CODES = frozenset({2})
 ZONE_CODES = frozenset({1, 2})
+
+# A city often lists a police camera again: in the 2026-08 snapshot 145 of 경기's 781 city rows with a
+# limit had a police camera this near at the same limit, nearly all of them the same camera.
+INHERIT_FACING_M = 20.
 
 # an r-tree entry needs a non-degenerate box; ~0.1 m is far below GPS noise
 POINT_BOX_DEG = 1e-6
@@ -114,7 +121,10 @@ CREATE TABLE cameras(
   section_m INTEGER NOT NULL,
   -- db.CAMERA_*, from classify_camera. A file built before this column still opens:
   -- KoreaMapDB treats its cameras as kind unknown (db.has_camera_kind).
-  kind      INTEGER NOT NULL
+  kind      INTEGER NOT NULL,
+  -- db.FACING_*, from the 경기남부 police list (police_cameras). A file built before this
+  -- column still opens: KoreaMapDB reads every camera as facing unknown (db.has_camera_facing).
+  facing    INTEGER NOT NULL
 );
 CREATE VIRTUAL TABLE cameras_idx USING rtree(id, minlat, maxlat, minlon, maxlon);
 """
@@ -234,20 +244,49 @@ def classify_camera(enforcement, section_position, zone) -> int:
   return CAMERA_SPEED
 
 
-def load_cameras_api(items) -> Iterator[tuple[float, float, int, int, int]]:
-  """Same rows as load_cameras, from the data.go.kr JSON API instead of the CSV.
+def load_cameras_api(items, facing_by_no: dict[str, int] | None = None) -> Iterator[tuple[float, float, int, int, int, int]]:
+  """Same rows as load_cameras, from the data.go.kr JSON API instead of the CSV, each with its db.FACING_*.
 
   The API romanises every field name -- latitude/longitude/lmttVe/ovrspdRegltSctnLt and
   CAMERA_API_KIND_FIELDS -- where the CSV uses the Korean headers. Verified against the
   2026-08 snapshot: both paths yield the identical 33415 rows out of 43347.
+
+  facing_by_no is police_cameras.fetch's answer, looked up by mnlssRegltCameraManageNo for the
+  police's own rows (POLICE_INSTITUTIONS) only. Every other row's facing is unknown.
   """
+  facing_by_no = facing_by_no or {}
   for item in items:
     limit_kph = to_int(item.get("lmttVe"))
     lat = to_float(item.get("latitude"))
     lon = to_float(item.get("longitude"))
     if keep_camera(lat, lon, limit_kph):
+      police = any(name in str(item.get("institutionNm") or "") for name in POLICE_INSTITUTIONS)
+      number = str(item.get("mnlssRegltCameraManageNo") or "").strip()
       yield (lat, lon, limit_kph, to_int(item.get("ovrspdRegltSctnLt")),
-             classify_camera(*(item.get(field) for field in CAMERA_API_KIND_FIELDS)))
+             classify_camera(*(item.get(field) for field in CAMERA_API_KIND_FIELDS)),
+             facing_by_no.get(number, FACING_UNKNOWN) if police else FACING_UNKNOWN)
+
+
+def inherit_facing(rows: list[tuple], radius_m: float = INHERIT_FACING_M) -> list[tuple]:
+  """load_cameras_api's rows, a camera of unknown facing given the nearest known one's within radius_m at the
+  same limit: the same camera listed again by a city."""
+  def cell(lat: float, lon: float) -> tuple[int, int]:
+    return math.floor(lat * 1000), math.floor(lon * 1000)  # ~110 x 90 m, so a camera within radius_m is a neighbour
+
+  known: dict[tuple[int, int], list[tuple]] = {}
+  for row in rows:
+    if row[5] != FACING_UNKNOWN:
+      known.setdefault(cell(row[0], row[1]), []).append(row)
+
+  def facing(lat: float, lon: float, limit_kph: int, _section_m: int, _kind: int, own: int) -> int:
+    if own != FACING_UNKNOWN:
+      return own
+    clat, clon = cell(lat, lon)
+    near = min(((haversine(lat, lon, other[0], other[1]), other[5]) for i in (-1, 0, 1) for j in (-1, 0, 1)
+                for other in known.get((clat + i, clon + j), ()) if other[2] == limit_kph), default=(math.inf, own))
+    return near[1] if near[0] <= radius_m else own
+
+  return [(*row[:5], facing(*row)) for row in rows]
 
 
 def classify_kind(text: str) -> int:
@@ -298,10 +337,11 @@ def insert_bumps(con: sqlite3.Connection, bumps) -> int:
 
 
 def insert_cameras(con: sqlite3.Connection, cameras) -> int:
+  """(lat, lon, limit_kph, section_m, kind, facing) rows. The CSV path's carry no facing: unknown."""
   count = 0
-  for lat, lon, limit_kph, section_m, kind in cameras:
-    cur = con.execute("INSERT INTO cameras(lat, lon, limit_kph, section_m, kind) VALUES (?, ?, ?, ?, ?)",
-                      (lat, lon, limit_kph, section_m, kind))
+  for lat, lon, limit_kph, section_m, kind, *facing in cameras:
+    cur = con.execute("INSERT INTO cameras(lat, lon, limit_kph, section_m, kind, facing) VALUES (?, ?, ?, ?, ?, ?)",
+                      (lat, lon, limit_kph, section_m, kind, facing[0] if facing else FACING_UNKNOWN))
     con.execute("INSERT INTO cameras_idx VALUES (?, ?, ?, ?, ?)",
                 (cur.lastrowid, lat - POINT_BOX_DEG, lat + POINT_BOX_DEG,
                  lon - POINT_BOX_DEG, lon + POINT_BOX_DEG))

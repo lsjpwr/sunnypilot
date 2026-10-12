@@ -1186,6 +1186,38 @@
               ]
             },
             {
+              "key": "KoreaCameraPassHold",
+              "widget": "option",
+              "title": "Camera Pass Hold",
+              "description": "Keep a camera's limit this far past it, unless the police list it as front-facing. Rear-facing (\ud6c4\uba74) cameras photograph the rear plate after the car passes. 0 lets go at the pole.",
+              "min": 0,
+              "max": 300,
+              "step": 10,
+              "unit": "m",
+              "enablement": [
+                {
+                  "type": "any",
+                  "conditions": [
+                    {
+                      "type": "capability",
+                      "field": "has_longitudinal_control",
+                      "equals": true
+                    },
+                    {
+                      "type": "capability",
+                      "field": "has_icbm",
+                      "equals": true
+                    }
+                  ]
+                },
+                {
+                  "type": "param",
+                  "key": "MapDataSource",
+                  "equals": 1
+                }
+              ]
+            },
+            {
               "key": "KoreaCameraSlowdownDistance",
               "widget": "option",
               "title": "Camera Slowdown Start",

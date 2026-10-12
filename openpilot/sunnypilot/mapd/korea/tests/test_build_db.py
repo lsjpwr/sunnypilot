@@ -15,11 +15,12 @@ import unittest
 from openpilot.sunnypilot.mapd.korea.build_db import LINK_COLUMNS, SCHEMA_VERSION, SCHEMA_CAMERAS, SCHEMA_LINKS, \
                                                      FALLBACK_PROJECTED_EPSG, WGS84_EPSG, CAMERA_KIND_COLUMNS, \
                                                      build_bumps, build_cameras, write_db, in_korea, \
-                                                     classify_camera, classify_kind, insert_cameras, \
+                                                     classify_camera, classify_kind, inherit_facing, insert_cameras, \
                                                      insert_links, load_bumps, load_cameras, load_cameras_api, \
                                                      load_links, pack_geom, to_float, to_int
 from openpilot.sunnypilot.mapd.korea.db import BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_SECTION, \
-                                               CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE
+                                               CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE, \
+                                               FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN
 
 # pyshp and pyproj are PC-only build tooling: build_db.py imports them lazily and documents
 # them as a manual `pip install`, deliberately keeping them off the device and out of every
@@ -423,7 +424,7 @@ class TestCameraKinds(BuildDBTestCase):
     items = [{"latitude": lat, "longitude": lon, "regltSe": enforcement, "lmttVe": limit,
               "ovrspdRegltSctnLt": "0", "regltSctnLcSe": position, "prtcareaType": zone}
              for lat, lon, enforcement, limit, position, zone, _ in KIND_ROWS]
-    self.assertEqual(list(load_cameras_api(items)), list(load_cameras(self.write_kind_csv())))
+    self.assertEqual([row[:5] for row in load_cameras_api(items)], list(load_cameras(self.write_kind_csv())))
 
   def test_a_renamed_code_column_raises(self):
     """lat/lon/limit are unchanged, only one code column is renamed. The old lat-only guard
@@ -442,3 +443,57 @@ class TestCameraKinds(BuildDBTestCase):
                        [CAMERA_SPEED, CAMERA_SECTION])
     finally:
       con.close()
+
+
+class TestCameraFacing(BuildDBTestCase):
+  """Which way a camera faces: police_cameras.fetch's numbers, looked up by load_cameras_api."""
+
+  @staticmethod
+  def item(number, institution):
+    return {"latitude": "37.5", "longitude": "127.0", "lmttVe": "60", "ovrspdRegltSctnLt": "0", "regltSe": "1",
+            "regltSctnLcSe": "", "prtcareaType": "99", "mnlssRegltCameraManageNo": number, "institutionNm": institution}
+
+  def test_only_the_police_rows_are_looked_up_by_number(self):
+    """A number is only its agency's own label: a city camera may carry one the police use too."""
+    items = [self.item("T1", "경기도남부경찰청"), self.item("T1 ", "경기남부경찰청"), self.item("T1", "가상시청"),
+             self.item("T2", "경기도남부경찰청")]
+    self.assertEqual([row[5] for row in load_cameras_api(items, {"T1": FACING_REAR})],
+                     [FACING_REAR, FACING_REAR, FACING_UNKNOWN, FACING_UNKNOWN])
+
+  def test_without_the_list_every_facing_is_unknown(self):
+    self.assertEqual([row[5] for row in load_cameras_api([self.item("T1", "경기도남부경찰청")])], [FACING_UNKNOWN])
+
+  def test_a_row_without_a_facing_is_stored_as_unknown(self):
+    """The CSV path's rows carry none."""
+    out = str(self.tmp_path / "korea_cameras.sqlite")
+    write_db(out, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(37.50, 127.0, 60, 0, CAMERA_SPEED),
+                                                                    (37.51, 127.0, 60, 0, CAMERA_SPEED, FACING_REAR)]))
+    con = sqlite3.connect(out)
+    try:
+      self.assertEqual([r[0] for r in con.execute("SELECT facing FROM cameras ORDER BY id")], [FACING_UNKNOWN, FACING_REAR])
+    finally:
+      con.close()
+
+
+def camera(lat, limit=60, facing=FACING_UNKNOWN):
+  """A row on a north-south line; 1e-4 deg of latitude is ~11 m."""
+  return (lat, 127.0, limit, 0, CAMERA_SIGNAL, facing)
+
+
+class TestInheritFacing(unittest.TestCase):
+  """A city listing a police camera again lists the same camera: 145 of 경기's 781 city rows (2026-08)."""
+
+  def test_a_row_within_20_m_at_the_same_limit_inherits(self):
+    self.assertEqual(inherit_facing([camera(37.50000, facing=FACING_FRONT), camera(37.50015)])[1][5], FACING_FRONT)
+
+  def test_a_row_further_or_at_another_limit_does_not(self):
+    rows = inherit_facing([camera(37.50000, facing=FACING_FRONT), camera(37.50025), camera(37.49990, limit=50)])
+    self.assertEqual([row[5] for row in rows], [FACING_FRONT, FACING_UNKNOWN, FACING_UNKNOWN])
+
+  def test_the_nearest_known_row_wins_and_known_rows_keep_theirs(self):
+    rows = inherit_facing([camera(37.50000, facing=FACING_FRONT), camera(37.50010, facing=FACING_BOTH), camera(37.50015)])
+    self.assertEqual([row[5] for row in rows], [FACING_FRONT, FACING_BOTH, FACING_BOTH])
+
+  def test_a_neighbour_across_a_grid_line_is_found(self):
+    rows = inherit_facing([camera(37.49995, facing=FACING_REAR), camera(37.50005)])  # ~11 m apart, either side of 37.500
+    self.assertEqual(rows[1][5], FACING_REAR)

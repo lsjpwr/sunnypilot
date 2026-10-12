@@ -32,9 +32,9 @@ from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_EXCLUDE_M,
-                                                 CAMERA_KIND_PARAMS, CAMERA_SECTION, ROUTE_CORRIDOR_M, SECTION_PASS_M,
-                                                 Bump, Camera, KoreaMapDB, Link, across_the_road, at_section_end,
-                                                 excluded, mtime_or_none)
+                                                 CAMERA_KIND_PARAMS, CAMERA_SECTION, FACING_BOTH, FACING_FRONT, FACING_REAR,
+                                                 ROUTE_CORRIDOR_M, SECTION_PASS_M, Bump, Camera, KoreaMapDB, Link,
+                                                 across_the_road, at_section_end, excluded, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
@@ -55,6 +55,9 @@ BUMP_TRAPEZOID_SPEED_RANGE = (20, 50)
 # m, how far before a camera to be at its limit. Bounds, not the default -- that lives in
 # params_keys.h, like the bump speeds.
 CAMERA_MARGIN_RANGE = (0, 300)
+# m, how far past a camera not known to face the front to keep its limit: a 후면 camera photographs the rear
+# plate after the car has passed. Bounds, like CAMERA_MARGIN_RANGE.
+CAMERA_PASS_HOLD_RANGE = (0, 300)
 # m, how far before a camera to start slowing for it at CAMERA_SLOWDOWN_SPEED. SCC-Map scales the start with
 # the car's speed and caps it at CAMERA_MAX_DISTANCE_M, where cameras come into view; 0 leaves the start to the
 # slowdown strength alone, as before 2026-10-07.
@@ -66,6 +69,8 @@ CAMERA_SLOWDOWN_SPEED = 100 * CV.KPH_TO_MS
 # the road winds, but a car that has driven well past that has left the section.
 SECTION_TRAVEL_FACTOR = 1.5
 SECTION_TRAVEL_SLACK_M = 2000.
+
+FACING_NAMES = {FACING_FRONT: "front", FACING_REAR: "rear", FACING_BOTH: "both"}  # anything else is unknown
 
 # KoreaCameraRecent holds the last slowdown cameras the car passed, newest first, and sunnylink excludes one
 # by its mark (KoreaCameraExcludeAdd). Three: the app's multiple_button takes four choices, one of them "-".
@@ -190,15 +195,17 @@ class KoreaMapData(BaseMapData):
     self.mem_params = Params("/dev/shm/params") if platform.system() != "Darwin" else self.params
     self.bump_enabled = False
     self.bump_targets: dict[int, float] = {}
-    # read_camera_params overwrites both on the first tick, before anything reads them
+    # read_camera_params overwrites these on the first tick, before anything reads them
     self.camera_kinds: frozenset[int] = frozenset(CAMERA_KIND_PARAMS)
     self.camera_margin = 0
     self.camera_slowdown_m = 0
+    self.camera_pass_hold = 0
     self.camera_exclude: tuple[tuple[float, float], ...] = ()
     self._camera_exclude_raw: str | None = None  # parsed and logged only when it changes
     # kept across restarts: the driver may exclude one only after the next boot
     self.camera_recent = parse_camera_recent(self.params.get("KoreaCameraRecent") or "")
     self._slowdown_last: Camera | None = None  # last tick's slowdown_camera, for note_passed_camera
+    self._pass_hold: Camera | None = None  # the camera just passed, while pass_hold_point keeps its limit
 
   def _db_mtimes(self) -> tuple[float | None, ...]:
     """When each database file was last written; None for one that is not there."""
@@ -251,7 +258,7 @@ class KoreaMapData(BaseMapData):
     self.db = None
     self.link = None
     self.camera = None
-    self.slowdown_camera = self._slowdown_last = None
+    self.slowdown_camera = self._slowdown_last = self._pass_hold = None
     self._camera_anchor = None
     self.bump = None
     self._drop_section("map source closed")
@@ -369,7 +376,8 @@ class KoreaMapData(BaseMapData):
       cloudlog.exception("korea_map: dropping the database after a query error")
 
   def note_passed_camera(self) -> None:
-    """Put the slowdown camera the car has just passed at the front of KoreaCameraRecent.
+    """Put the slowdown camera the car has just passed at the front of KoreaCameraRecent, and hold its limit
+    a while unless it faces the front (pass_hold_point).
 
     Passed: it left the slot from within SECTION_PASS_M, and not to a nearer camera, which only stands
     in front of it, nor while it still holds the slot -- stopped beside a camera, GPS noise moves its
@@ -380,11 +388,15 @@ class KoreaMapData(BaseMapData):
       return
     if cur is not None and ((cur.lat, cur.lon) == (prev.lat, prev.lon) or cur.distance_m <= prev.distance_m):
       return
+    hold = prev.facing != FACING_FRONT and self.camera_pass_hold > 0
+    if hold:
+      self._pass_hold = prev
     others = [r for r in self.camera_recent if haversine(r[0], r[1], prev.lat, prev.lon) > CAMERA_EXCLUDE_M]
     self.camera_recent = [(prev.lat, prev.lon, prev.limit_kph, kst_clock()), *others][:len(CAMERA_RECENT_MARKS)]
     self.params.put("KoreaCameraRecent", json.dumps(self.camera_recent))
     self.write_camera_labels()
-    cloudlog.info("korea_map: passed a %d km/h camera", prev.limit_kph)
+    cloudlog.info("korea_map: passed a %d km/h camera facing %s%s", prev.limit_kph, FACING_NAMES.get(prev.facing, "unknown"),
+                  f", holding {self.camera_pass_hold} m" if hold else "")
 
   def update_section(self, lat: float, lon: float) -> None:
     """Track the 구간단속 section we are in, for SpeedLimitAssist to hold its limit.
@@ -481,6 +493,7 @@ class KoreaMapData(BaseMapData):
     self.camera_kinds = frozenset(kind for kind, key in CAMERA_KIND_PARAMS.items() if self.params.get_bool(key))
     self.camera_margin = get_sanitize_int_param("KoreaCameraMargin", *CAMERA_MARGIN_RANGE, self.params)
     self.camera_slowdown_m = get_sanitize_int_param("KoreaCameraSlowdownDistance", *CAMERA_SLOWDOWN_RANGE, self.params)
+    self.camera_pass_hold = get_sanitize_int_param("KoreaCameraPassHold", *CAMERA_PASS_HOLD_RANGE, self.params)
     pressed = self.apply_exclude_buttons()
     raw = self.params.get("KoreaCameraExclude") or ""
     if raw != self._camera_exclude_raw:
@@ -570,8 +583,20 @@ class KoreaMapData(BaseMapData):
     lat, lon = self._camera_anchor[1]
     return lat, lon, velocity
 
+  def pass_hold_point(self) -> tuple[float, float, float] | None:
+    """The camera just passed as an SCC-Map target at the car, as camera_point is inside its margin: its limit
+    until the car is camera_pass_hold metres from the pole as the crow flies. A 후면 camera measures past the
+    pole, where next_camera has already let it go; a camera off the police list may be one."""
+    hold, car = self._pass_hold, self.last_position
+    if hold is None or car is None:
+      return None
+    if haversine(car.latitude, car.longitude, hold.lat, hold.lon) > self.camera_pass_hold:
+      self._pass_hold = None
+      return None
+    return car.latitude, car.longitude, hold.limit_kph * CV.KPH_TO_MS
+
   def publish_targets(self) -> None:
-    """Hand the next bump, the next camera AND the curves ahead to SmartCruiseControlMap.
+    """Hand the next bump, the next camera, the camera just passed AND the curves ahead to SmartCruiseControlMap.
 
     One writer, not two: SCC-Map reads the whole list from this one param, so a second
     writer would delete the first one's points every tick. The bump feature shipped first
@@ -600,6 +625,9 @@ class KoreaMapData(BaseMapData):
       if camera is not None:
         points.append((*camera, {"start_s": self.camera_slowdown_m / CAMERA_SLOWDOWN_SPEED,
                                  "margin_m": self.camera_margin}))
+      hold = self.pass_hold_point()
+      if hold is not None:
+        points.append((*hold, {}))  # no start_s: SCC-Map keeps one camera's ramp, the one ahead's
       points.extend((*curve, {}) for curve in self.curve_points)
       points.sort(key=lambda p: self.last_position.distance_to(Coordinate(p[0], p[1])))
 

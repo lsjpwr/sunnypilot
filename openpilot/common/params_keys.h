@@ -288,6 +288,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"KoreaCameraRecent", {PERSISTENT, STRING, ""}},                    // JSON [[lat, lon, limit, "HH:MM"], ...]: 최근 지난 감속 카메라 3대. 좌표라서 BACKUP에서 뺀다
     {"KoreaCameraRecentLabel", {PERSISTENT, STRING, "-"}},              // sunnylink 표시: "① 30 17:46 ✕ ...", 좌표 없음. mapd가 쓴다
     {"KoreaCameraMargin", {PERSISTENT | BACKUP, INT, "50"}},              // m, 제한속도 도달 여유 거리
+    {"KoreaCameraPassHold", {PERSISTENT | BACKUP, INT, "60"}},            // m, 전면으로 확인된 카메라 외에는 지난 뒤에도 이 거리까지 제한속도 유지 (0: 끔)
     {"KoreaCameraSlowdownDistance", {PERSISTENT | BACKUP, INT, "1000"}},  // m, 100 km/h 기준 카메라 감속 시작 거리, 속도에 비례 (0: 감속 세기만)
     {"KoreaCameraSectionEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},      // 구간단속 시점·종점
     {"KoreaCameraSignalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},       // 신호·과속

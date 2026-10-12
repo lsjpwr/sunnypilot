@@ -39,7 +39,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.long_cost_tuning import (
   LEAD_VELOCITY_COST_MIN,
 )
 from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
-from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import CAMERA_MARGIN_RANGE, CAMERA_RECENT_MARKS
+from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import CAMERA_MARGIN_RANGE, CAMERA_PASS_HOLD_RANGE, CAMERA_RECENT_MARKS
 from openpilot.common.test import OpenpilotTestCase
 
 
@@ -544,7 +544,7 @@ class TestKoreaSectionsOnCruise(OpenpilotTestCase):
   def test_each_section_holds_its_items_in_order(self, schema):
     assert _section_keys(schema, "cruise", "korea_speed_cameras") == [
       "KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled",
-      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "KoreaCameraSlowdownDistance", "MapSlowdownDecel",
+      "KoreaCameraZoneEnabled", "KoreaCameraMargin", "KoreaCameraPassHold", "KoreaCameraSlowdownDistance", "MapSlowdownDecel",
       "KoreaCameraRecentLabel", "KoreaCameraExcludeAdd", "KoreaCameraExcludeCount", "KoreaCameraExcludeUndo",
       "KoreaMapApiKey"]
     assert _section_keys(schema, "cruise", "korea_speed_bumps") == [
@@ -620,20 +620,23 @@ class TestKoreaCameraKindsRemote(OpenpilotTestCase):
     assert "offroad_only" not in _flatten_rule_types(item.get("enablement"))
     assert not item.get("needs_onroad_cycle")
 
-  def test_margin_matches_the_backend_range(self, schema):
-    """korea_map_data clamps to CAMERA_MARGIN_RANGE; a wider remote range would offer values
+  @parameterized.expand([("KoreaCameraMargin", CAMERA_MARGIN_RANGE), ("KoreaCameraPassHold", CAMERA_PASS_HOLD_RANGE)],
+                        names=["key", "bounds"])
+  def test_margin_matches_the_backend_range(self, schema, key, bounds):
+    """korea_map_data clamps to these ranges; a wider remote range would offer values
     that silently snap back."""
-    item = _find_item(schema, "KoreaCameraMargin")
-    assert item is not None, "KoreaCameraMargin missing from settings_ui schema"
+    item = _find_item(schema, key)
+    assert item is not None, f"{key} missing from settings_ui schema"
     assert item.get("widget") == "option"
-    assert (item.get("min"), item.get("max")) == CAMERA_MARGIN_RANGE
+    assert (item.get("min"), item.get("max")) == bounds
     assert item.get("step") == 10
     assert item.get("unit") == "m"
 
-  def test_margin_needs_a_capability_and_the_korea_source(self, schema):
-    """It only moves the SmartCruiseControlMap slowdown, which cannot act without
+  @parameterized.expand(["KoreaCameraMargin", "KoreaCameraPassHold"], names=["key"])
+  def test_margin_needs_a_capability_and_the_korea_source(self, schema, key):
+    """Both only move the SmartCruiseControlMap slowdown, which cannot act without
     longitudinal control or ICBM -- the same gate as Speed Bump Slowdown."""
-    item = _find_item(schema, "KoreaCameraMargin")
+    item = _find_item(schema, key)
     assert item is not None
     assert _references_capability_field(item.get("enablement"), "has_longitudinal_control")
     assert _references_capability_field(item.get("enablement"), "has_icbm")

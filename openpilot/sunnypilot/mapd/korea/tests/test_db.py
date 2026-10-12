@@ -15,7 +15,8 @@ from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMER
                                                       insert_bumps, insert_cameras, insert_links, write_db)
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
                                                  CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE,
-                                                 KoreaMapDB, has_camera_kind, has_split_sections, verify)
+                                                 FACING_REAR, FACING_UNKNOWN, KoreaMapDB, has_camera_facing, has_camera_kind,
+                                                 has_split_sections, verify)
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
 ROAD_60 = (60, "테헤란로", [(37.5000, 127.0200), (37.5000, 127.0320)])
@@ -104,8 +105,8 @@ SECTION_CAMERAS = [
 _REPLACE_WHILE_OPEN_SKIP_REASON = "os.replace over an open sqlite file is a POSIX guarantee Windows lacks; these run on Linux, which is the device platform"
 
 
-def drop_kind(path):
-  """Turn a fresh camera database into one built before cameras carried a kind.
+def keep_camera_columns(path, columns):
+  """Turn a fresh camera database into one built before cameras carried the other columns.
 
   Not a plain `ALTER TABLE cameras DROP COLUMN kind`: SQLite's DROP COLUMN mislocates the
   column boundary when a comma appears inside the `--` comment immediately above the
@@ -116,14 +117,23 @@ def drop_kind(path):
   """
   con = sqlite3.connect(path)
   try:
-    con.execute("CREATE TABLE cameras_new(id INTEGER PRIMARY KEY, lat REAL NOT NULL, lon REAL NOT NULL, " +
-                "limit_kph INTEGER NOT NULL, section_m INTEGER NOT NULL)")
-    con.execute("INSERT INTO cameras_new SELECT id, lat, lon, limit_kph, section_m FROM cameras")
+    con.execute(f"CREATE TABLE cameras_new(id INTEGER PRIMARY KEY, {', '.join(columns)})")
+    con.execute(f"INSERT INTO cameras_new SELECT id, {', '.join(columns)} FROM cameras")
     con.execute("DROP TABLE cameras")
     con.execute("ALTER TABLE cameras_new RENAME TO cameras")
     con.commit()
   finally:
     con.close()
+
+
+def drop_kind(path):
+  """A camera database built before cameras carried a kind, and so a facing."""
+  keep_camera_columns(path, ("lat", "lon", "limit_kph", "section_m"))
+
+
+def drop_facing(path):
+  """A camera database built before cameras carried a facing: every device's until camera_refresh rebuilds it."""
+  keep_camera_columns(path, ("lat", "lon", "limit_kph", "section_m", "kind"))
 
 
 class KoreaMapDBTestCase(unittest.TestCase):
@@ -936,3 +946,58 @@ class TestCameraDatabaseWithoutKind(KoreaMapDBTestCase):
 
     self.assertTrue(database.reload_if_changed())
     self.assertIsNone(database.next_camera(37.5000, 127.0200, 90., kinds={CAMERA_SPEED}))
+
+
+class TestCameraFacing(KoreaMapDBTestCase):
+  """next_camera's facing, from the 경기남부 police list, and camera files built before it."""
+
+  def make(self):
+    cams = str(self.tmp_path / "korea_cameras.sqlite")
+    links = str(self.tmp_path / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(*CAM_AHEAD, FACING_REAR)]))
+    write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [ROAD_60]))
+    return cams, links
+
+  @staticmethod
+  def _has_facing(path):
+    con = sqlite3.connect(path)
+    try:
+      return has_camera_facing(con)
+    finally:
+      con.close()
+
+  def test_the_camera_carries_its_facing(self):
+    self.assertEqual(self.open_db(*self.make()).next_camera(37.5000, 127.0200, 90.).facing, FACING_REAR)
+
+  def test_has_camera_facing_tells_the_two_apart(self):
+    cams, _ = self.make()
+    self.assertTrue(self._has_facing(cams))
+    drop_facing(cams)
+    self.assertFalse(self._has_facing(cams))
+
+  def test_a_file_from_before_the_facing_column_reads_as_unknown(self):
+    cams, links = self.make()
+    drop_facing(cams)
+    camera = self.open_db(cams, links).next_camera(37.5000, 127.0200, 90., kinds={CAMERA_SPEED})
+    self.assertEqual((camera.limit_kph, camera.kind, camera.facing), (50, CAMERA_SPEED, FACING_UNKNOWN))
+
+  def test_a_file_from_before_the_kind_column_reads_as_unknown_too(self):
+    cams, links = self.make()
+    drop_kind(cams)
+    camera = self.open_db(cams, links).next_camera(37.5000, 127.0200, 90.)
+    self.assertEqual((camera.limit_kph, camera.kind, camera.facing), (50, None, FACING_UNKNOWN))
+
+  @unittest.skipIf(sys.platform == "win32", _REPLACE_WHILE_OPEN_SKIP_REASON)
+  def test_a_reload_notices_the_new_column(self):
+    """camera_refresh rebuilds a file without it on the next unmetered tick."""
+    cams, links = self.make()
+    drop_facing(cams)
+    database = self.open_db(cams, links)
+    self.assertEqual(database.next_camera(37.5000, 127.0200, 90.).facing, FACING_UNKNOWN)
+
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, [(*CAM_AHEAD, FACING_REAR)]))
+    stamp = os.path.getmtime(cams) + 1  # an unambiguous change on any filesystem
+    os.utime(cams, (stamp, stamp))
+
+    self.assertTrue(database.reload_if_changed())
+    self.assertEqual(database.next_camera(37.5000, 127.0200, 90.).facing, FACING_REAR)

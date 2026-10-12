@@ -17,24 +17,35 @@ import unittest
 import urllib.error
 from unittest import mock
 
-from openpilot.sunnypilot.mapd.korea import camera_refresh
+from openpilot.sunnypilot.mapd.korea import camera_refresh, police_cameras
 from openpilot.sunnypilot.mapd.korea.build_db import (CAMERA_API_KIND_FIELDS, SCHEMA_CAMERAS, insert_cameras,
                                                       load_cameras_api, write_db)
-from openpilot.sunnypilot.mapd.korea.db import CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SPEED
-from openpilot.sunnypilot.mapd.korea.tests.test_db import drop_kind
+from openpilot.sunnypilot.mapd.korea.db import (CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SPEED, FACING_BOTH, FACING_FRONT,
+                                                 FACING_REAR, FACING_UNKNOWN)
+from openpilot.sunnypilot.mapd.korea.tests.test_db import drop_facing, drop_kind
+from openpilot.sunnypilot.mapd.korea.tests.test_police_cameras import FILE_URL, FIXED, PAGE, make_xlsx
+
+# The list FIXED as the website serves it: the page, then the file it links to
+POLICE_LIST = {police_cameras.PAGE_URL: PAGE.encode(), FILE_URL: make_xlsx({"고정식": FIXED})}
 
 
-def api_item(lat, lon, limit, section=0, enforcement="1", position="", zone="99"):
+def api_item(lat, lon, limit, section=0, enforcement="1", position="", zone="99", number="", institution=""):
   return {"latitude": str(lat), "longitude": str(lon), "lmttVe": str(limit),
           "ovrspdRegltSctnLt": str(section), "regltSe": enforcement,
-          "regltSctnLcSe": position, "prtcareaType": zone}
+          "regltSctnLcSe": position, "prtcareaType": zone,
+          "mnlssRegltCameraManageNo": number, "institutionNm": institution}
 
 
-def fake_opener(pages, result_code="00"):
-  """Stand in for urlopen. Serves `pages` (a list of item-lists) by pageNo."""
+def fake_opener(pages, result_code="00", police=None):
+  """Stand in for urlopen. Serves `pages` (a list of item-lists) by pageNo, and `police` ({url: bytes}, like
+  POLICE_LIST) for the police list. Any other url fails like an unreachable host."""
   total = sum(len(p) for p in pages)
 
   def opener(url, timeout=None):
+    if not url.startswith(camera_refresh.API_URL):
+      if police is None or url not in police:
+        raise urllib.error.URLError("unreachable")
+      return io.BytesIO(police[url])
     page_no = int(url.split("pageNo=")[1].split("&")[0])
     items = pages[page_no - 1] if page_no <= len(pages) else []
     body = {"header": {"resultCode": result_code, "resultMsg": "OK"},
@@ -70,7 +81,7 @@ class TestFetch(unittest.TestCase):
              api_item(37.5, 127.0, 0),        # red-light camera: no target speed
              api_item(37.5, 127.0, 999),      # above MAX_SPEED_LIMIT_KPH
              api_item(1.0, 1.0, 60)]          # outside Korea
-    self.assertEqual(list(load_cameras_api(items)), [(37.5, 127.0, 60, 0, CAMERA_SPEED)])
+    self.assertEqual(list(load_cameras_api(items)), [(37.5, 127.0, 60, 0, CAMERA_SPEED, FACING_UNKNOWN)])
 
   def test_fetch_all_walks_every_page(self):
     pages = [[api_item(37.5, 127.0, 60)] * camera_refresh.PAGE_SIZE, [api_item(37.6, 127.1, 50)] * 7]
@@ -181,6 +192,40 @@ class TestRefresh(unittest.TestCase):
         self.assertEqual(camera_refresh.refresh(self.path, "KEY", opener=fake_opener([items])), 0)
         self.assertEqual(count_rows(self.path), 10)
 
+  def facings(self):
+    con = sqlite3.connect(f"file:{self.path}?mode=ro", uri=True)
+    try:
+      return [row[0] for row in con.execute("SELECT facing FROM cameras ORDER BY id")]
+    finally:
+      con.close()
+
+  # T0001 front, T0002 rear and T0003 both on the police list FIXED; T0004 names no facing
+  POLICE_ITEMS = [api_item(37.5 + i * 1e-3, 127.0, 60, number=number, institution="경기도남부경찰청")
+                  for i, number in enumerate(("T0001", "T0002", "T0003", "T0004"))]
+
+  def test_the_police_list_gives_the_facings_and_is_cached(self):
+    opener = fake_opener([self.POLICE_ITEMS], police=POLICE_LIST)
+    self.assertEqual(camera_refresh.refresh(self.path, "KEY", opener=opener), 4)
+    self.assertEqual(self.facings(), [FACING_FRONT, FACING_REAR, FACING_BOTH, FACING_UNKNOWN])
+    self.assertEqual(police_cameras.load_cache(str(self.tmp_path / camera_refresh.POLICE_CACHE)),
+                     {"T0001": FACING_FRONT, "T0002": FACING_REAR, "T0003": FACING_BOTH})
+
+  def test_without_the_list_the_cache_gives_them(self):
+    police_cameras.save_cache(str(self.tmp_path / camera_refresh.POLICE_CACHE), {"T0002": FACING_REAR})
+    self.assertEqual(camera_refresh.refresh(self.path, "KEY", opener=fake_opener([self.POLICE_ITEMS])), 4)
+    self.assertEqual(self.facings(), [FACING_UNKNOWN, FACING_REAR, FACING_UNKNOWN, FACING_UNKNOWN])
+
+  def test_without_the_list_or_a_cache_every_facing_is_unknown_and_the_cameras_still_refresh(self):
+    self.assertEqual(camera_refresh.refresh(self.path, "KEY", opener=fake_opener([self.POLICE_ITEMS])), 4)
+    self.assertEqual(self.facings(), [FACING_UNKNOWN] * 4)
+
+  def test_the_log_counts_facings_and_names_no_camera(self):
+    with self.assertLogs(camera_refresh.LOG, level="INFO") as captured:
+      camera_refresh.refresh(self.path, "KEY", opener=fake_opener([self.POLICE_ITEMS], police=POLICE_LIST))
+    logged = "\n".join(captured.output)
+    self.assertIn("front 1, rear 1, both 1, unknown 1", logged)
+    self.assertNotIn("T000", logged)
+
   def test_refresh_builds_a_first_database_even_without_a_kind_field(self):
     """With no database to keep, refusing would leave the device with no Korean map data at
     all -- open_db needs the camera file."""
@@ -216,6 +261,12 @@ class TestDue(unittest.TestCase):
   def test_a_database_with_split_sections_is_not_due(self):
     seed_sections(self.path, (CAMERA_SECTION, CAMERA_SECTION_END))
     self.assertFalse(camera_refresh.CameraRefresher(self.path)._due())
+
+  def test_a_fresh_database_without_facings_is_due(self):
+    """Built before the facing column: every camera would be held past its pole until the weekly refresh."""
+    seed(self.path, 5)
+    drop_facing(self.path)
+    self.assertTrue(camera_refresh.CameraRefresher(self.path)._due())
 
 
 class OneShotStop(threading.Event):
