@@ -281,12 +281,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
 
     // korea map
     {"KoreaCameraExclude", {PERSISTENT, STRING, ""}},                   // JSON [[lat, lon], ...]: 단속하지 않는 카메라. 좌표라서 BACKUP에서 뺀다
-    {"KoreaCameraExcludeAdd", {PERSISTENT, INT, "0"}},                  // sunnylink 버튼: 최근 카메라 1~3번을 제외한다. mapd가 처리하고 0으로 되돌린다
     {"KoreaCameraExcludeCount", {PERSISTENT, INT, "0"}},                // sunnylink 표시: 제외한 카메라 수. mapd가 쓴다
+    {"KoreaCameraExcludeOptions", {PERSISTENT, STRING, ""}},            // sunnylink 드롭다운 선택지 JSON [[±id, "1. 10-13 17:46 · 30 ✕"], ...], 좌표 없음. mapd가 쓰고 sunnylinkd가 스키마에 넣는다
+    {"KoreaCameraExcludePick", {PERSISTENT, INT, "0"}},                 // sunnylink 드롭다운: +id면 그 카메라를 제외하고 -id면 되살린다. mapd가 처리하고 0으로 되돌린다
     {"KoreaCameraExcludeUndo", {PERSISTENT, INT, "0"}},                 // sunnylink 버튼: 1이면 마지막 하나, 2면 전부 되살린다. mapd가 처리하고 0으로 되돌린다
     {"KoreaCameraPage", {PERSISTENT, STRING, ""}},                      // 로그 리포 cameras.md 내용: 최근·제외 카메라의 카카오맵 링크. mapd가 쓰고 github_uploader가 주차 중에 올린다. 좌표라서 BACKUP과 sunnylink에서 뺀다
-    {"KoreaCameraRecent", {PERSISTENT, STRING, ""}},                    // JSON [[lat, lon, limit, "HH:MM"], ...]: 최근 지난 감속 카메라 3대. 좌표라서 BACKUP에서 뺀다
-    {"KoreaCameraRecentLabel", {PERSISTENT, STRING, "-"}},              // sunnylink 표시: "① 30 17:46 ✕ ...", 좌표 없음. mapd가 쓴다
+    {"KoreaCameraRecent", {PERSISTENT, STRING, ""}},                    // JSON [[lat, lon, limit, "MM-DD HH:MM", id], ...]: 최근 지난 감속 카메라 100대, 최신순. 좌표라서 BACKUP에서 뺀다
     {"KoreaCameraMargin", {PERSISTENT | BACKUP, INT, "50"}},              // m, 제한속도 도달 여유 거리
     {"KoreaCameraPassHold", {PERSISTENT | BACKUP, INT, "60"}},            // m, 전면으로 확인된 카메라 외에는 지난 뒤에도 이 거리까지 제한속도 유지 (0: 끔)
     {"KoreaCameraSlowdownDistance", {PERSISTENT | BACKUP, INT, "1000"}},  // m, 100 km/h 기준 카메라 감속 시작 거리, 속도에 비례 (0: 감속 세기만)

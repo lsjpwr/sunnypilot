@@ -24,6 +24,7 @@ from openpilot.sunnypilot.sunnylink.tools.generate_settings_schema import (
   SCHEMA_VERSION,
   TORQUE_VERSIONS_PATH,
   _build_torque_options,
+  _load_definition,
   _load_torque_versions,
   generate_schema,
 )
@@ -39,7 +40,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.long_cost_tuning import (
   LEAD_VELOCITY_COST_MIN,
 )
 from openpilot.sunnypilot.mapd.korea.db import CAMERA_KIND_PARAMS
-from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import CAMERA_MARGIN_RANGE, CAMERA_PASS_HOLD_RANGE, CAMERA_RECENT_MARKS
+from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import CAMERA_MARGIN_RANGE, CAMERA_PASS_HOLD_RANGE
+from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 
 
@@ -545,7 +547,7 @@ class TestKoreaSectionsOnCruise(OpenpilotTestCase):
     assert _section_keys(schema, "cruise", "korea_speed_cameras") == [
       "KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled",
       "KoreaCameraZoneEnabled", "KoreaCameraMargin", "KoreaCameraPassHold", "KoreaCameraSlowdownDistance", "MapSlowdownDecel",
-      "KoreaCameraRecentLabel", "KoreaCameraExcludeAdd", "KoreaCameraExcludeCount", "KoreaCameraExcludeUndo",
+      "KoreaCameraExcludePick", "KoreaCameraExcludeCount", "KoreaCameraExcludeUndo",
       "KoreaMapApiKey"]
     assert _section_keys(schema, "cruise", "korea_speed_bumps") == [
       "KoreaSpeedBumpEnabled", "KoreaSpeedBumpArchSpeed", "KoreaSpeedBumpTrapezoidSpeed"]
@@ -644,35 +646,59 @@ class TestKoreaCameraKindsRemote(OpenpilotTestCase):
 
 
 class TestKoreaCameraExcludeRemote(OpenpilotTestCase):
-  """KoreaCameraExclude from a phone. The app has no text widget, so it shows the last cameras the car
-  slowed for (info rows korea_map_data writes) and picks one by its number (multiple_buttons
-  korea_map_data carries out and sets back to 0)."""
+  """KoreaCameraExclude from a phone. The app has no text widget, so it picks one of the last cameras the car
+  slowed for from a dropdown the device fills when the app fetches the schema (KoreaCameraExcludeOptions,
+  which korea_map_data writes), and brings them back with buttons. korea_map_data carries both out and
+  sets them back to 0."""
 
-  def test_the_info_rows_show_the_recent_cameras_and_the_count(self, schema):
-    for key in ("KoreaCameraRecentLabel", "KoreaCameraExcludeCount"):
-      item = _find_item(schema, key)
-      assert item is not None, f"{key} missing from settings_ui schema"
-      assert item["widget"] == "info"
+  CAMERAS = [[12, "1. 10-13 17:46 · 30"], [-11, "2. 10-13 17:40 · 50 ✕"]]
 
-  def test_the_buttons_pick_a_recent_camera_or_bring_them_back(self, schema):
-    add = _find_item(schema, "KoreaCameraExcludeAdd")
+  def pick_options(self, schema):
+    item = _find_item(schema, "KoreaCameraExcludePick")
+    assert item is not None, "KoreaCameraExcludePick missing from settings_ui schema"
+    return [(o["value"], o["label"]) for o in item["options"]]
+
+  def test_the_count_is_an_info_row(self, schema):
+    item = _find_item(schema, "KoreaCameraExcludeCount")
+    assert item is not None
+    assert item["widget"] == "info"
+
+  def test_the_pick_is_a_dropdown_with_nothing_before_a_drive(self, schema):
+    item = _find_item(schema, "KoreaCameraExcludePick")
+    assert item is not None
+    assert item["widget"] == "option"
+    assert "min" not in item and "max" not in item  # with them the app draws a stepper, not a dropdown
+    assert self.pick_options(schema) == [(0, "-")]
+
+  def test_the_dropdown_lists_the_cameras_korea_map_data_wrote(self):
+    import jsonschema
+    Params().put("KoreaCameraExcludeOptions", json.dumps(self.CAMERAS, ensure_ascii=False), block=True)
+    assert self.pick_options(generate_schema()) == [(0, "-"), *map(tuple, self.CAMERAS)]
+    with open(SCHEMA_VALIDATOR_PATH) as f:
+      jsonschema.validate(instance=_load_definition(), schema=json.load(f))  # settings_ui.json plus the cameras
+    assert self.pick_options(generate_schema()) == [(0, "-"), *map(tuple, self.CAMERAS)]  # not twice
+
+  def test_an_unreadable_list_leaves_the_dropdown_empty_and_the_schema_whole(self):
+    """No schema, no sunnylink settings page at all."""
+    for raw in ("nope", "null", "[[1]]", '[["a", "b"]]'):
+      Params().put("KoreaCameraExcludeOptions", raw, block=True)
+      assert self.pick_options(generate_schema()) == [(0, "-")], raw
+
+  def test_the_buttons_bring_back_the_last_or_all(self, schema):
     undo = _find_item(schema, "KoreaCameraExcludeUndo")
-    assert add is not None and undo is not None
-    assert add["widget"] == undo["widget"] == "multiple_button"
-    # the label numbers its cameras with the same marks
-    assert [(o["value"], o["label"]) for o in add["options"]] == list(enumerate(["-", *CAMERA_RECENT_MARKS]))
+    assert undo is not None
+    assert undo["widget"] == "multiple_button"
     assert [(o["value"], o["label"]) for o in undo["options"]] == [(0, "-"), (1, "Last"), (2, "All")]
 
-  def test_the_buttons_grey_out_while_engaged(self, schema):
-    """sunnylinkd.saveParams drops every write while engaged, so a live button would do nothing."""
-    for key in ("KoreaCameraExcludeAdd", "KoreaCameraExcludeUndo"):
+  def test_the_pick_and_the_buttons_grey_out_while_engaged(self, schema):
+    """sunnylinkd.saveParams drops every write while engaged, so a live pick would do nothing."""
+    for key in ("KoreaCameraExcludePick", "KoreaCameraExcludeUndo"):
       assert "not_engaged" in _flatten_rule_types(_find_item(schema, key).get("enablement")), key
 
-  @parameterized.expand(["KoreaCameraRecentLabel", "KoreaCameraExcludeAdd", "KoreaCameraExcludeCount",
-                         "KoreaCameraExcludeUndo"], names=["key"])
+  @parameterized.expand(["KoreaCameraExcludePick", "KoreaCameraExcludeCount", "KoreaCameraExcludeUndo"], names=["key"])
   def test_each_row_needs_only_the_korea_source(self, schema, key):
     """Like the kind toggles: an excluded camera leaves the speed limit ahead sign too, so no
-    longitudinal gate. korea_map_data reads the buttons every tick, offroad too, so no cycle."""
+    longitudinal gate. korea_map_data reads the pick and the buttons every tick, offroad too, so no cycle."""
     item = _find_item(schema, key)
     assert item is not None, f"{key} missing from settings_ui schema"
     assert _references_param_equals(item.get("enablement"), "MapDataSource", 1)

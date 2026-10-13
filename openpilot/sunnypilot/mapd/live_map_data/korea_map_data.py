@@ -17,6 +17,7 @@ ROUTE_CORRIDOR_M of the route while the car is on one, else within CAMERA_CORRID
 heading line; the sign keeps the wider cone. SpeedLimitAssist would hold it behind a
 confirmation prompt under 80 km/h and add the speed limit offset on top.
 """
+import datetime
 import json
 import math
 import os
@@ -72,9 +73,12 @@ SECTION_TRAVEL_SLACK_M = 2000.
 
 FACING_NAMES = {FACING_FRONT: "front", FACING_REAR: "rear", FACING_BOTH: "both"}  # anything else is unknown
 
-# KoreaCameraRecent holds the last slowdown cameras the car passed, newest first, and sunnylink excludes one
-# by its mark (KoreaCameraExcludeAdd). Three: the app's multiple_button takes four choices, one of them "-".
-CAMERA_RECENT_MARKS = "①②③"
+# KoreaCameraRecent holds the last slowdown cameras the car passed, newest first: a drive's worth, usually.
+# sunnylink lists them in a dropdown, which takes any number of choices, and picks one by its id, not its
+# place (KoreaCameraExcludePick): the app may show a schema a minute or two old, and it queues a pick for a
+# device that is offline, while every pass moves the places along.
+CAMERA_RECENT_MAX = 100
+KST = datetime.timezone(datetime.timedelta(hours=9))  # Korea keeps UTC+9 all year
 
 
 def parse_camera_exclude(raw: str) -> tuple[tuple[float, float], ...] | None:
@@ -86,23 +90,29 @@ def parse_camera_exclude(raw: str) -> tuple[tuple[float, float], ...] | None:
     return None
 
 
-def parse_camera_recent(raw: str) -> list[tuple[float, float, int, str]]:
-  """KoreaCameraRecent, a JSON list of [lat, lon, limit, "HH:MM"], newest first. Empty when it is not one."""
+def parse_camera_recent(raw: str) -> list[tuple[float, float, int, str, int]]:
+  """KoreaCameraRecent, a JSON list of [lat, lon, limit, "MM-DD HH:MM", id], newest first. Empty when it is
+  not one, the id-less list of before 2026-10-13 too."""
   try:
-    return [(float(lat), float(lon), int(limit), str(at))
-            for lat, lon, limit, at in json.loads(raw or "[]")][:len(CAMERA_RECENT_MARKS)]
+    return [(float(lat), float(lon), int(limit), str(at), int(cid))
+            for lat, lon, limit, at, cid in json.loads(raw or "[]")][:CAMERA_RECENT_MAX]
   except (TypeError, ValueError):
     return []
 
 
-def camera_recent_label(recent: list[tuple[float, float, int, str]], exclude: tuple[tuple[float, float], ...]) -> str:
-  """KoreaCameraRecent as sunnylink shows it: "① 30 17:46 ✕  ② 50 17:40", ✕ on an excluded camera.
-  No points: sunnylink reads this, never KoreaCameraRecent (sunnylinkd.REMOTE_READ_DENYLIST)."""
-  return "  ".join(f"{mark} {limit} {at}" + (" ✕" if excluded(lat, lon, exclude) else "")
-                   for mark, (lat, lon, limit, at) in zip(CAMERA_RECENT_MARKS, recent, strict=False)) or "-"
+def camera_options(recent: list[tuple[float, float, int, str, int]], exclude: tuple[tuple[float, float], ...]) -> list[tuple[int, str]]:
+  """KoreaCameraRecent as sunnylink's dropdown lists it, numbered newest first: (id, "1. 10-13 17:46 · 30") to
+  exclude a camera, (-id, "2. 10-13 17:40 · 50 ✕") to bring an excluded one back. The sign, not a toggle: the
+  same pick twice from a stale screen does what the label showed. No points: sunnylink reads this, never
+  KoreaCameraRecent (sunnylinkd.REMOTE_READ_DENYLIST)."""
+  options = []
+  for n, (lat, lon, limit, at, cid) in enumerate(recent, 1):
+    gone = excluded(lat, lon, exclude)
+    options.append((-cid if gone else cid, f"{n}. {at} · {limit}" + (" ✕" if gone else "")))
+  return options
 
 
-def camera_page(recent: list[tuple[float, float, int, str]], exclude: tuple[tuple[float, float], ...]) -> str:
+def camera_page(recent: list[tuple[float, float, int, str, int]], exclude: tuple[tuple[float, float], ...]) -> str:
   """cameras.md, which github_uploader puts in the owner's GitHub log repo: where the recent and the
   excluded cameras are, as Kakao Map and Road View links (apis.map.kakao.com/web/guide, 지도 URL) and a
   map GitHub draws from the geojson block. It holds the points, so sunnylink never reads it
@@ -111,12 +121,12 @@ def camera_page(recent: list[tuple[float, float, int, str]], exclude: tuple[tupl
     return (f"[Kakao Map](https://map.kakao.com/link/map/{urllib.parse.quote(name, safe='')},{lat:.6f},{lon:.6f}) · " +
             f"[Road View](https://map.kakao.com/link/roadview/{lat:.6f},{lon:.6f})")
 
-  marked = list(zip(CAMERA_RECENT_MARKS, recent, strict=False))
   lines = ["# Speed Cameras", "", "## Recent Slowdown Cameras"]
-  if marked:
-    lines += ["Newest first, numbered as in sunnylink. ✕ = excluded.", "", "| | Limit | Passed | Location |", "|---|---|---|---|"]
-    lines += [f"| {mark}{' ✕' if excluded(lat, lon, exclude) else ''} | {limit} | {at} | {links(f'{mark}{limit}', lat, lon)} |"
-              for mark, (lat, lon, limit, at) in marked]
+  if recent:
+    lines += ["Newest first, numbered as in sunnylink. ✕ = excluded; pick it there again to bring it back.", "",
+              "| | Limit | Passed | Location |", "|---|---|---|---|"]
+    lines += [f"| {n}{' ✕' if excluded(lat, lon, exclude) else ''} | {limit} | {at} | {links(f'{n}. {limit}', lat, lon)} |"
+              for n, (lat, lon, limit, at, _) in enumerate(recent, 1)]
   else:
     lines.append("None yet.")
   lines += ["", f"## Excluded Cameras ({len(exclude)})"]
@@ -126,7 +136,7 @@ def camera_page(recent: list[tuple[float, float, int, str]], exclude: tuple[tupl
   else:
     lines.append("None yet.")
 
-  points = [(f"{mark} {limit} {at}", "#1e66f5", lat, lon) for mark, (lat, lon, limit, at) in marked]  # blue
+  points = [(label, "#1e66f5", lat, lon) for (_, label), (lat, lon, *_) in zip(camera_options(recent, exclude), recent, strict=True)]  # blue
   points += [(f"✕{i}", "#d20f39", lat, lon) for i, (lat, lon) in enumerate(exclude, 1)]  # red
   if points:
     features = [{"type": "Feature", "properties": {"title": title, "marker-color": color},
@@ -137,10 +147,9 @@ def camera_page(recent: list[tuple[float, float, int, str]], exclude: tuple[tupl
 
 
 def kst_clock() -> str:
-  """HH:MM as the driver reads it, for when a camera was passed: the device clock runs on UTC, and Korea
-  keeps UTC+9 all year."""
-  utc = time.gmtime()
-  return f"{(utc.tm_hour + 9) % 24:02d}:{utc.tm_min:02d}"
+  """MM-DD HH:MM as the driver reads it, for when a camera was passed: the device clock runs on UTC, and 100
+  cameras span days."""
+  return datetime.datetime.now(KST).strftime("%m-%d %H:%M")
 
 
 @dataclass
@@ -391,8 +400,10 @@ class KoreaMapData(BaseMapData):
     hold = prev.facing != FACING_FRONT and self.camera_pass_hold > 0
     if hold:
       self._pass_hold = prev
+    # before its old entry goes, so an id is never given twice and a stale pick finds nothing
+    cid = max((r[4] for r in self.camera_recent), default=0) + 1
     others = [r for r in self.camera_recent if haversine(r[0], r[1], prev.lat, prev.lon) > CAMERA_EXCLUDE_M]
-    self.camera_recent = [(prev.lat, prev.lon, prev.limit_kph, kst_clock()), *others][:len(CAMERA_RECENT_MARKS)]
+    self.camera_recent = [(prev.lat, prev.lon, prev.limit_kph, kst_clock(), cid), *others][:CAMERA_RECENT_MAX]
     self.params.put("KoreaCameraRecent", json.dumps(self.camera_recent))
     self.write_camera_labels()
     cloudlog.info("korea_map: passed a %d km/h camera facing %s%s", prev.limit_kph, FACING_NAMES.get(prev.facing, "unknown"),
@@ -511,12 +522,13 @@ class KoreaMapData(BaseMapData):
       self.params.put("ParamsVersion", (self.params.get("ParamsVersion") or 0) + 1, block=True)
 
   def apply_exclude_buttons(self) -> bool:
-    """Carry out sunnylink's buttons once each, then set them back to 0. KoreaCameraExcludeAdd n
-    excludes the n-th camera of KoreaCameraRecent; KoreaCameraExcludeUndo 1 brings back the newest
-    exclusion, 2 all of them. False when neither was pressed."""
-    add = self.params.get("KoreaCameraExcludeAdd") or 0
+    """Carry out sunnylink's dropdown and buttons once each, then set them back to 0. KoreaCameraExcludePick
+    id excludes that camera of KoreaCameraRecent, -id brings it back (camera_options); one no longer listed
+    does nothing. KoreaCameraExcludeUndo 1 brings back the newest exclusion, 2 all of them. False when
+    nothing was picked."""
+    pick = self.params.get("KoreaCameraExcludePick") or 0
     undo = self.params.get("KoreaCameraExcludeUndo") or 0
-    if not (add or undo):
+    if not (pick or undo):
       return False
     points = parse_camera_exclude(self.params.get("KoreaCameraExclude") or "")
     if points is None:
@@ -524,28 +536,36 @@ class KoreaMapData(BaseMapData):
       cloudlog.warning("korea_map: KoreaCameraExclude is unreadable; sunnylink button ignored")
     else:
       new = list(points)
-      if 1 <= add <= len(self.camera_recent):
-        lat, lon, limit, _ = self.camera_recent[add - 1]
-        if not excluded(lat, lon, new):
+      camera = next((r for r in self.camera_recent if r[4] == abs(pick)), None) if pick else None
+      if camera is not None:
+        lat, lon, limit, _, _ = camera
+        if pick > 0 and not excluded(lat, lon, new):
           new.append((lat, lon))
           cloudlog.info("korea_map: sunnylink excluded a %d km/h camera", limit)
+        elif pick < 0 and excluded(lat, lon, new):
+          new = [p for p in new if not excluded(lat, lon, (p,))]  # every point there: one left would still exclude it
+          cloudlog.info("korea_map: sunnylink restored a %d km/h camera", limit)
+      elif pick:
+        cloudlog.info("korea_map: sunnylink picked a camera no longer in the list")
       if undo in (1, 2) and new:
         cloudlog.info("korea_map: sunnylink restored %d camera(s)", 1 if undo == 1 else len(new))
         new = new[:-1] if undo == 1 else []
       if new != list(points):
         # blocking: read_camera_params reads it back in this same tick
         self.params.put("KoreaCameraExclude", json.dumps(new), block=True)
-    self.params.put("KoreaCameraExcludeAdd", 0, block=True)
+    self.params.put("KoreaCameraExcludePick", 0, block=True)
     self.params.put("KoreaCameraExcludeUndo", 0, block=True)
     return True
 
   def write_camera_labels(self) -> None:
-    """The info rows sunnylink shows: the recent cameras and how many are excluded, never a point. And
-    cameras.md with the points, for github_uploader alone to put in the log repo (camera_page).
+    """What sunnylink shows: the dropdown's cameras (sunnylinkd puts them in the schema) and how many are
+    excluded, never a point. And cameras.md with the points, for github_uploader alone to put in the log
+    repo (camera_page).
 
     Blocking, like the ParamsVersion bump after them, so sunnylink's re-read finds them on flash. They
     change only on a pass, a button or an ssh edit."""
-    self.params.put("KoreaCameraRecentLabel", camera_recent_label(self.camera_recent, self.camera_exclude), block=True)
+    self.params.put("KoreaCameraExcludeOptions", json.dumps(camera_options(self.camera_recent, self.camera_exclude),
+                                                            ensure_ascii=False), block=True)
     self.params.put("KoreaCameraExcludeCount", len(self.camera_exclude), block=True)
     self.params.put("KoreaCameraPage", camera_page(self.camera_recent, self.camera_exclude), block=True)
 

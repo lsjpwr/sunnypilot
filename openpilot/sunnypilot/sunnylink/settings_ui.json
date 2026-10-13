@@ -1282,39 +1282,14 @@
               ]
             },
             {
-              "key": "KoreaCameraRecentLabel",
-              "widget": "info",
-              "title": "Recent Slowdown Cameras",
-              "description": "The last three cameras the car slowed for and passed, newest first, with their limit and the time they were passed. \u2715 marks one that is excluded.",
-              "enablement": [
-                {
-                  "type": "param",
-                  "key": "MapDataSource",
-                  "equals": 1
-                }
-              ]
-            },
-            {
-              "key": "KoreaCameraExcludeAdd",
-              "widget": "multiple_button",
+              "key": "KoreaCameraExcludePick",
+              "widget": "option",
               "title": "Exclude a Camera",
-              "description": "Pick a camera above that you have found does not enforce. The car stops slowing for it and the speed limit ahead sign leaves it out. Its location stays on the device.",
+              "description": "The last 100 cameras the car slowed for and passed, newest first, with when it passed them and their limit. Pick one you have found does not enforce, and the car stops slowing for it and the speed limit ahead sign leaves it out. \u2715 marks an excluded camera; pick it to bring it back. The list can trail the car by a minute or two. Locations stay on the device; cameras.md in the GitHub log repo maps them by the same numbers.",
               "options": [
                 {
                   "value": 0,
                   "label": "-"
-                },
-                {
-                  "value": 1,
-                  "label": "\u2460"
-                },
-                {
-                  "value": 2,
-                  "label": "\u2461"
-                },
-                {
-                  "value": 3,
-                  "label": "\u2462"
                 }
               ],
               "enablement": [

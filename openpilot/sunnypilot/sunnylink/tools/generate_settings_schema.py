@@ -14,6 +14,7 @@ import json
 import os
 from collections.abc import Callable
 
+from openpilot.common.params import Params
 from openpilot.sunnypilot.sunnylink.capabilities import CAPABILITY_FIELDS, CAPABILITY_LABELS
 
 SCHEMA_VERSION = "1.0"
@@ -46,15 +47,26 @@ def _build_torque_options(versions: dict) -> list[dict]:
   return options
 
 
+def _korea_camera_options() -> list[dict]:
+  """The cameras korea_map_data lists for KoreaCameraExcludePick (KoreaCameraExcludeOptions). Empty when the
+  list does not parse: one bad option would fail getParamsMetadata, and with it the whole settings page."""
+  try:
+    return [{"value": int(value), "label": str(label)}
+            for value, label in json.loads(Params().get("KoreaCameraExcludeOptions") or "[]")]
+  except (TypeError, ValueError):
+    return []
+
+
 def _inject_dynamic_options(schema: dict) -> None:
   versions = _load_torque_versions()
-  if not versions:
-    return
-  options = _build_torque_options(versions)
+  torque = _build_torque_options(versions) if versions else None
+  cameras = _korea_camera_options()
 
   def visitor(item: dict) -> None:
-    if item.get("key") == "TorqueControlTune":
-      item["options"] = options
+    if item.get("key") == "TorqueControlTune" and torque is not None:
+      item["options"] = torque
+    elif item.get("key") == "KoreaCameraExcludePick":
+      item["options"] = [*item["options"], *cameras]  # after its "-"
 
   _walk_all_items(schema, visitor)
 

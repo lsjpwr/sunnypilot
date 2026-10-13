@@ -193,13 +193,13 @@ class TestGetParams(OpenpilotTestCase):
 
   def test_camera_locations_never_leave_the_device(self):
     """The excluded and the recently passed cameras are where the driver goes. sunnylink gets the
-    label korea_map_data writes for them, never the points (korea_map_data.camera_recent_label),
+    dropdown labels korea_map_data writes for them, never the points (korea_map_data.camera_options),
     nor the cameras.md that holds them for the log repo (korea_map_data.camera_page)."""
     Params().put("KoreaCameraExclude", "[[37.5, 127.02]]", block=True)
-    Params().put("KoreaCameraRecent", '[[37.5, 127.02, 30, "17:46"]]', block=True)
-    Params().put("KoreaCameraRecentLabel", "① 30 17:46 ✕", block=True)
+    Params().put("KoreaCameraRecent", '[[37.5, 127.02, 30, "10-13 17:46", 1]]', block=True)
+    Params().put("KoreaCameraExcludeOptions", '[[-1, "1. 10-13 17:46 · 30 ✕"]]', block=True)
     Params().put("KoreaCameraPage", "[Road View](https://map.kakao.com/link/roadview/37.500000,127.020000)", block=True)
 
-    response = sunnylinkd.getParams(["KoreaCameraExclude", "KoreaCameraRecent", "KoreaCameraRecentLabel", "KoreaCameraPage"])
+    response = sunnylinkd.getParams(["KoreaCameraExclude", "KoreaCameraRecent", "KoreaCameraExcludeOptions", "KoreaCameraPage"])
 
-    self.assertEqual([p["key"] for p in json.loads(response["params"])], ["KoreaCameraRecentLabel"])
+    self.assertEqual([p["key"] for p in json.loads(response["params"])], ["KoreaCameraExcludeOptions"])

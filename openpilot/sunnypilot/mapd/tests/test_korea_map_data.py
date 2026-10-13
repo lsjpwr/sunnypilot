@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import datetime
 import json
 import math
 import os
@@ -29,8 +30,8 @@ from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_
                                                  CAMERA_ZONE, FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN,
                                                  Bump, Camera, KoreaMapDB, Link)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
-from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (KoreaMapData, camera_page, camera_recent_label,
-                                                                    kst_clock, parse_camera_recent)
+from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (CAMERA_RECENT_MAX, KoreaMapData, camera_options,
+                                                                    camera_page, kst_clock, parse_camera_recent)
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
@@ -845,7 +846,7 @@ def zone_camera(limit, distance, lat, lon):
 
 class TestRecentCameras(unittest.TestCase):
   """KoreaCameraRecent: the slowdown cameras the car has passed, newest first, for sunnylink to
-  exclude one by its number."""
+  exclude or bring back one by its id."""
 
   A = (37.5009, 127.0228)
   B = (37.5100, 127.0300)
@@ -865,7 +866,7 @@ class TestRecentCameras(unittest.TestCase):
       section_starts_near=lambda *a, **k: [],
       section_end_ahead=lambda *a, **k: None,
     )
-    with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.kst_clock", return_value="17:46"):
+    with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.kst_clock", return_value="10-13 17:46"):
       for camera in slots:
         ahead[0] = camera
         data.update_location()
@@ -873,9 +874,9 @@ class TestRecentCameras(unittest.TestCase):
 
   def test_a_camera_left_from_close_by_is_remembered(self):
     data = self.drive(zone_camera(30, 400., *self.A), zone_camera(30, 50., *self.A), None)
-    self.assertEqual(data.camera_recent, [(*self.A, 30, "17:46")])
-    self.assertEqual(json.loads(data.params.values["KoreaCameraRecent"]), [[*self.A, 30, "17:46"]])
-    self.assertEqual(data.params.values["KoreaCameraRecentLabel"], "① 30 17:46")
+    self.assertEqual(data.camera_recent, [(*self.A, 30, "10-13 17:46", 1)])
+    self.assertEqual(json.loads(data.params.values["KoreaCameraRecent"]), [[*self.A, 30, "10-13 17:46", 1]])
+    self.assertEqual(json.loads(data.params.values["KoreaCameraExcludeOptions"]), [[1, "1. 10-13 17:46 · 30"]])
 
   def test_a_camera_dropped_from_far_away_was_not_passed(self):
     """The car turned off before it."""
@@ -890,57 +891,63 @@ class TestRecentCameras(unittest.TestCase):
 
   def test_the_next_camera_further_on_passes_it(self):
     data = self.drive(zone_camera(30, 40., *self.A), zone_camera(50, 900., *self.B))
-    self.assertEqual([limit for _, _, limit, _ in data.camera_recent], [30])
+    self.assertEqual([r[2] for r in data.camera_recent], [30])
 
-  def test_a_camera_passed_again_moves_to_the_front_once(self):
+  def test_a_camera_passed_again_moves_to_the_front_once_with_a_new_id(self):
+    """An id never comes back: a pick from a stale screen finds nothing rather than another camera."""
     data = self.drive(zone_camera(30, 40., *self.A), None, zone_camera(50, 40., *self.B), None,
                       zone_camera(30, 40., *self.A), None)
-    self.assertEqual([limit for _, _, limit, _ in data.camera_recent], [30, 50])
+    self.assertEqual([(r[2], r[4]) for r in data.camera_recent], [(30, 3), (50, 2)])
 
-  def test_only_the_last_three_are_kept_newest_first(self):
+  def test_only_the_last_hundred_are_kept_newest_first(self):
     slots = []
-    for i, limit in enumerate((30, 40, 50, 60)):
-      slots += [zone_camera(limit, 40., 37.50 + i / 100, 127.02), None]
-    self.assertEqual([limit for _, _, limit, _ in self.drive(*slots).camera_recent], [60, 50, 40])
+    for i in range(CAMERA_RECENT_MAX + 1):
+      slots += [zone_camera(30, 40., 37.50 + i / 1000, 127.02), None]  # ~111 m apart
+    self.assertEqual([r[4] for r in self.drive(*slots).camera_recent], list(range(CAMERA_RECENT_MAX + 1, 1, -1)))
 
-  def test_an_excluded_camera_is_marked(self):
+  def test_an_excluded_camera_is_marked_and_picked_to_come_back(self):
     data = self.drive(zone_camera(30, 40., *self.A), None, exclude=(self.A,))
-    self.assertEqual(data.params.values["KoreaCameraRecentLabel"], "① 30 17:46 ✕")
+    self.assertEqual(json.loads(data.params.values["KoreaCameraExcludeOptions"]), [[-1, "1. 10-13 17:46 · 30 ✕"]])
 
   def test_a_pass_updates_the_log_repo_page(self):
     data = self.drive(zone_camera(30, 40., *self.A), None)
     self.assertIn("[Road View](https://map.kakao.com/link/roadview/37.500900,127.022800)", data.params.values["KoreaCameraPage"])
 
-  def test_the_label_numbers_the_cameras_and_says_none_when_empty(self):
-    recent = [(*self.A, 30, "17:46"), (*self.B, 50, "17:40")]
-    self.assertEqual(camera_recent_label(recent, (self.B,)), "① 30 17:46  ② 50 17:40 ✕")
-    self.assertEqual(camera_recent_label([], ()), "-")
+  def test_the_options_number_the_cameras_newest_first(self):
+    recent = [(*self.A, 30, "10-13 17:46", 7), (*self.B, 50, "10-13 17:40", 6)]
+    self.assertEqual(camera_options(recent, (self.B,)), [(7, "1. 10-13 17:46 · 30"), (-6, "2. 10-13 17:40 · 50 ✕")])
+    self.assertEqual(camera_options([], ()), [])
 
   def test_a_saved_list_is_read_back_and_junk_is_dropped(self):
-    self.assertEqual(parse_camera_recent('[[37.5, 127.02, 30, "17:46"]]'), [(37.5, 127.02, 30, "17:46")])
-    for raw in ("", "null", "[[37.5, 127.02]]", "[1]", '{"abcd": 1}'):
+    self.assertEqual(parse_camera_recent('[[37.5, 127.02, 30, "10-13 17:46", 4]]'), [(37.5, 127.02, 30, "10-13 17:46", 4)])
+    # the 3-camera list of before 2026-10-13 had no id: it starts over
+    for raw in ("", "null", "[[37.5, 127.02]]", '[[37.5, 127.02, 30, "17:46"]]', "[1]", '{"abcd": 1}'):
       self.assertEqual(parse_camera_recent(raw), [], raw)
 
-  def test_the_clock_is_korean_time(self):
-    """The device clock runs on UTC; the driver reads Korean time, past midnight too."""
-    with mock.patch("time.gmtime", return_value=time.gmtime(15 * 3600 + 30 * 60)):
-      self.assertEqual(kst_clock(), "00:30")
+  def test_the_clock_is_korean_time_with_the_date(self):
+    """The device clock runs on UTC; the driver reads Korean time, and 100 cameras span days."""
+    def kst():
+      return (datetime.datetime.now(datetime.UTC) + datetime.timedelta(hours=9)).strftime("%m-%d %H:%M")
+    before = kst()
+    self.assertIn(kst_clock(), (before, kst()))  # either side of a minute turning over
 
 
 class TestCameraPage(unittest.TestCase):
   """cameras.md, which github_uploader puts in the log repo: the recent and excluded cameras as Kakao Map
   and Road View links, and a map GitHub draws from the geojson block."""
 
-  RECENT = [(37.5001, 127.0201, 30, "17:46"), (37.5101, 127.0301, 50, "17:40"), (37.5201, 127.0401, 60, "17:31")]
+  RECENT = [(37.5001, 127.0201, 30, "10-13 17:46", 9), (37.5101, 127.0301, 50, "10-13 17:40", 8),
+            (37.5201, 127.0401, 60, "10-12 08:31", 7)]
   EXCLUDE = ((37.4001, 127.1001), (37.5101, 127.0301))
 
-  def test_each_recent_camera_is_a_row_marked_when_excluded(self):
-    rows = [line.split(" | ")[:3] for line in camera_page(self.RECENT, self.EXCLUDE).splitlines() if line[:3] in ("| ①", "| ②", "| ③")]
-    self.assertEqual(rows, [["| ①", "30", "17:46"], ["| ② ✕", "50", "17:40"], ["| ③", "60", "17:31"]])
+  def test_each_recent_camera_is_a_row_numbered_as_in_sunnylink(self):
+    recent = camera_page(self.RECENT, self.EXCLUDE).split("## Excluded")[0]
+    rows = [line.split(" | ")[:3] for line in recent.splitlines() if line[:3] in ("| 1", "| 2", "| 3")]
+    self.assertEqual(rows, [["| 1", "30", "10-13 17:46"], ["| 2 ✕", "50", "10-13 17:40"], ["| 3", "60", "10-12 08:31"]])
 
   def test_the_links_open_kakao_map_and_road_view_at_the_camera(self):
     page = camera_page(self.RECENT, self.EXCLUDE)
-    self.assertIn("[Kakao Map](https://map.kakao.com/link/map/%E2%91%A030,37.500100,127.020100)", page)  # ①30
+    self.assertIn("[Kakao Map](https://map.kakao.com/link/map/1.%2030,37.500100,127.020100)", page)  # 1. 30
     self.assertIn("[Road View](https://map.kakao.com/link/roadview/37.500100,127.020100)", page)
 
   def test_excluded_cameras_are_numbered_and_the_one_last_brings_back_is_marked(self):
@@ -953,8 +960,9 @@ class TestCameraPage(unittest.TestCase):
     block = camera_page(self.RECENT, self.EXCLUDE).split("```geojson\n")[1].split("\n```")[0]
     features = [(f["properties"]["title"], f["properties"]["marker-color"], f["geometry"]["coordinates"])
                 for f in json.loads(block)["features"]]
-    self.assertEqual(features, [("① 30 17:46", "#1e66f5", [127.0201, 37.5001]), ("② 50 17:40", "#1e66f5", [127.0301, 37.5101]),
-                                ("③ 60 17:31", "#1e66f5", [127.0401, 37.5201]), ("✕1", "#d20f39", [127.1001, 37.4001]),
+    self.assertEqual(features, [("1. 10-13 17:46 · 30", "#1e66f5", [127.0201, 37.5001]),
+                                ("2. 10-13 17:40 · 50 ✕", "#1e66f5", [127.0301, 37.5101]),
+                                ("3. 10-12 08:31 · 60", "#1e66f5", [127.0401, 37.5201]), ("✕1", "#d20f39", [127.1001, 37.4001]),
                                 ("✕2", "#d20f39", [127.0301, 37.5101])])
 
   def test_with_no_cameras_it_says_so_and_draws_no_map(self):
@@ -965,9 +973,10 @@ class TestCameraPage(unittest.TestCase):
 
 
 class TestExcludeCommands(OpenpilotTestCase):
-  """KoreaCameraExcludeAdd and KoreaCameraExcludeUndo, the sunnylink buttons, through the real Params."""
+  """KoreaCameraExcludePick and KoreaCameraExcludeUndo, the sunnylink dropdown and buttons, through the real Params."""
 
-  RECENT = [(37.5001, 127.0201, 30, "17:46"), (37.5101, 127.0301, 50, "17:40")]
+  RECENT = [(37.5001, 127.0201, 30, "10-13 17:46", 12), (37.5101, 127.0301, 50, "10-13 17:40", 11)]
+  FAR = [37.4, 127.4]
 
   def tick(self, **values):
     params = Params()
@@ -984,23 +993,40 @@ class TestExcludeCommands(OpenpilotTestCase):
   def stored(self):
     return json.loads(Params().get("KoreaCameraExclude") or "[]")
 
-  def test_a_number_excludes_that_recent_camera(self):
-    data = self.tick(KoreaCameraExcludeAdd=2)
+  def options(self):
+    return json.loads(Params().get("KoreaCameraExcludeOptions") or "[]")
+
+  def test_an_id_excludes_that_camera(self):
+    data = self.tick(KoreaCameraExcludePick=11)
     params = Params()
     self.assertEqual(self.stored(), [[37.5101, 127.0301]])
     self.assertEqual(data.camera_exclude, ((37.5101, 127.0301),))
-    self.assertEqual(params.get("KoreaCameraExcludeAdd"), 0)
+    self.assertEqual(params.get("KoreaCameraExcludePick"), 0)
     self.assertEqual(params.get("KoreaCameraExcludeCount"), 1)
-    self.assertEqual(params.get("KoreaCameraRecentLabel"), "① 30 17:46  ② 50 17:40 ✕")
+    self.assertEqual(self.options(), [[12, "1. 10-13 17:46 · 30"], [-11, "2. 10-13 17:40 · 50 ✕"]])
 
-  def test_an_excluded_camera_is_not_listed_twice(self):
-    self.tick(KoreaCameraExclude="[[37.5101, 127.0301]]", KoreaCameraExcludeAdd=2)
+  def test_a_negative_id_brings_back_every_point_at_that_camera(self):
+    """Two points within CAMERA_EXCLUDE_M exclude the same cameras, so both go."""
+    data = self.tick(KoreaCameraExclude=json.dumps([self.FAR, [37.5101, 127.0301], [37.51012, 127.03011]]),
+                     KoreaCameraExcludePick=-11)
+    self.assertEqual(self.stored(), [self.FAR])
+    self.assertEqual(data.camera_exclude, (tuple(self.FAR),))
+    self.assertEqual(Params().get("KoreaCameraExcludePick"), 0)
+    self.assertEqual(Params().get("KoreaCameraExcludeCount"), 1)
+    self.assertEqual(self.options(), [[12, "1. 10-13 17:46 · 30"], [11, "2. 10-13 17:40 · 50"]])
+
+  def test_the_same_pick_twice_from_a_stale_screen_changes_nothing(self):
+    """The dropdown can lag the device by a minute or two: each value does only what its label showed."""
+    self.tick(KoreaCameraExclude="[[37.5101, 127.0301]]", KoreaCameraExcludePick=11)
     self.assertEqual(self.stored(), [[37.5101, 127.0301]])
+    self.tick(KoreaCameraExclude=json.dumps([self.FAR]), KoreaCameraExcludePick=-11)
+    self.assertEqual(self.stored(), [self.FAR])
 
-  def test_a_number_past_the_list_changes_nothing(self):
-    self.tick(KoreaCameraExcludeAdd=3)
-    self.assertEqual(self.stored(), [])
-    self.assertEqual(Params().get("KoreaCameraExcludeAdd"), 0)
+  def test_an_id_no_longer_listed_changes_nothing(self):
+    for pick in (13, -13, 3):
+      self.tick(KoreaCameraExclude=json.dumps([self.FAR]), KoreaCameraExcludePick=pick)
+      self.assertEqual(self.stored(), [self.FAR], pick)
+      self.assertEqual(Params().get("KoreaCameraExcludePick"), 0, pick)
 
   def test_last_brings_back_the_newest_and_all_brings_back_every_one(self):
     self.tick(KoreaCameraExclude="[[37.1, 127.1], [37.2, 127.2], [37.3, 127.3]]", KoreaCameraExcludeUndo=1)
@@ -1012,21 +1038,21 @@ class TestExcludeCommands(OpenpilotTestCase):
 
   def test_a_hand_written_list_that_does_not_parse_is_left_alone(self):
     """A typo over ssh excludes nothing (parse_camera_exclude), but it is still the driver's to fix."""
-    self.tick(KoreaCameraExclude="37.5, 127.02", KoreaCameraExcludeAdd=1)
+    self.tick(KoreaCameraExclude="37.5, 127.02", KoreaCameraExcludePick=12)
     self.assertEqual(Params().get("KoreaCameraExclude"), "37.5, 127.02")
-    self.assertEqual(Params().get("KoreaCameraExcludeAdd"), 0)
+    self.assertEqual(Params().get("KoreaCameraExcludePick"), 0)
 
   def test_a_list_changed_over_ssh_updates_the_rows(self):
     self.tick(KoreaCameraExclude="[[37.5001, 127.0201]]")
     self.assertEqual(Params().get("KoreaCameraExcludeCount"), 1)
-    self.assertEqual(Params().get("KoreaCameraRecentLabel"), "① 30 17:46 ✕  ② 50 17:40")
+    self.assertEqual(self.options(), [[-12, "1. 10-13 17:46 · 30 ✕"], [11, "2. 10-13 17:40 · 50"]])
     self.assertIn("## Excluded Cameras (1)", Params().get("KoreaCameraPage"))
 
   def test_a_button_tells_sunnylink_to_read_again(self):
     """The app re-reads every value when ParamsVersion moves, so the rows show what was just done."""
     self.tick(ParamsVersion=7)
     self.assertEqual(Params().get("ParamsVersion"), 7)
-    self.tick(KoreaCameraExcludeAdd=1)
+    self.tick(KoreaCameraExcludePick=12)
     self.assertEqual(Params().get("ParamsVersion"), 8)
 
 
