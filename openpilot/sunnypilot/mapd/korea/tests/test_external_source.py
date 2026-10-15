@@ -10,7 +10,8 @@ import time
 import unittest
 
 from openpilot.common.parameterized import parameterized
-from openpilot.sunnypilot.mapd.korea.external_source import EXTERNAL_TTL, MAX_DATAGRAM, ExternalNavSource, parse_payload
+from openpilot.sunnypilot.mapd.korea.external_source import (EXTERNAL_TTL, MAX_DATAGRAM, MAX_ITEMS, ExternalNavSource,
+                                                            PhoneItem, parse_payload)
 
 VALID = {
   "speed_limit_kph": 60,
@@ -95,6 +96,60 @@ class TestParsePayload(unittest.TestCase):
     nav = parse_payload({**VALID, "destination_lat": huge_int, "destination_lon": 127.0276})
     self.assertIsNone(nav.destination)
     self.assertEqual(nav.speed_limit_kph, 60.)  # other fields in the same payload still parse
+
+
+ITEM = {"k": "cam", "lat": 37.5, "lon": 127.0, "d": 211, "lim": 50, "age": 300, "rear": True, "sig": True}
+
+
+class TestParseItems(unittest.TestCase):
+  def test_an_item_lands_with_every_field(self):
+    cam, end = parse_payload({"items": [ITEM, {**ITEM, "k": "sec_end", "d": 900, "lim": 110}]}).items
+    self.assertEqual(cam, PhoneItem("cam", 37.5, 127.0, 50, 211., .3, rear=True, signal=True))
+    self.assertEqual((end.kind, end.distance_m, end.limit_kph), ("sec_end", 900., 110))
+
+  def test_no_list_is_none_and_an_empty_list_is_nothing_ahead(self):
+    self.assertIsNone(parse_payload(VALID).items)
+    self.assertIsNone(parse_payload({"items": "cam"}).items)
+    self.assertEqual(parse_payload({"items": []}).items, ())
+
+  @parameterized.expand([
+    ("unknown kind", {**ITEM, "k": "parking"}),
+    ("the section the car is in, which has no place", {"k": "sec", "d": 12000, "lim": 110, "age": 300}),
+    ("unhashable kind", {**ITEM, "k": ["cam"]}),
+    ("outside Korea", {**ITEM, "lat": 35.68, "lon": 139.65}),
+    ("no place", {k: v for k, v in ITEM.items() if k not in ("lat", "lon")}),
+    ("text place", {**ITEM, "lat": "37.5"}),
+    ("bool place", {**ITEM, "lat": True}),
+    ("huge place", {**ITEM, "lat": int("9" * 400)}),
+    ("behind", {**ITEM, "d": -1}),
+    ("too far", {**ITEM, "d": 20000}),
+    ("no age", {**ITEM, "age": -1}),
+    ("not an object", "cam"),
+    ("null", None),
+  ])
+  def test_a_bad_item_is_skipped_not_the_datagram(self, _, bad):
+    nav = parse_payload({**VALID, "items": [bad, ITEM]})
+    self.assertEqual(len(nav.items), 1)
+    self.assertEqual(nav.speed_limit_kph, 60.)
+
+  def test_a_limit_out_of_range_is_no_limit(self):
+    self.assertEqual(parse_payload({"items": [{**ITEM, "lim": 500}]}).items[0].limit_kph, 0)
+    self.assertEqual(parse_payload({"items": [{**ITEM, "k": "bump", "lim": 0}]}).items[0].limit_kph, 0)
+
+  def test_flags_are_set_only_by_true(self):
+    item = parse_payload({"items": [{**ITEM, "rear": 1, "sig": "yes"}]}).items[0]
+    self.assertFalse(item.rear)
+    self.assertFalse(item.signal)
+
+  def test_at_most_ten_items_are_read(self):
+    self.assertEqual(len(parse_payload({"items": [ITEM] * 15}).items), MAX_ITEMS)
+
+  def test_ages_are_seconds_and_the_fresher_sdk_counts(self):
+    nav = parse_payload({"gps_age_ms": 800, "tmap_age_ms": 9000, "kakao_age_ms": 400})
+    self.assertEqual((nav.gps_age_s, nav.sdk_age_s), (.8, .4))
+    nav = parse_payload({"tmap_age_ms": -1, "kakao_age_ms": -1})
+    self.assertEqual((nav.gps_age_s, nav.sdk_age_s), (None, None))
+    self.assertEqual(parse_payload({"tmap_age_ms": 300, "kakao_age_ms": "x"}).sdk_age_s, .3)
 
 
 class TestExternalNavSource(unittest.TestCase):

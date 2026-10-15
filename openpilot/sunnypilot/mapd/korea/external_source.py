@@ -16,6 +16,15 @@ Wire format, one JSON object per datagram, every key optional:
 
 destination_lat/lon start a route the device fetches itself; 0/0 means guidance ended.
 
+The phone app sp-knavlink-tesla (TMAP and Kakao Navi SDKs) adds, twice a second (its README has the full format):
+
+  {"v": 1, "gps_age_ms": 800, "tmap_age_ms": 300, "kakao_age_ms": 400,
+   "items": [{"k": "cam", "lat": 37.5, "lon": 127.0, "d": 211, "lim": 50, "age": 300, "rear": true, "sig": true}]}
+
+items become ExternalNav.items, nearest first: speed cameras, 구간단속 start and end cameras and speed bumps, each
+where it stands. An item with no place is skipped (the app's "sec", the section the car is in: sections come from the
+camera database), and so is a bad one, never the datagram.
+
 Unknown keys are kept in ExternalNav.raw so a future app can extend the payload
 without a wire-format change.
 
@@ -39,6 +48,24 @@ MAX_SPEED_LIMIT_KPH = 130.
 MAX_DISTANCE_M = 10000.
 MAX_ROAD_NAME = 64
 
+ITEM_KINDS = frozenset({"cam", "sec_start", "sec_end", "bump"})
+MAX_ITEMS = 10
+MAX_AGE_MS = 600000.  # 10 min; the app drops an item after 5
+
+
+@dataclass(frozen=True)
+class PhoneItem:
+  """One thing ahead on the car's road, as the phone's navigation SDKs see it: a speed camera ("cam"), a 구간단속
+  start or end camera, or a speed bump."""
+  kind: str
+  lat: float
+  lon: float
+  limit_kph: int  # 0 for a bump
+  distance_m: float  # along the road, age_s ago
+  age_s: float
+  rear: bool = False  # the camera photographs the car's back
+  signal: bool = False  # it enforces red lights too
+
 
 @dataclass
 class ExternalNav:
@@ -49,6 +76,10 @@ class ExternalNav:
   destination: tuple[float, float] | None = None
   received_at: float = 0.
   raw: dict = field(default_factory=dict)
+  # None when the sender keeps no item list (not the phone app); () when it sees nothing ahead
+  items: tuple[PhoneItem, ...] | None = None
+  gps_age_s: float | None = None  # since the phone's last GPS fix
+  sdk_age_s: float | None = None  # since the fresher of its two SDKs last spoke
 
 
 def _bounded(payload: dict, key: str, upper: float) -> float:
@@ -75,8 +106,44 @@ def _destination(payload: dict) -> tuple[float, float] | None:
   return (float(lat), float(lon)) if in_korea(lat, lon) else None
 
 
+def _in_range(value, lower: float, upper: float) -> float | None:
+  """A number inside [lower, upper], else None. Unlike _bounded, 0 is a real value here: at the camera, just now."""
+  if isinstance(value, bool) or not isinstance(value, int | float) or not lower <= value <= upper:
+    return None
+  return float(value)
+
+
+def _age_s(payload: dict, key: str) -> float | None:
+  age = _in_range(payload.get(key), 0., MAX_AGE_MS)  # the app sends -1 for never
+  return age / 1000. if age is not None else None
+
+
+def _item(entry) -> PhoneItem | None:
+  """One entry of items, or None when any part of it is implausible."""
+  if not isinstance(entry, dict) or not isinstance(entry.get("k"), str) or entry["k"] not in ITEM_KINDS:
+    return None
+  lat, lon = entry.get("lat"), entry.get("lon")
+  if any(isinstance(v, bool) or not isinstance(v, int | float) for v in (lat, lon)) or not in_korea(lat, lon):
+    return None
+  distance = _in_range(entry.get("d"), 0., MAX_DISTANCE_M)
+  age = _age_s(entry, "age")
+  if distance is None or age is None:
+    return None
+  return PhoneItem(kind=entry["k"], lat=float(lat), lon=float(lon),
+                   limit_kph=int(_bounded(entry, "lim", MAX_SPEED_LIMIT_KPH)), distance_m=distance, age_s=age,
+                   rear=entry.get("rear") is True, signal=entry.get("sig") is True)
+
+
+def _items(payload: dict) -> tuple[PhoneItem, ...] | None:
+  entries = payload.get("items")
+  if not isinstance(entries, list):
+    return None
+  return tuple(item for item in map(_item, entries[:MAX_ITEMS]) if item is not None)
+
+
 def parse_payload(payload: dict) -> ExternalNav:
   name = payload.get("road_name", "")
+  sdk_ages = [age for age in (_age_s(payload, "tmap_age_ms"), _age_s(payload, "kakao_age_ms")) if age is not None]
   return ExternalNav(
     speed_limit_kph=_bounded(payload, "speed_limit_kph", MAX_SPEED_LIMIT_KPH),
     next_speed_limit_kph=_bounded(payload, "next_speed_limit_kph", MAX_SPEED_LIMIT_KPH),
@@ -85,6 +152,9 @@ def parse_payload(payload: dict) -> ExternalNav:
     destination=_destination(payload),
     received_at=time.monotonic(),
     raw=payload,
+    items=_items(payload),
+    gps_age_s=_age_s(payload, "gps_age_ms"),
+    sdk_age_s=min(sdk_ages) if sdk_ages else None,
   )
 
 

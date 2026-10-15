@@ -29,9 +29,9 @@ from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_
                                                  CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED,
                                                  CAMERA_ZONE, FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN,
                                                  Bump, Camera, KoreaMapDB, Link)
-from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav
+from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, PhoneItem
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (CAMERA_RECENT_MAX, KoreaMapData, camera_options,
-                                                                    camera_page, kst_clock, parse_camera_recent)
+                                                                    camera_page, kst_clock, parse_camera_recent, phone_camera)
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
 
@@ -81,6 +81,7 @@ def make_data(link=None, camera=None, external=None):
   data.section = None
   data._section_prev = None
   data._section_passed = None
+  data._from_phone = None
   return data
 
 
@@ -1551,3 +1552,131 @@ class TestCameraPassHold(unittest.TestCase):
     lines = [call.args[0] % call.args[1:] for call in log.info.call_args_list]
     self.assertEqual([line for line in lines if "passed" in line],
                      ["korea_map: passed a 50 km/h camera facing rear, holding 60 m", "korea_map: passed a 50 km/h camera facing front"])
+
+
+M_PER_DEG_LON = 88200.  # at 37.5 N
+DB_CAMERA = Camera(lat=37.5000, lon=127.0300, limit_kph=80, distance_m=882., section_m=0, kind=CAMERA_SPEED)
+DB_BUMP = Bump(lat=37.5000, lon=127.0250, kind=BUMP_TRAPEZOID, distance_m=441.)
+
+
+def east(m):
+  """m metres east of where the car starts in phone_tick."""
+  return 37.5000, 127.0200 + m / M_PER_DEG_LON
+
+
+def phone_item(kind="cam", m=100., limit=50, rear=False, signal=False, d=None):
+  lat, lon = east(m)
+  return PhoneItem(kind=kind, lat=lat, lon=lon, limit_kph=limit, distance_m=m if d is None else d, age_s=.3, rear=rear,
+                   signal=signal)
+
+
+def phone_nav(*items, gps_age_s=.5, sdk_age_s=.5):
+  return ExternalNav(received_at=time.monotonic(), items=tuple(items), gps_age_s=gps_age_s, sdk_age_s=sdk_age_s)
+
+
+def phone_tick(*navs, starts=(), end=None, **attrs):
+  """One update_location per datagram (None: no fresh one), heading east from east(0) by 30 m a tick. The database
+  always answers DB_CAMERA and DB_BUMP, so a test sees which source won, and starts and end for sections."""
+  data = make_data(external=StubExternal(None))
+  for key, value in attrs.items():
+    setattr(data, key, value)
+  data.db = SimpleNamespace(reload_if_changed=lambda: False, current_link=lambda *a, **k: None,
+                            next_camera=lambda *a, **k: DB_CAMERA, next_bump=lambda *a, **k: DB_BUMP,
+                            section_starts_near=lambda *a, **k: list(starts), section_end_ahead=lambda *a, **k: end,
+                            close=lambda: None)
+  for i, nav in enumerate(navs):
+    data.external.nav = nav
+    data.sm = SingleLocationSM(valid_llk(*east(30. * i)))
+    data.update_location()
+  return data
+
+
+class TestPhoneItems(unittest.TestCase):
+  """sp-knavlink-tesla's cameras and bumps stand in for the database's while the phone can see."""
+
+  def test_a_phone_camera_brakes_in_place_of_the_database_one(self):
+    data = phone_tick(phone_nav(phone_item(limit=50)))
+    self.assertEqual(data.camera.limit_kph, 50)
+    self.assertIs(data.slowdown_camera, data.camera)
+    self.assertAlmostEqual(data.camera.distance_m, 100., delta=1.)
+    self.assertEqual((data.camera.kind, data.camera.facing), (CAMERA_SPEED, FACING_UNKNOWN))
+
+  def test_without_the_phone_the_database_is_used(self):
+    data = phone_tick(None)
+    self.assertIs(data.camera, DB_CAMERA)
+    self.assertIs(data.bump, DB_BUMP)
+
+  @parameterized.expand([
+    ("both SDKs went quiet", phone_nav(phone_item(), sdk_age_s=11.)),
+    ("no SDK has spoken", phone_nav(phone_item(), sdk_age_s=None)),
+    ("the sender keeps no item list", ExternalNav(received_at=time.monotonic(), speed_limit_kph=60.)),
+    ("a phone with a stale GPS lists nothing", phone_nav(gps_age_s=6.)),
+    ("a phone with no GPS fix yet lists nothing", phone_nav(gps_age_s=None)),
+  ])
+  def test_the_database_takes_over_when(self, _, nav):
+    self.assertIs(phone_tick(nav).camera, DB_CAMERA)
+
+  def test_a_phone_without_a_fix_still_names_the_cameras_it_lists(self):
+    data = phone_tick(phone_nav(phone_item(limit=50), gps_age_s=60.))
+    self.assertEqual(data.camera.limit_kph, 50)
+
+  def test_nothing_ahead_on_the_phone_is_no_camera_and_no_bump(self):
+    data = phone_tick(phone_nav())
+    self.assertIsNone(data.camera)
+    self.assertIsNone(data.bump)
+
+  def test_the_phone_kinds_land_on_the_database_kinds(self):
+    def camera(**kw):
+      return phone_camera(phone_item(**kw), *east(0))
+    self.assertEqual(camera(signal=True).kind, CAMERA_SIGNAL)
+    self.assertEqual(camera(rear=True).facing, FACING_REAR)
+    self.assertEqual(camera(kind="sec_start").kind, CAMERA_SECTION)
+    self.assertEqual(camera(kind="sec_end").kind, CAMERA_SECTION_END)
+    for kw in ({"kind": "bump", "limit": 0}, {"kind": "sec"}, {"limit": 0}):
+      self.assertIsNone(camera(**kw))
+
+  def test_a_kind_switched_off_or_an_excluded_camera_gives_way_to_the_next(self):
+    items = (phone_item(m=100., limit=30, signal=True), phone_item(m=300., limit=60))
+    self.assertEqual(phone_tick(phone_nav(*items), camera_kinds=frozenset({CAMERA_SPEED})).camera.limit_kph, 60)
+    self.assertEqual(phone_tick(phone_nav(*items), camera_exclude=(east(100.),)).camera.limit_kph, 60)
+
+  def test_items_beyond_where_the_database_looks_are_not_taken(self):
+    """Kakao starts with the list it had where the app last ran, which may be another town."""
+    self.assertEqual(phone_tick(phone_nav(phone_item(m=3000.), phone_item(m=500., limit=60))).camera.limit_kph, 60)
+    self.assertIsNone(phone_tick(phone_nav(phone_item("bump", m=500., limit=0))).bump)
+
+  def test_a_phone_bump_is_slowed_for_as_the_harsher_kind(self):
+    data = phone_tick(phone_nav(phone_item("bump", m=80., limit=0)))
+    self.assertEqual(data.bump.kind, BUMP_ARCH)
+    self.assertAlmostEqual(data.bump.distance_m, 80., delta=1.)
+
+  def test_a_camera_the_phone_lets_go_close_by_was_passed(self):
+    data = phone_tick(phone_nav(phone_item(m=40.)), phone_nav(phone_item(m=400., limit=60)))
+    self.assertEqual(data.camera_recent[0][:3], (*east(40.), 50))
+    self.assertIsNotNone(data._pass_hold)
+
+  def test_the_switch_is_logged_once_each_way_without_where(self):
+    with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.cloudlog") as log:
+      phone_tick(phone_nav(phone_item()), phone_nav(phone_item()), None, None)
+    calls = [c.args for c in log.info.call_args_list if c.args[0].startswith("korea_map: cameras and bumps")]
+    self.assertEqual([c[1] for c in calls], ["the phone app", "the database"])
+
+  def test_no_phone_at_all_logs_nothing(self):
+    with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.cloudlog") as log:
+      phone_tick(None, None)
+    self.assertFalse([c for c in log.info.call_args_list if c.args[0].startswith("korea_map: cameras and bumps")])
+
+  def test_the_database_still_opens_a_section_while_the_phone_brakes(self):
+    start = Camera(lat=37.5000, lon=127.0200, limit_kph=100, distance_m=4., section_m=0, kind=CAMERA_SECTION)
+    lat, lon = east(5000.)
+    end = Camera(lat=lat, lon=lon, limit_kph=100, distance_m=5000., section_m=0, kind=CAMERA_SECTION_END)
+    data = phone_tick(phone_nav(phone_item(limit=60)), starts=[start], end=end)
+    self.assertEqual(data.camera.limit_kph, 60)
+    self.assertEqual(data.section.limit_kph, 100)
+
+  def test_a_phone_item_that_breaks_leaves_no_camera_and_keeps_the_database(self):
+    with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.phone_camera", side_effect=ValueError):
+      data = phone_tick(phone_nav(phone_item()))
+    self.assertIsNone(data.camera)
+    self.assertIsNotNone(data.db)
+    self.assertFalse(data.open_failed)

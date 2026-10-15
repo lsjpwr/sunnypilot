@@ -16,6 +16,10 @@ the curves (publish_targets) -- and only for a camera on the car's road: within
 ROUTE_CORRIDOR_M of the route while the car is on one, else within CAMERA_CORRIDOR_M of the
 heading line; the sign keeps the wider cone. SpeedLimitAssist would hold it behind a
 confirmation prompt under 80 km/h and add the speed limit offset on top.
+
+While the phone app (sp-knavlink-tesla: the TMAP and Kakao Navi SDKs) is connected, its cameras and bumps stand in
+for the database's (update_from_phone). Each says where it stands, so all of the above -- the slowdown point, the
+pass hold, the exclusions, the recent list -- treats them alike. 구간단속 sections stay with the database.
 """
 import datetime
 import json
@@ -32,11 +36,13 @@ from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
-from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_EXCLUDE_M,
-                                                 CAMERA_KIND_PARAMS, CAMERA_SECTION, FACING_BOTH, FACING_FRONT, FACING_REAR,
-                                                 ROUTE_CORRIDOR_M, SECTION_PASS_M, Bump, Camera, KoreaMapDB, Link,
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_MAX_DISTANCE_M, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M,
+                                                 CAMERA_EXCLUDE_M, CAMERA_KIND_PARAMS, CAMERA_MAX_DISTANCE_M,
+                                                 CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED,
+                                                 FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN, ROUTE_CORRIDOR_M,
+                                                 SECTION_PASS_M, Bump, Camera, KoreaMapDB, Link,
                                                  across_the_road, at_section_end, excluded, mtime_or_none)
-from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource
+from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource, PhoneItem
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
@@ -72,6 +78,12 @@ SECTION_TRAVEL_FACTOR = 1.5
 SECTION_TRAVEL_SLACK_M = 2000.
 
 FACING_NAMES = {FACING_FRONT: "front", FACING_REAR: "rear", FACING_BOTH: "both"}  # anything else is unknown
+
+# s, how fresh the phone app has to be for its cameras and bumps to stand in for the database's: one of its
+# two navigation SDKs has spoken within PHONE_SDK_STALE_S (TMAP went 8 s quiet at a time on a highway replay), and a
+# phone without a GPS fix for PHONE_GPS_STALE_S must still list something (phone_items).
+PHONE_GPS_STALE_S = 5.
+PHONE_SDK_STALE_S = 10.
 
 # KoreaCameraRecent holds the last slowdown cameras the car passed, newest first: a drive's worth, usually.
 # sunnylink lists them in a dropdown, which takes any number of choices, and picks one by its id, not its
@@ -152,6 +164,22 @@ def kst_clock() -> str:
   return datetime.datetime.now(KST).strftime("%m-%d %H:%M")
 
 
+def phone_camera(item: PhoneItem, lat: float, lon: float) -> Camera | None:
+  """A phone app camera as the database would give it, so the slowdown, the pass hold and the exclusions treat
+  both alike; None for an item that is not a camera with a limit. distance_m is from the car, as the crow flies,
+  like the database's."""
+  if item.kind == "cam":
+    kind = CAMERA_SIGNAL if item.signal else CAMERA_SPEED
+  elif item.kind in ("sec_start", "sec_end"):
+    kind = CAMERA_SECTION if item.kind == "sec_start" else CAMERA_SECTION_END
+  else:
+    return None
+  if item.limit_kph <= 0:
+    return None
+  return Camera(lat=item.lat, lon=item.lon, limit_kph=item.limit_kph, distance_m=haversine(lat, lon, item.lat, item.lon),
+                section_m=0, kind=kind, facing=FACING_REAR if item.rear else FACING_UNKNOWN)
+
+
 @dataclass
 class Section:
   """The 구간단속 section we are in: its limit, its end camera, and how far we may drive before giving up on it."""
@@ -215,6 +243,7 @@ class KoreaMapData(BaseMapData):
     self.camera_recent = parse_camera_recent(self.params.get("KoreaCameraRecent") or "")
     self._slowdown_last: Camera | None = None  # last tick's slowdown_camera, for note_passed_camera
     self._pass_hold: Camera | None = None  # the camera just passed, while pass_hold_point keeps its limit
+    self._from_phone: bool | None = None  # where the cameras came from last tick; logged when it changes
 
   def _db_mtimes(self) -> tuple[float | None, ...]:
     """When each database file was last written; None for one that is not there."""
@@ -281,6 +310,22 @@ class KoreaMapData(BaseMapData):
 
   def nav(self) -> ExternalNav | None:
     return self.external.latest() if self.external is not None else None
+
+  def phone_items(self) -> tuple[PhoneItem, ...] | None:
+    """The phone app's items while they can stand in for the database: a fresh datagram with an item list from an
+    SDK that is still talking. None otherwise, and the database takes over.
+
+    Without a GPS fix on the phone its list still names real cameras -- TMAP dead-reckons on, and each item says
+    where it stands, so the comma measures the distance itself -- but an empty one proves nothing: Kakao empties its
+    list then. So a blind phone with nothing listed hands over to the database too."""
+    nav = self.nav()
+    if nav is None or nav.items is None:
+      return None
+    if nav.sdk_age_s is None or nav.sdk_age_s > PHONE_SDK_STALE_S:
+      return None
+    if (nav.gps_age_s is None or nav.gps_age_s > PHONE_GPS_STALE_S) and not nav.items:
+      return None
+    return nav.items
 
   def update_destination(self) -> None:
     """Copy a destination from the socket into the param the route thread reads.
@@ -353,24 +398,31 @@ class KoreaMapData(BaseMapData):
     self.db.reload_if_changed()
 
     lat, lon = self.last_position.latitude, self.last_position.longitude
+    phone = self.phone_items()
+    if (phone is not None) != bool(self._from_phone):
+      cloudlog.info("korea_map: cameras and bumps from %s", "the phone app" if phone is not None else "the database")
+    self._from_phone = phone is not None
     try:
       self.link = self.db.current_link(lat, lon, self.last_bearing, route=self.route)
-      self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds,
-                                        exclude=self.camera_exclude, grade_separated=self.grade_separated)
-      # The sign keeps the wide cone, but only a camera on our road may brake the car. While
-      # the car is on the route, next_camera has already held the sign's camera to
-      # ROUTE_CORRIDOR_M of the polyline, which bends with the road -- the heading line would
-      # only drop the cameras round a bend. Off it, or with no route (distance_to_route is
-      # inf), the heading line decides: RouteSource keeps a polyline the car has left until a
-      # reroute succeeds, and that road's cameras are not on ours.
-      if distance_to_route(self.route, lat, lon) <= ROUTE_CORRIDOR_M:
-        self.slowdown_camera = self.camera
-      else:
-        self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
-                                                   kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M,
-                                                   exclude=self.camera_exclude, grade_separated=self.grade_separated)
-      self.note_passed_camera()
-      self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
+      if phone is None:
+        self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds,
+                                          exclude=self.camera_exclude, grade_separated=self.grade_separated)
+        # The sign keeps the wide cone, but only a camera on our road may brake the car. While
+        # the car is on the route, next_camera has already held the sign's camera to
+        # ROUTE_CORRIDOR_M of the polyline, which bends with the road -- the heading line would
+        # only drop the cameras round a bend. Off it, or with no route (distance_to_route is
+        # inf), the heading line decides: RouteSource keeps a polyline the car has left until a
+        # reroute succeeds, and that road's cameras are not on ours.
+        if distance_to_route(self.route, lat, lon) <= ROUTE_CORRIDOR_M:
+          self.slowdown_camera = self.camera
+        else:
+          self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
+                                                     kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M,
+                                                     exclude=self.camera_exclude, grade_separated=self.grade_separated)
+        self.note_passed_camera()
+        self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
+      # 구간단속 sections come from the database on both paths: it knows where a section's end camera stands, and
+      # neither SDK does (TMAP put one 313 m off the road on a highway replay; Kakao gives no place at all)
       self.update_section(lat, lon)
     except Exception:
       # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
@@ -383,6 +435,32 @@ class KoreaMapData(BaseMapData):
       self._give_up()
       self.close()
       cloudlog.exception("korea_map: dropping the database after a query error")
+      return
+    if phone is not None:
+      self.update_from_phone(phone, lat, lon)
+
+  def update_from_phone(self, items: tuple[PhoneItem, ...], lat: float, lon: float) -> None:
+    """The phone app's items in place of the database's: the nearest camera the kind toggles and the exclusions let
+    through, and the nearest bump. The phone's navigation SDKs have matched them to our road already, so the camera
+    on the sign is the one that brakes too, and the app sends them nearest first, passed ones left out.
+
+    Only as far out as the database looks: Kakao starts with the list it had where the app last ran, which may be
+    another town.
+
+    The datagram is untrusted input: whatever goes wrong with one leaves no camera or bump, never a dead mapd."""
+    try:
+      cameras = (phone_camera(item, lat, lon) for item in items)
+      self.camera = self.slowdown_camera = next((c for c in cameras if c is not None and c.kind in self.camera_kinds
+                                                 and c.distance_m <= CAMERA_MAX_DISTANCE_M
+                                                 and not excluded(c.lat, c.lon, self.camera_exclude)), None)
+      self.note_passed_camera()
+      # the SDKs do not say which shape a bump is: the harsher one's speed
+      bumps = (Bump(lat=i.lat, lon=i.lon, kind=BUMP_ARCH, distance_m=haversine(lat, lon, i.lat, i.lon))
+               for i in items if i.kind == "bump")
+      self.bump = next((b for b in bumps if b.distance_m <= BUMP_MAX_DISTANCE_M), None)
+    except Exception:
+      self.camera = self.slowdown_camera = self.bump = None
+      cloudlog.exception("korea_map: skipped the phone app's items")
 
   def note_passed_camera(self) -> None:
     """Put the slowdown camera the car has just passed at the front of KoreaCameraRecent, and hold its limit
