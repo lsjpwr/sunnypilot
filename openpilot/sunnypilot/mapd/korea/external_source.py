@@ -25,6 +25,9 @@ items become ExternalNav.items, nearest first: speed cameras, 구간단속 start
 where it stands. An item with no place is skipped (the app's "sec", the section the car is in: sections come from the
 camera database), and so is a bad one, never the datagram.
 
+A datagram with a "seq" is answered with {"ack": seq}, sent back to where it came from: the app shows the driver
+whether the comma hears it. The answer is never bigger than the datagram, so it cannot amplify anything.
+
 Unknown keys are kept in ExternalNav.raw so a future app can extend the payload
 without a wire-format change.
 
@@ -37,6 +40,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 
+from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.mapd.korea.route import in_korea
 
 MAX_DATAGRAM = 8192
@@ -198,7 +202,7 @@ class ExternalNavSource:
   def _recv_loop(self, sock: socket.socket) -> None:
     while True:
       try:
-        data, _ = sock.recvfrom(MAX_DATAGRAM)
+        data, sender = sock.recvfrom(MAX_DATAGRAM)
       except OSError:
         if self._sock is None:
           return  # socket closed by stop()
@@ -225,4 +229,14 @@ class ExternalNavSource:
         continue
 
       with self._lock:
+        resumed = nav.received_at - self._latest.received_at > EXTERNAL_TTL  # also the first one: received_at 0
         self._latest = nav
+      if resumed:
+        # the only trace of the link itself: the switch to the phone's cameras also needs a fresh SDK
+        cloudlog.info("korea_map: datagrams arriving from the phone app")
+      seq = payload.get("seq")
+      if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq < 2 ** 53:
+        try:
+          sock.sendto(json.dumps({"ack": seq}, separators=(",", ":")).encode(), sender)  # {"ack":7} <= {"seq":7}
+        except OSError:
+          pass  # the sender went away; it hears from us again with its next datagram

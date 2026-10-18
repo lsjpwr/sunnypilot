@@ -195,6 +195,27 @@ class TestExternalNavSource(unittest.TestCase):
     self.assertIsNotNone(nav)
     self.assertEqual(nav.speed_limit_kph, 60.)
 
+  def _exchange(self, payload):
+    """What comes back to the sender of payload within 0.5 s, or None."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    self.addCleanup(sock.close)
+    sock.settimeout(.5)
+    sock.sendto(json.dumps(payload).encode(), ("127.0.0.1", self.source.port))
+    try:
+      return json.loads(sock.recv(MAX_DATAGRAM))
+    except TimeoutError:
+      return None
+
+  def test_a_datagram_with_a_seq_is_answered_to_its_sender(self):
+    # the phone app shows the driver whether the comma hears it
+    self.assertEqual(self._exchange({**VALID, "seq": 812}), {"ack": 812})
+
+  @parameterized.expand([("none", None), ("bool", True), ("negative", -1), ("float", 1.5), ("string", "812")])
+  def test_no_answer_without_a_plain_seq(self, _, seq):
+    payload = VALID if seq is None else {**VALID, "seq": seq}
+    self.assertIsNone(self._exchange(payload))
+    self.assertIsNotNone(self.source.latest())  # the datagram itself still lands
+
   def test_oversize_datagram_does_not_kill_loop(self):
     # A datagram bigger than MAX_DATAGRAM can raise OSError out of recvfrom itself
     # (WSAEMSGSIZE on Windows) -- must not be confused with the socket being closed.
