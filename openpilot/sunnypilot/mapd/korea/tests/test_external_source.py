@@ -10,8 +10,9 @@ import time
 import unittest
 
 from openpilot.common.parameterized import parameterized
-from openpilot.sunnypilot.mapd.korea.external_source import (EXTERNAL_TTL, MAX_DATAGRAM, MAX_ITEMS, ExternalNavSource,
-                                                            PhoneItem, parse_payload)
+from openpilot.sunnypilot.mapd.korea.external_source import (EXTERNAL_TTL, MAX_DATAGRAM, MAX_ITEMS, MAX_VIAS, ExternalNavSource,
+                                                            PhoneItem, answer, parse_payload)
+from openpilot.sunnypilot.mapd.korea.tesla import CAR_UNKNOWN, MAX_PLACE_NAME
 
 VALID = {
   "speed_limit_kph": 60,
@@ -152,6 +153,47 @@ class TestParseItems(unittest.TestCase):
     self.assertEqual(parse_payload({"tmap_age_ms": 300, "kakao_age_ms": "x"}).sdk_age_s, .3)
 
 
+class TestParseTrip(unittest.TestCase):
+  def test_the_destinations_name_and_vias_land_in_order(self):
+    nav = parse_payload({"destination_lat": 37.5665, "destination_lon": 126.978, "destination_name": "서울시청",
+                         "via": [{"lat": 37.5547, "lon": 126.9707, "name": "서울역"}, {"lat": 37.5, "lon": 127.0}]})
+    self.assertEqual(nav.destination_name, "서울시청")
+    self.assertEqual(nav.vias, ((37.5547, 126.9707, "서울역"), (37.5, 127.0, "")))
+
+  def test_a_bad_via_is_skipped_not_the_trip(self):
+    vias = [{"lat": 35.6762, "lon": 139.6503}, {"lat": "37.5", "lon": 127.0}, {"lat": True, "lon": 127.0}, "x",
+            {"lat": 37.5, "lon": 127.0, "name": 7}]
+    self.assertEqual(parse_payload({"via": vias}).vias, ((37.5, 127.0, ""),))
+
+  def test_at_most_five_vias_and_a_name_is_cut(self):
+    nav = parse_payload({"via": [{"lat": 37.5, "lon": 127.0}] * 9, "destination_name": "가" * 100})
+    self.assertEqual(len(nav.vias), MAX_VIAS)
+    self.assertEqual(len(nav.destination_name), MAX_PLACE_NAME)
+
+  def test_no_vias_is_an_empty_trip(self):
+    self.assertEqual(parse_payload({"via": "x"}).vias, ())
+    self.assertEqual(parse_payload({}).vias, ())
+
+
+class TestAnswer(unittest.TestCase):
+  def test_the_cars_destination_rides_along(self):
+    self.assertEqual(json.loads(answer(7, (37.4979, 127.0276, "강남역"), 500)),
+                     {"ack": 7, "car": {"lat": 37.4979, "lon": 127.0276, "name": "강남역"}})
+
+  def test_no_route_is_null_and_unknown_is_left_out(self):
+    self.assertEqual(json.loads(answer(7, None, 500)), {"ack": 7, "car": None})
+    self.assertEqual(json.loads(answer(7, CAR_UNKNOWN, 500)), {"ack": 7})
+
+  def test_never_bigger_than_the_datagram(self):
+    """The name goes first, then the place."""
+    car = (37.4979, 127.0276, "가" * 64)
+    for limit, keys in ((500, {"lat", "lon", "name"}), (60, {"lat", "lon"}), (len('{"seq":7}'), None)):
+      with self.subTest(limit=limit):
+        out = answer(7, car, limit)
+        self.assertLessEqual(len(out), limit)
+        self.assertEqual(set(json.loads(out)["car"]) if keys else json.loads(out), keys or {"ack": 7})
+
+
 class TestExternalNavSource(unittest.TestCase):
   def setUp(self):
     super().setUp()
@@ -209,6 +251,10 @@ class TestExternalNavSource(unittest.TestCase):
   def test_a_datagram_with_a_seq_is_answered_to_its_sender(self):
     # the phone app shows the driver whether the comma hears it
     self.assertEqual(self._exchange({**VALID, "seq": 812}), {"ack": 812})
+
+  def test_the_answer_carries_what_the_car_guides_to(self):
+    self.source.car = lambda: (37.4979, 127.0276, "강남역")
+    self.assertEqual(self._exchange({**VALID, "seq": 9})["car"], {"lat": 37.4979, "lon": 127.0276, "name": "강남역"})
 
   @parameterized.expand([("none", None), ("bool", True), ("negative", -1), ("float", 1.5), ("string", "812")])
   def test_no_answer_without_a_plain_seq(self, _, seq):

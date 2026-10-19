@@ -114,6 +114,13 @@ class FakeRouteSource:
     self.stopped = True
 
 
+class FakeTeslaSource(FakeRouteSource):
+  """TeslaDestinationSource stand-in: RouteSource's start/stop shape, plus car() for the UDP answers."""
+
+  def car(self):
+    return None
+
+
 class FakeRefresher:
   def __init__(self, cameras_path):
     self.cameras_path = cameras_path
@@ -131,9 +138,10 @@ class FakeMapData:
   """KoreaMapData/OsmMapData stand-in: the real ones open messaging sockets, and the
   korean one a 220 MB sqlite database."""
 
-  def __init__(self, external=None, route_source=None):
+  def __init__(self, external=None, route_source=None, tesla=None):
     self.external = external
     self.route_source = route_source
+    self.tesla = tesla
     self.ticks = 0
     self.closed = False
 
@@ -194,7 +202,7 @@ class MapdSourceTestCase(unittest.TestCase):
       "get_files_for_cleanup": list,  # nothing to clean up, so no OSM update alert
       "ExternalNavSource": _record(built, "external", FakeExternal),
       "RouteSource": _record(built, "route_source", FakeRouteSource),
-      "TeslaDestinationSource": _record(built, "tesla_source", FakeRouteSource),  # same start/stop shape
+      "TeslaDestinationSource": _record(built, "tesla_source", FakeTeslaSource),
       "CameraRefresher": _record(built, "refresher", FakeRefresher),
       "KoreaMapData": _record(built, "map_data", FakeMapData),
       "OsmMapData": _record(built, "map_data", FakeMapData),
@@ -287,6 +295,9 @@ class TestSourceLoops(MapdSourceTestCase):
     built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))
     self.assertTrue(built["tesla_source"].started)
     self.assertTrue(built["tesla_source"].stopped, "the Tesla thread outlives the source that started it")
+    # the phone app's trip reaches it, and what the car guides to reaches the phone
+    self.assertIs(built["map_data"].tesla, built["tesla_source"])
+    self.assertEqual(built["external"].car, built["tesla_source"].car)
 
     params = FakeParams(MapSource.korea)
     built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))

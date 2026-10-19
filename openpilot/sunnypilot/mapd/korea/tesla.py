@@ -7,14 +7,16 @@ See the LICENSE.md file in the root directory for more details.
 tesla: reads the destination the car's own navigation is guiding to, through Tesla's
 servers, and hands it to RouteSource through NavDestination.
 
-The driver already sends every destination to the car (NaviToTesla on the phone), so the
-car is the one place that always has it -- reading it back beats a patched phone app
-sending it a second time. Nothing here commands the car.
+The other way too: the trip the phone app (sp-knavlink-tesla) guides, which reaches this
+module through KoreaMapData, is sent to the car, and what the car guides to goes back to
+the phone in the comma's answer to each datagram (external_source.py). Whichever of the
+phone and the car changed its destination last wins. The destination is the one command
+sent to the car.
 
-Two ways in. The Fleet API is official and its grant is read-only; tesla_setup sets it up
-from a PC. The owner API is the Tesla app's own, unofficial one: an owner token put on the
-device by hand over ssh, no developer app, but the token is the whole account. Fleet wins
-when both are set.
+Two ways in. The Fleet API is official; tesla_setup sets it up from a PC, with vehicle_cmds
+for the destinations. The owner API is the Tesla app's own, unofficial one: an owner token
+put on the device by hand over ssh, no developer app, but the token is the whole account.
+Fleet wins when both are set.
 
 Deliberately free of openpilot imports at module level so it runs under a bare Python
 interpreter -- same rule as route.py. Only _loop imports the device stack.
@@ -27,6 +29,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RequestBudget, in_korea
@@ -67,6 +70,21 @@ FLEET, OWNER = "fleet", "owner"
 # Where each mode keeps its single-use refresh token.
 REFRESH_TOKEN_KEYS = {FLEET: "KoreaTeslaRefreshToken", OWNER: "KoreaTeslaOwnerRefreshToken"}
 
+# Polls in a row with no route before the car's guidance counts as ended. The phone ends its
+# own guidance on it, so one empty answer -- a glitch -- must not be enough.
+CANCEL_POLLS = 2
+# Sending the car a destination. Commands are billed too; a trip costs one to seven of them.
+DAILY_COMMAND_CAP = 60
+SEND_RETRY_S = 30.  # the car asleep, or Tesla busy: try again this much later,
+SEND_TRIES = 4  # this many times, then leave the trip alone until it changes
+# What the car reports after it was sent a trip is the car taking it, not a new destination:
+# anything within this distance of one of the trip's places (the car searches a shared point,
+# so it can land a little off, and it reports each via on the way), and anything at all this
+# soon after the send.
+ECHO_M = 500.
+ECHO_WINDOW_S = 150.
+CAR_UNKNOWN = "unknown"  # TeslaDestinationSource.car() before this drive's first answer
+
 
 class AuthRejected(Exception):
   """Tesla refused the refresh token. Only a new login replaces it: tesla_setup for Fleet, a token tool for the owner API."""
@@ -74,6 +92,31 @@ class AuthRejected(Exception):
 
 class VehicleNotFound(Exception):
   """The owner account has no car with KoreaTeslaVin. Only fixing the VIN helps."""
+
+
+class CommandRefused(Exception):
+  """The car answered a destination with result false."""
+
+
+@dataclass(frozen=True)
+class Trip:
+  """What the phone app guides to, each place (lat, lon, name): the destination, and the vias on the way in order."""
+  destination: tuple[float, float, str]
+  vias: tuple[tuple[float, float, str], ...] = ()
+
+  def places(self) -> tuple[tuple[float, float, str], ...]:
+    return (self.destination, *self.vias)
+
+
+def _near(a, b, metres: float = SAME_DESTINATION_M) -> bool:
+  return haversine(a[0], a[1], b[0], b[1]) <= metres
+
+
+def same_trip(a: Trip | None, b: Trip | None, vias: bool = True) -> bool:
+  """The same places within a jitter; with vias=False the destination alone."""
+  if a is None or b is None:
+    return a is b
+  return _near(a.destination, b.destination) and (not vias or len(a.vias) == len(b.vias) and all(map(_near, a.vias, b.vias)))
 
 
 def parse_destination(payload) -> tuple[float, float, str] | None:
@@ -175,8 +218,21 @@ def owner_fetch_destination(access_token: str, vehicle_id: str, opener=urllib.re
   return parse_destination(_read_json(api_request(access_token, path, OWNER_API_URL), opener))
 
 
-def _is_ours(raw, written: tuple[float, float]) -> bool:
-  """Does NavDestination still hold exactly what this thread wrote? json round-trips a
+def command_request(access_token: str, base: str, vehicle: str, command: str, body: dict) -> urllib.request.Request:
+  return urllib.request.Request(f"{base}/api/1/vehicles/{urllib.parse.quote(vehicle, safe='')}/command/{command}",
+                                data=json.dumps(body).encode(), method="POST",
+                                headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"})
+
+
+def share_body(lat: float, lon: float, now_ms: int) -> dict:
+  """navigation_request: what a phone shares with the car, here the point as text, which the
+  car searches the way it does an address."""
+  return {"type": "share_ext_content_raw", "locale": "ko-KR", "timestamp_ms": str(now_ms),
+          "value": {"android.intent.extra.TEXT": f"{lat:.6f},{lon:.6f}"}}
+
+
+def holds_destination(raw, written: tuple[float, float]) -> bool:
+  """Does NavDestination still hold exactly what its writer wrote? json round-trips a
   float exactly, so equality is right here -- unlike between two readings of the car."""
   try:
     dest = json.loads(raw)
@@ -186,16 +242,20 @@ def _is_ours(raw, written: tuple[float, float]) -> bool:
 
 
 class TeslaDestinationSource:
-  """Background thread that copies the car's navigation destination into NavDestination.
+  """Background thread that copies the car's navigation destination into NavDestination, and
+  gives the car the phone app's trip.
 
   Same start/stop shape as RouteSource. step() makes every decision and gets the device
   state as arguments, so the tests drive it with no device stack; _loop only feeds it.
+  want() is called from KoreaMapData's loop and car() from the UDP thread: both swap one
+  immutable value, which needs no lock.
   """
 
   def __init__(self, opener=urllib.request.urlopen, clock=time.monotonic):
     self._opener = opener
     self._clock = clock
     self.budget = RequestBudget(cap=DAILY_REQUEST_CAP)
+    self.commands = RequestBudget(cap=DAILY_COMMAND_CAP)
     self._access_token: str | None = None
     # The credentials the access token was minted under. Any change -- the other mode, tesla_setup,
     # a token or VIN written by hand -- must not be judged by it: the two APIs do not take each
@@ -212,6 +272,32 @@ class TeslaDestinationSource:
     self._was_started = False
     self._stop = threading.Event()
     self._thread: threading.Thread | None = None
+    # The car's navigation for the phone: CAR_UNKNOWN until this drive's first answer, None for
+    # no route, else (lat, lon, name). It changes only when the car's answer changes.
+    self._car = CAR_UNKNOWN
+    self._car_raw: tuple[float, float, str] | None = None  # the car's last answer, to tell a change from a repeat
+    self._empty_polls = 0
+    self._polled = False  # an answer this drive, so the car's destination is known before one is sent
+    self._want: Trip | None = None  # the phone app's trip, each second from KoreaMapData
+    self._sent: Trip | None = None  # the trip the car was given or already had, so it is not sent again
+    self._sent_places: tuple = ()
+    self._sent_at = float("-inf")
+    self._send_after = 0.
+    self._send_tries = 0
+    self._gps: bool | None = None  # does the car take a destination as coordinates? Unknown until asked
+    self._refused: tuple | None = None  # the credentials the car refused a destination under
+
+  def want(self, trip: Trip | None) -> None:
+    """The trip the phone app guides, None while it guides nowhere or is quiet."""
+    self._want = trip
+
+  def car(self):
+    """What the car's navigation guides to, for the phone app: CAR_UNKNOWN, None or (lat, lon, name)."""
+    return self._car
+
+  def guides_to(self, point) -> bool:
+    car = self._car
+    return isinstance(car, tuple) and _near(car, point)
 
   def start(self) -> None:
     if self._thread is not None:
@@ -235,20 +321,27 @@ class TeslaDestinationSource:
     if started and not self._was_started:
       # A new drive. The offroad transition cleared NavDestination, so what this thread wrote
       # last drive is no reason to skip it now -- and the first poll of a drive does not wait
-      # out the last drive's minute.
+      # out the last drive's minute. What the car had is asked again, and a trip the phone
+      # still guides is checked against it.
       self._written = None
       self._next_poll = now
+      self._car, self._car_raw, self._empty_polls, self._polled = CAR_UNKNOWN, None, 0, False
+      self._sent, self._sent_places, self._sent_at, self._send_tries, self._send_after = None, (), float("-inf"), 0, 0.
     self._was_started = started
-    if not started or now < self._next_poll:
+    if not started:
       return
-    self._next_poll = now + POLL_INTERVAL_S
+    if now >= self._next_poll:
+      self._next_poll = now + POLL_INTERVAL_S
+      self._poll(params, set_alert, now)
+    self._send(now)
 
+  def _poll(self, params, set_alert, now: float) -> None:
     # Without the TMAP key a destination buys no route, only a bill.
     if not params.get("KoreaRouteApiKey"):
       return
     client_id, vin = params.get("KoreaTeslaClientId"), params.get("KoreaTeslaVin")
     fleet_token, owner_token = params.get("KoreaTeslaRefreshToken"), params.get("KoreaTeslaOwnerRefreshToken")
-    # Fleet first when both are set: it is official, and its grant cannot command the car. The
+    # Fleet first when both are set: it is official, and its token is not the whole account. The
     # owner API is for owners without a Tesla developer app. No fallback either way.
     if client_id and fleet_token and vin:
       mode, refresh_token = FLEET, fleet_token
@@ -311,7 +404,7 @@ class TeslaDestinationSource:
       # type is logged -- a message can carry the URL, and a body the car's position.
       LOG.warning("tesla: request failed: %s", type(e).__name__)
       return
-    self._apply(params, destination)
+    self._observe(params, destination, now)
 
   def _fetch(self, mode: str, vin: str) -> tuple[float, float, str] | None:
     if mode == OWNER and self._owner_vehicle is None:
@@ -326,11 +419,123 @@ class TeslaDestinationSource:
     self._access_token = None
     set_alert(True)
 
+  def _observe(self, params, reading: tuple[float, float, str] | None, now: float) -> None:
+    """One answer of the car. Only a change counts -- the car repeating its destination is
+    never a write -- so the last change wins wherever it was made: on the car's screen, or in
+    the phone app through _send."""
+    first, self._polled = not self._polled, True
+    if reading is None:
+      self._empty_polls += 1
+      if self._empty_polls < CANCEL_POLLS:
+        return
+      self._car_raw = None
+      if self._car is not None:
+        self._car = None
+        self._apply(params, None)
+      return
+    self._empty_polls = 0
+    if self._car_raw is not None and _near(reading, self._car_raw):
+      return
+    self._car_raw = reading
+    if self._sent_places and (now - self._sent_at <= ECHO_WINDOW_S or any(_near(reading, p, ECHO_M) for p in self._sent_places)):
+      # The car taking the trip _send gave it, or on its way to one of the vias: still the
+      # phone's trip. ponytail: a destination picked on the car's screen this soon after a
+      # send is taken for the car taking it, until the car's next change.
+      self._car = self._sent_places[0]
+      return
+    if first and self._want is not None:
+      return  # the phone already guides: its trip is newer than what the car kept, and _send gives it
+    self._car = reading
+    self._sent_places = ()
+    self._apply(params, reading)
+
+  def _send(self, now: float) -> None:
+    """Gives the car the phone app's trip, once this drive's first answer has said what the car has."""
+    trip = self._want
+    if trip is None:
+      self._sent = None  # the next trip goes to the car even if it is this one again
+      return
+    if (not self._polled or self._access_token is None or now < self._send_after or self._minted_for == self._refused
+        or same_trip(trip, self._sent, vias=self._gps is not False)):
+      return
+    if self._car_raw is not None and _near(self._car_raw, trip.destination) and (not trip.vias or self._gps is False):
+      # The car guides there already: the phone took it from the car, or the car kept it.
+      self._sent, self._sent_places, self._car = trip, trip.places(), trip.destination
+      return
+    if not self.commands.allow():
+      LOG.warning("tesla: daily command cap reached")
+      self._sent = trip
+      return
+    try:
+      self._command(trip)
+    except urllib.error.HTTPError as e:
+      LOG.warning("tesla: destination not sent: HTTP %d", e.code)
+      if e.code == 401:
+        self._access_token, self._next_poll = None, now  # the next tick's poll refreshes it
+      elif e.code in (408, 429) or e.code >= 500:
+        self._retry(trip, now)
+      else:
+        # 403 is a grant without vehicle_cmds, which only tesla_setup changes; nothing else
+        # here changes by asking again either.
+        self._refused = self._minted_for
+    except CommandRefused:
+      self._sent = trip
+    except Exception as e:
+      LOG.warning("tesla: destination not sent: %s", type(e).__name__)
+      self._retry(trip, now)
+    else:
+      # Not self._car yet: that is the car's answer. A share the car could not find would
+      # otherwise read as the car ending the guidance, and end the phone's.
+      self._sent, self._sent_places, self._sent_at, self._send_tries = trip, trip.places(), now, 0
+
+  def _retry(self, trip: Trip, now: float) -> None:
+    self._send_tries += 1
+    if self._send_tries < SEND_TRIES:
+      self._send_after = now + SEND_RETRY_S
+    else:
+      self._sent, self._send_tries = trip, 0
+
+  def _command(self, trip: Trip) -> None:
+    """navigation_gps_request while the car takes coordinates, the vias with it; else
+    navigation_request, which shares one place, the destination."""
+    mode, _, _, vin = self._minted_for
+    base, vehicle = (FLEET_API_URL, vin) if mode == FLEET else (OWNER_API_URL, self._owner_vehicle)
+    lat, lon, _ = trip.destination
+    if self._gps is not False:
+      try:
+        took = self._post(base, vehicle, "navigation_gps_request", {"lat": lat, "lon": lon, "order": 1})
+      except urllib.error.HTTPError as e:
+        if e.code in (401, 408, 429) or e.code >= 500:
+          raise  # about the token, the car or Tesla, not about the command
+        took = False
+      if took:
+        self._gps = True
+        # ponytail: order 2 makes a place the next stop (Teslemetry's reading of the command),
+        # so the last via goes in first. Unverified on the car: check its trip the first time.
+        for via_lat, via_lon, _ in reversed(trip.vias):
+          self._post(base, vehicle, "navigation_gps_request", {"lat": via_lat, "lon": via_lon, "order": 2})
+        return
+    if not self._post(base, vehicle, "navigation_request", share_body(lat, lon, int(time.time() * 1000))):  # noqa: TID251
+      raise CommandRefused
+    if self._gps is None:
+      # Only now: a grant without vehicle_cmds refuses both, and says nothing about coordinates.
+      LOG.warning("tesla: the car takes no coordinates, sharing destinations instead")
+      self._gps = False
+
+  def _post(self, base: str, vehicle: str, command: str, body: dict) -> bool:
+    """One billed command; True when the car took it."""
+    self.commands.spend()
+    response = _read_json(command_request(self._access_token, base, vehicle, command, body), self._opener).get("response")
+    if isinstance(response, dict) and response.get("result") is True:
+      return True
+    LOG.warning("tesla: %s refused: %s", command, str(response.get("reason") if isinstance(response, dict) else response)[:80])
+    return False
+
   def _apply(self, params, destination: tuple[float, float, str] | None) -> None:
     if destination is None:
       # Guidance ended in the car. Clear only what this thread wrote: a destination from the
       # UDP socket or athenad is not the car's to cancel.
-      if self._written is not None and _is_ours(params.get("NavDestination"), self._written):
+      if self._written is not None and holds_destination(params.get("NavDestination"), self._written):
         params.remove("NavDestination")
       self._written = None
       return

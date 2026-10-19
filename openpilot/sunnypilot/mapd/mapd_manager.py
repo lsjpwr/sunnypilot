@@ -220,8 +220,10 @@ def korea_main() -> None:
       # written its credentials it asks Tesla nothing.
       tesla_source = TeslaDestinationSource()
       tesla_source.start()
+      if external is not None:
+        external.car = tesla_source.car  # the answers tell the phone app what the car guides to
 
-    live_map_sp = KoreaMapData(external=external, route_source=route_source)
+    live_map_sp = KoreaMapData(external=external, route_source=route_source, tesla=tesla_source)
 
     refresher = CameraRefresher(KOREA_CAMERAS_PATH)
     refresher.start()

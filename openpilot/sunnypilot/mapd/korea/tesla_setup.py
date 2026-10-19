@@ -30,8 +30,8 @@ from openpilot.sunnypilot.mapd.korea.tesla import (FLEET_API_URL, HTTP_TIMEOUT_S
                                                    vehicle_data_request)
 
 AUTHORIZE_URL = "https://auth.tesla.com/oauth2/v3/authorize"
-# Read-only on purpose: nothing on the device may command the car.
-SCOPES = "openid offline_access vehicle_device_data vehicle_location"
+# vehicle_cmds is for one thing only: sending the car the destination the phone app guides to.
+SCOPES = "openid offline_access vehicle_device_data vehicle_location vehicle_cmds"
 DEVICE_PARAMS_DIR = "/data/params/d"
 
 
@@ -122,7 +122,7 @@ def _check(access_token: str, vin: str) -> None:
 
 
 def main() -> None:
-  parser = argparse.ArgumentParser(description="One-time Tesla setup so the device can read the car's navigation destination.")
+  parser = argparse.ArgumentParser(description="One-time Tesla setup so the device can read the car's navigation destination and send it the phone app's.")
   parser.add_argument("--host", required=True, help="ssh target, e.g. comma@192.168.1.50")
   args = parser.parse_args()
   try:

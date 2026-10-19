@@ -15,6 +15,8 @@ Wire format, one JSON object per datagram, every key optional:
    "destination_lat": 37.4979, "destination_lon": 127.0276}
 
 destination_lat/lon start a route the device fetches itself; 0/0 means guidance ended.
+destination_name and via (up to 5 {"lat", "lon", "name"}, in order) come with them from the
+phone app, which sends its trip to the car through tesla.py.
 
 The phone app sp-knavlink-tesla (TMAP and Kakao Navi SDKs) adds, twice a second (its README has the full format):
 
@@ -26,7 +28,9 @@ where it stands. An item with no place is skipped (the app's "sec", the section 
 camera database), and so is a bad one, never the datagram.
 
 A datagram with a "seq" is answered with {"ack": seq}, sent back to where it came from: the app shows the driver
-whether the comma hears it. The answer is never bigger than the datagram, so it cannot amplify anything.
+whether the comma hears it. Once the comma knows what the car's navigation guides to, the answer carries it too,
+{"ack": seq, "car": {"lat": 37.5, "lon": 127.0, "name": "강남역"}} or "car": null for no route, and the app follows
+it. The answer is never bigger than the datagram, so it cannot amplify anything: the name goes first, then the place.
 
 Unknown keys are kept in ExternalNav.raw so a future app can extend the payload
 without a wire-format change.
@@ -42,6 +46,7 @@ from dataclasses import dataclass, field
 
 from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot.mapd.korea.route import in_korea
+from openpilot.sunnypilot.mapd.korea.tesla import CAR_UNKNOWN, MAX_PLACE_NAME
 
 MAX_DATAGRAM = 8192
 EXTERNAL_PORT = 5555
@@ -55,6 +60,7 @@ MAX_ROAD_NAME = 64
 ITEM_KINDS = frozenset({"cam", "sec_start", "sec_end", "bump"})
 MAX_ITEMS = 10
 MAX_AGE_MS = 600000.  # 10 min; the app drops an item after 5
+MAX_VIAS = 5  # TMAP's own limit
 
 
 @dataclass(frozen=True)
@@ -78,6 +84,8 @@ class ExternalNav:
   next_speed_limit_distance_m: float = 0.
   road_name: str = ""
   destination: tuple[float, float] | None = None
+  destination_name: str = ""
+  vias: tuple[tuple[float, float, str], ...] = ()  # (lat, lon, name) in the order the trip passes them
   received_at: float = 0.
   raw: dict = field(default_factory=dict)
   # None when the sender keeps no item list (not the phone app); () when it sees nothing ahead
@@ -108,6 +116,39 @@ def _destination(payload: dict) -> tuple[float, float] | None:
     if isinstance(value, bool) or not isinstance(value, int | float):
       return None
   return (float(lat), float(lon)) if in_korea(lat, lon) else None
+
+
+def _name(value) -> str:
+  return value[:MAX_PLACE_NAME] if isinstance(value, str) else ""
+
+
+def _vias(payload: dict) -> tuple[tuple[float, float, str], ...]:
+  """The trip's vias; a bad one is skipped, the same as a bad item."""
+  entries = payload.get("via")
+  vias = []
+  for entry in entries[:MAX_VIAS] if isinstance(entries, list) else ():
+    lat, lon = (entry.get("lat"), entry.get("lon")) if isinstance(entry, dict) else (None, None)
+    if not any(isinstance(v, bool) or not isinstance(v, int | float) for v in (lat, lon)) and in_korea(lat, lon):
+      vias.append((float(lat), float(lon), _name(entry.get("name"))))
+  return tuple(vias)
+
+
+def answer(seq: int, car, limit: int) -> bytes:
+  """{"ack": seq}, with car: what the car's navigation guides to, (lat, lon, name), None for no
+  route, or CAR_UNKNOWN to leave it out. Never more than limit bytes -- the datagram being
+  answered -- so the name goes first, then the place; {"ack": n} is never longer than the
+  {"seq": n} it answers."""
+  answers = [{"ack": seq}]
+  if car is None:
+    answers.insert(0, {"ack": seq, "car": None})
+  elif car != CAR_UNKNOWN:
+    place = {"lat": round(car[0], 6), "lon": round(car[1], 6)}
+    answers[:0] = [{"ack": seq, "car": {**place, "name": car[2]}}, {"ack": seq, "car": place}]
+  for out in answers:
+    data = json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode()
+    if len(data) <= limit:
+      break
+  return data
 
 
 def _in_range(value, lower: float, upper: float) -> float | None:
@@ -154,6 +195,8 @@ def parse_payload(payload: dict) -> ExternalNav:
     next_speed_limit_distance_m=_bounded(payload, "next_speed_limit_distance_m", MAX_DISTANCE_M),
     road_name=name[:MAX_ROAD_NAME] if isinstance(name, str) else "",
     destination=_destination(payload),
+    destination_name=_name(payload.get("destination_name")),
+    vias=_vias(payload),
     received_at=time.monotonic(),
     raw=payload,
     items=_items(payload),
@@ -163,8 +206,9 @@ def parse_payload(payload: dict) -> ExternalNav:
 
 
 class ExternalNavSource:
-  def __init__(self, port: int = EXTERNAL_PORT):
+  def __init__(self, port: int = EXTERNAL_PORT, car=None):
     self.port = port
+    self.car = car  # TeslaDestinationSource.car, for the answers; None leaves the car out
     self._lock = threading.Lock()
     self._latest = ExternalNav()
     self._sock: socket.socket | None = None
@@ -237,6 +281,6 @@ class ExternalNavSource:
       seq = payload.get("seq")
       if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq < 2 ** 53:
         try:
-          sock.sendto(json.dumps({"ack": seq}, separators=(",", ":")).encode(), sender)  # {"ack":7} <= {"seq":7}
+          sock.sendto(answer(seq, CAR_UNKNOWN if self.car is None else self.car(), len(data)), sender)
         except OSError:
           pass  # the sender went away; it hears from us again with its next datagram

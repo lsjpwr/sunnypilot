@@ -14,9 +14,10 @@ from unittest import mock
 
 from openpilot.sunnypilot.mapd.korea import tesla
 from openpilot.sunnypilot.mapd.korea.route import RequestBudget
-from openpilot.sunnypilot.mapd.korea.tesla import (OWNER_API_URL, OWNER_TOKEN_URL, POLL_INTERVAL_S, TOKEN_URL, AuthRejected, TeslaDestinationSource,
-                                                   VehicleNotFound, fetch_destination, owner_fetch_destination, owner_refresh_access_token,
-                                                   owner_vehicle_id, parse_destination, refresh_access_token)
+from openpilot.sunnypilot.mapd.korea.tesla import (CAR_UNKNOWN, ECHO_WINDOW_S, OWNER_API_URL, OWNER_TOKEN_URL, POLL_INTERVAL_S, SEND_RETRY_S,
+                                                   SEND_TRIES, TOKEN_URL, AuthRejected, TeslaDestinationSource, Trip, VehicleNotFound,
+                                                   fetch_destination, owner_fetch_destination, owner_refresh_access_token, owner_vehicle_id,
+                                                   parse_destination, refresh_access_token, same_trip)
 from openpilot.sunnypilot.mapd.korea.tests.test_camera_refresh import OneShotStop
 from openpilot.sunnypilot.mapd.korea.tests.test_route import FakeClock, FakeResponse
 
@@ -43,16 +44,21 @@ def http_error(code):
   return urllib.error.HTTPError(tesla.FLEET_API_URL, code, "error", None, None)
 
 
+TOOK = {"response": {"result": True, "reason": ""}}
+
+
 class ScriptedOpener:
   """urlopen stand-in. A token request (either API) gets `token`; /api/1/products gets
-  `products`; a vehicle_data request gets the next of `answers`. An exception in any place is
-  raised instead of answered. `events` can be shared with a FakeParams so a test can tell
-  which happened first; `contexts` records the TLS context each request asked for."""
+  `products`; a command gets the next of `commands`, and TOOK once they run out; a
+  vehicle_data request gets the next of `answers`. An exception in any place is raised
+  instead of answered. `events` can be shared with a FakeParams so a test can tell which
+  happened first; `contexts` records the TLS context each request asked for."""
 
-  def __init__(self, answers=(), token=TOKENS, events=None, products=PRODUCTS):
+  def __init__(self, answers=(), token=TOKENS, events=None, products=PRODUCTS, commands=()):
     self.answers = list(answers)
     self.token = token
     self.products = products
+    self.commands = list(commands)
     self.events = [] if events is None else events
     self.requests = []
     self.contexts = []
@@ -64,6 +70,8 @@ class ScriptedOpener:
       kind, answer = "token", self.token
     elif request.full_url.endswith("/api/1/products"):
       kind, answer = "products", self.products
+    elif "/command/" in request.full_url:
+      kind, answer = request.full_url.rsplit("/", 1)[1], self.commands.pop(0) if self.commands else TOOK
     else:
       kind, answer = "vehicle_data", self.answers.pop(0)
     self.events.append(kind)
@@ -253,8 +261,8 @@ class SourceTestCase(unittest.TestCase):
     self.params = FakeParams(events=self.events)
     self.alerts = []
 
-  def source(self, answers=(), token=TOKENS, products=PRODUCTS):
-    self.opener = ScriptedOpener(answers, token, self.events, products)
+  def source(self, answers=(), token=TOKENS, products=PRODUCTS, commands=()):
+    self.opener = ScriptedOpener(answers, token, self.events, products, commands)
     return TeslaDestinationSource(opener=self.opener, clock=self.clock)
 
   def tick(self, source, started=True, seconds=0.):
@@ -344,20 +352,32 @@ class TestWriteRules(SourceTestCase):
     self.tick(source, seconds=POLL_INTERVAL_S)
     self.assertEqual((self.nav()["latitude"], self.nav()["longitude"]), CITY_HALL)
 
-  def test_guidance_ended_in_the_car_clears_our_destination(self):
-    source = self.source([car(), NO_ROUTE])
+  def test_guidance_ended_in_the_car_clears_our_destination_on_the_second_empty_answer(self):
+    """One empty answer can be a glitch, and the phone app ends its guidance on this."""
+    source = self.source([car(), NO_ROUTE, NO_ROUTE])
     self.tick(source)
     self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertIsNotNone(self.nav())
+    self.assertEqual(source.car(), (GANGNAM[0], GANGNAM[1], "강남역"))
+    self.tick(source, seconds=POLL_INTERVAL_S)
     self.assertIsNone(self.nav())
+    self.assertIsNone(source.car())
 
   def test_guidance_ended_in_the_car_keeps_a_destination_it_did_not_write(self):
     """Something else -- the UDP socket, athenad -- wrote after us. Not the car's to cancel."""
-    source = self.source([car(), NO_ROUTE])
+    source = self.source([car(), NO_ROUTE, NO_ROUTE])
     self.tick(source)
     other = json.dumps({"latitude": CITY_HALL[0], "longitude": CITY_HALL[1], "place_name": None, "place_details": None})
     self.params.values["NavDestination"] = other
     self.tick(source, seconds=POLL_INTERVAL_S)
+    self.tick(source, seconds=POLL_INTERVAL_S)
     self.assertEqual(self.params.values["NavDestination"], other)
+
+  def test_the_car_back_on_the_same_route_after_one_empty_answer_is_no_change(self):
+    source = self.source([car(), NO_ROUTE, car()])
+    for seconds in (0., POLL_INTERVAL_S, POLL_INTERVAL_S):
+      self.tick(source, seconds=seconds)
+    self.assertEqual(self.events.count("put NavDestination"), 1)
 
   def test_a_new_drive_writes_the_same_destination_again(self):
     """The offroad transition cleared NavDestination. The car still guiding there means the
@@ -556,7 +576,7 @@ class TestOwnerMode(SourceTestCase):
 
 class TestModeChoice(SourceTestCase):
   def test_fleet_wins_when_both_are_set(self):
-    """Official, and its grant cannot command the car. Passes before Task 2 too: it pins the
+    """Official, and its token is not the whole account. Passes before Task 2 too: it pins the
     order once the owner mode exists."""
     self.params.values["KoreaTeslaOwnerRefreshToken"] = "OWNER-1"
     source = self.source([car()])
@@ -585,6 +605,236 @@ class TestModeChoice(SourceTestCase):
     self.tick(source, seconds=POLL_INTERVAL_S)
     self.assertNotIn(OWNER_TOKEN_URL, [r.full_url for r in self.opener.requests])
     self.assertIs(self.alerts[-1], True)
+
+
+PHONE = Trip((CITY_HALL[0], CITY_HALL[1], "서울시청"))
+VIA = (37.5547, 126.9707, "서울역")
+REFUSED = {"response": {"result": False, "reason": "not supported"}}
+
+
+class TestCarForThePhone(SourceTestCase):
+  def test_unknown_until_the_first_answer_then_the_cars_destination(self):
+    source = self.source([car()])
+    self.assertEqual(source.car(), CAR_UNKNOWN)
+    self.tick(source)
+    self.assertEqual(source.car(), (GANGNAM[0], GANGNAM[1], "강남역"))
+
+  def test_unknown_again_on_a_new_drive(self):
+    source = self.source([car()])
+    self.tick(source)
+    self.tick(source, started=False, seconds=10.)
+    self.tick(source, seconds=10.)
+    self.assertEqual(source.car(), CAR_UNKNOWN)  # the answer to this drive's first poll is still to come
+
+  def test_a_failed_poll_says_nothing_about_the_car(self):
+    source = self.source([http_error(503)])
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.assertEqual(source.car(), CAR_UNKNOWN)
+
+  def test_guides_to_is_the_cars_destination_within_a_jitter(self):
+    source = self.source([car()])
+    self.tick(source)
+    self.assertTrue(source.guides_to((GANGNAM[0] + 0.0002, GANGNAM[1])))
+    self.assertFalse(source.guides_to(CITY_HALL))
+
+
+class TestSendToTheCar(SourceTestCase):
+  def commands(self):
+    return [(r.full_url.rsplit("/", 1)[1], json.loads(r.data)) for r in self.opener.requests if "/command/" in r.full_url]
+
+  def test_the_phones_trip_goes_to_the_car_as_coordinates(self):
+    source = self.source([NO_ROUTE])
+    source.want(PHONE)
+    self.tick(source)
+    self.assertEqual(self.commands(), [("navigation_gps_request", {"lat": CITY_HALL[0], "lon": CITY_HALL[1], "order": 1})])
+    request = [r for r in self.opener.requests if "/command/" in r.full_url][0]
+    self.assertEqual(request.full_url, f"{tesla.FLEET_API_URL}/api/1/vehicles/VIN123/command/navigation_gps_request")
+    self.assertEqual(request.get_header("Authorization"), "Bearer ACCESS-2")
+
+  def test_nothing_is_sent_before_the_drives_first_answer(self):
+    """The car may already guide there: what it has is known first."""
+    source = self.source([http_error(503)])
+    source.want(PHONE)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.assertEqual(self.commands(), [])
+
+  def test_the_same_trip_is_sent_once(self):
+    source = self.source([NO_ROUTE])
+    source.want(PHONE)
+    self.tick(source)
+    for _ in range(5):
+      source.want(Trip((CITY_HALL[0] + 0.0001, CITY_HALL[1], "서울시청")))  # the next datagrams, a jitter apart
+      self.tick(source, seconds=1.)
+    self.assertEqual(len(self.commands()), 1)
+
+  def test_vias_follow_as_next_stops_last_one_first(self):
+    source = self.source([NO_ROUTE])
+    other = (37.5, 127.0, "B")
+    source.want(Trip(PHONE.destination, (VIA, other)))
+    self.tick(source)
+    self.assertEqual([body.get("order") for _, body in self.commands()], [1, 2, 2])
+    self.assertEqual([(body["lat"], body["lon"]) for _, body in self.commands()[1:]], [other[:2], VIA[:2]])
+
+  def test_a_car_that_takes_no_coordinates_is_shared_the_destination(self):
+    for refusal in (http_error(403), http_error(400), REFUSED):
+      with self.subTest(refusal=refusal):
+        self.setUp()
+        source = self.source([NO_ROUTE], commands=[refusal])
+        source.want(Trip(PHONE.destination, (VIA,)))
+        with self.assertLogs(tesla.LOG, level="WARNING"):
+          self.tick(source)
+        (_, gps), (command, share) = self.commands()
+        self.assertEqual(command, "navigation_request")
+        self.assertEqual(share["type"], "share_ext_content_raw")
+        self.assertEqual(share["value"], {"android.intent.extra.TEXT": "37.566500,126.978000"})
+
+  def test_after_one_refusal_coordinates_are_not_asked_again(self):
+    source = self.source([NO_ROUTE], commands=[REFUSED])
+    source.want(PHONE)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    source.want(Trip((37.5, 127.0, "B")))
+    self.tick(source, seconds=1.)
+    self.assertEqual([c for c, _ in self.commands()], ["navigation_gps_request", "navigation_request", "navigation_request"])
+
+  def test_a_new_via_alone_is_not_shared_again(self):
+    """A share carries one place; the car has that one already."""
+    source = self.source([NO_ROUTE], commands=[REFUSED])
+    source.want(PHONE)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    source.want(Trip(PHONE.destination, (VIA,)))
+    self.tick(source, seconds=1.)
+    self.assertEqual(len(self.commands()), 2)
+
+  def test_a_grant_without_vehicle_cmds_is_not_asked_again(self):
+    """403 to both: tesla_setup has to run again. Asking every trip only bills."""
+    source = self.source([NO_ROUTE], commands=[http_error(403), http_error(403)])
+    source.want(PHONE)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    source.want(Trip((37.5, 127.0, "B")))
+    self.tick(source, seconds=SEND_RETRY_S)
+    self.assertEqual(len(self.commands()), 2)
+    self.assertNotIn(True, self.alerts)  # reading the car's destination still works
+
+  def test_an_asleep_car_is_tried_again_then_left_alone(self):
+    source = self.source([NO_ROUTE], commands=[http_error(408)] * SEND_TRIES)
+    source.want(PHONE)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+      self.tick(source, seconds=SEND_RETRY_S - 1.)
+      self.assertEqual(len(self.commands()), 1)
+      for _ in range(SEND_TRIES):
+        self.tick(source, seconds=SEND_RETRY_S)
+    self.assertEqual(len(self.commands()), SEND_TRIES)
+
+  def test_an_expired_access_token_is_refreshed_and_the_trip_sent(self):
+    source = self.source([NO_ROUTE, NO_ROUTE], commands=[http_error(401)])
+    source.want(PHONE)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.tick(source, seconds=1.)
+    self.assertEqual(self.opener.count("token"), 2)
+    self.assertEqual(len(self.commands()), 2)
+
+  def test_a_car_already_guiding_there_is_sent_nothing(self):
+    """The phone took the destination from the car."""
+    source = self.source([car(*CITY_HALL, name="서울시청")])
+    self.tick(source)
+    source.want(PHONE)
+    self.tick(source, seconds=1.)
+    self.assertEqual(self.commands(), [])
+
+  def test_a_trip_ended_and_picked_again_is_sent_again(self):
+    source = self.source([NO_ROUTE])
+    source.want(PHONE)
+    self.tick(source)
+    source.want(None)
+    self.tick(source, seconds=1.)
+    source.want(PHONE)
+    self.tick(source, seconds=1.)
+    self.assertEqual(len(self.commands()), 2)
+
+  def test_the_daily_command_cap_stops_sending(self):
+    source = self.source([NO_ROUTE])
+    source.commands = RequestBudget(cap=0, clock=FakeClock())
+    source.want(PHONE)
+    with self.assertLogs(tesla.LOG, level="WARNING"):
+      self.tick(source)
+    self.assertEqual(self.commands(), [])
+
+
+class TestLastChangeWins(SourceTestCase):
+  def sent(self, answers):
+    """A source that sent PHONE to a car with no route, its poll answers still to come."""
+    source = self.source([NO_ROUTE, *answers])
+    source.want(PHONE)
+    self.tick(source)
+    return source
+
+  def test_the_car_taking_the_trip_is_the_phones_destination_and_no_write(self):
+    source = self.sent([car(CITY_HALL[0] + 0.002, CITY_HALL[1], "37.566500,126.978000")])  # searched, 220 m off
+    self.tick(source, seconds=ECHO_WINDOW_S + 1.)
+    self.assertEqual(source.car(), PHONE.destination)
+    self.assertNotIn("put NavDestination", self.events)
+
+  def test_anything_the_car_shows_right_after_a_send_is_the_car_taking_it(self):
+    """A share the car searched far off is the car's mistake, not a new destination for the phone."""
+    source = self.sent([car(37.3, 127.3, "어딘가")])
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(source.car(), PHONE.destination)
+    self.assertNotIn("put NavDestination", self.events)
+
+  def test_the_car_on_its_way_to_a_via_is_still_the_trip(self):
+    source = self.source([NO_ROUTE, car(*VIA[:2], name=VIA[2])])
+    source.want(Trip(PHONE.destination, (VIA,)))
+    self.tick(source)
+    self.tick(source, seconds=ECHO_WINDOW_S + 1.)
+    self.assertEqual(source.car(), PHONE.destination)
+    self.assertNotIn("put NavDestination", self.events)
+
+  def test_a_destination_picked_on_the_car_later_wins(self):
+    source = self.sent([car(CITY_HALL[0] + 0.001, CITY_HALL[1]), car()])
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.tick(source, seconds=ECHO_WINDOW_S)
+    self.assertEqual(source.car(), (GANGNAM[0], GANGNAM[1], "강남역"))
+    self.assertEqual((self.nav()["latitude"], self.nav()["longitude"]), GANGNAM)
+
+  def test_the_car_ending_the_shared_trip_ends_it_for_the_phone(self):
+    source = self.sent([car(CITY_HALL[0] + 0.001, CITY_HALL[1]), NO_ROUTE, NO_ROUTE])
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(source.car(), PHONE.destination)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertIsNone(source.car())
+
+  def test_a_share_the_car_could_not_find_never_reads_as_an_ending(self):
+    """The car took the command but guides nowhere: the phone keeps its guidance."""
+    source = self.sent([NO_ROUTE, NO_ROUTE])
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertIsNone(source.car())  # no route all along, so no change for the phone to follow
+
+  def test_at_the_first_answer_the_phones_trip_beats_what_the_car_kept(self):
+    source = self.source([car()])
+    source.want(PHONE)
+    self.tick(source)
+    self.assertNotIn("put NavDestination", self.events)
+    self.assertEqual(len([r for r in self.opener.requests if "/command/" in r.full_url]), 1)
+    self.assertEqual(source.car(), CAR_UNKNOWN)  # until the car shows it took the trip
+
+
+class TestSameTrip(unittest.TestCase):
+  def test_a_jitter_is_the_same_trip_and_another_via_is_not(self):
+    moved = Trip((CITY_HALL[0] + 0.0001, CITY_HALL[1], "다른 이름"))
+    self.assertTrue(same_trip(PHONE, moved))
+    self.assertFalse(same_trip(PHONE, Trip(PHONE.destination, (VIA,))))
+    self.assertTrue(same_trip(PHONE, Trip(PHONE.destination, (VIA,)), vias=False))
+    self.assertTrue(same_trip(None, None))
+    self.assertFalse(same_trip(PHONE, None))
 
 
 class TestLoop(unittest.TestCase):

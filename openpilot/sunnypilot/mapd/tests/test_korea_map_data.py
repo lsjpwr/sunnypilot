@@ -30,6 +30,7 @@ from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_
                                                  CAMERA_ZONE, FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN,
                                                  Bump, Camera, KoreaMapDB, Link)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, PhoneItem
+from openpilot.sunnypilot.mapd.korea.tesla import Trip
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (CAMERA_RECENT_MAX, KoreaMapData, camera_options,
                                                                     camera_page, kst_clock, parse_camera_recent, phone_camera)
 from openpilot.sunnypilot.navd.helpers import Coordinate
@@ -54,6 +55,7 @@ def make_data(link=None, camera=None, external=None):
   data._failed_mtimes = ()
   data.external = external
   data.route_source = None
+  data.tesla = None
   data.params = StubMemParams()
   data.params.values["KoreaRouteCurveEnabled"] = True  # on by default, like params_keys.h
   data._last_written_destination = None
@@ -183,6 +185,20 @@ class TestPublishedValues(unittest.TestCase):
     self.assertEqual(data.get_current_road_name(), "시장길")
 
 
+class StubTesla:
+  """TeslaDestinationSource stand-in: records want() and guides to `guiding`."""
+
+  def __init__(self, guiding=None):
+    self.wanted = []
+    self.guiding = guiding
+
+  def want(self, trip):
+    self.wanted.append(trip)
+
+  def guides_to(self, point):
+    return self.guiding is not None and tuple(point) == self.guiding
+
+
 class TestUpdateDestination(unittest.TestCase):
   """update_destination() is the only link between the socket/athenad and the route thread:
   nothing downstream of NavDestination ever runs if this method gets a branch wrong. Its
@@ -217,14 +233,14 @@ class TestUpdateDestination(unittest.TestCase):
     self.assertIsNone(data._last_written_destination)
 
   def test_a_new_destination_is_written_in_athenads_json_shape(self):
-    nav = ExternalNav(destination=(37.5665, 126.9780), road_name="테헤란로",
+    nav = ExternalNav(destination=(37.5665, 126.9780), destination_name="서울시청", road_name="테헤란로",
                       raw={"destination_lat": 37.5665, "destination_lon": 126.9780})
     data = make_data(external=StubExternal(nav))
 
     data.update_destination()
 
     self.assertEqual(json.loads(data.params.get("NavDestination")), {
-      "latitude": 37.5665, "longitude": 126.9780, "place_name": "테헤란로", "place_details": None,
+      "latitude": 37.5665, "longitude": 126.9780, "place_name": "서울시청", "place_details": None,
     })
     self.assertEqual(data._last_written_destination, (37.5665, 126.9780))
 
@@ -240,6 +256,47 @@ class TestUpdateDestination(unittest.TestCase):
     data.update_destination()  # same nav object, next tick
 
     self.assertEqual(data.params.put_calls, 1, "a repeated destination must not rewrite the param")
+
+  def test_guidance_ended_on_the_phone_keeps_a_destination_it_did_not_write(self):
+    """The car's, or athenad's: not the phone's to end. The app repeats 0/0 for a while after its guidance ends."""
+    nav = ExternalNav(destination=None, raw={"destination_lat": 0, "destination_lon": 0})
+    data = make_data(external=StubExternal(nav))
+    cars = json.dumps({"latitude": 37.4979, "longitude": 127.0276, "place_name": "강남역", "place_details": None})
+    data.params.put("NavDestination", cars)
+    data._last_written_destination = (37.5665, 126.9780)  # what the phone guided to before the car changed it
+
+    data.update_destination()
+
+    self.assertEqual(data.params.get("NavDestination"), cars)
+
+  def test_the_phones_trip_goes_to_the_car(self):
+    nav = ExternalNav(destination=(37.5665, 126.9780), destination_name="서울시청", vias=((37.5547, 126.9707, "서울역"),),
+                      raw={"destination_lat": 37.5665, "destination_lon": 126.9780})
+    data = make_data(external=StubExternal(nav))
+    data.tesla = StubTesla()
+
+    data.update_destination()
+
+    self.assertEqual(data.tesla.wanted, [Trip((37.5665, 126.9780, "서울시청"), ((37.5547, 126.9707, "서울역"),))])
+
+  def test_guidance_ended_or_a_quiet_phone_guides_the_car_nowhere(self):
+    for nav in (ExternalNav(raw={"destination_lat": 0, "destination_lon": 0}), None):
+      with self.subTest(nav=nav):
+        data = make_data(external=StubExternal(nav))
+        data.tesla = StubTesla()
+        data.update_destination()
+        self.assertEqual(data.tesla.wanted, [None])
+
+  def test_the_cars_own_destination_is_not_written_again_as_the_phones(self):
+    """The phone took it from the car: tesla.py wrote it, and clears it when the car ends it."""
+    nav = ExternalNav(destination=(37.4979, 127.0276), raw={"destination_lat": 37.4979, "destination_lon": 127.0276})
+    data = make_data(external=StubExternal(nav))
+    data.tesla = StubTesla(guiding=(37.4979, 127.0276))
+
+    data.update_destination()
+
+    self.assertEqual(data.params.put_calls, 0)
+    self.assertIsNone(data._last_written_destination)
 
   def test_a_destination_cleared_by_someone_else_is_written_again(self):
     """Regression test for Fix 3: NavDestination is cleared by CLEAR_ON_OFFROAD_TRANSITION

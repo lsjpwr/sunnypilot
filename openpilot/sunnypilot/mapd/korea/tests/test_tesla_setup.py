@@ -19,9 +19,10 @@ HOST = "comma@10.0.0.2"
 
 
 class TestAuthorizeUrl(unittest.TestCase):
-  def test_asks_for_every_read_only_scope_and_nothing_else(self):
+  def test_asks_for_the_read_scopes_and_vehicle_commands_and_nothing_else(self):
+    """vehicle_cmds sends the car the phone app's destination; charging and energy stay out."""
     query = urllib.parse.parse_qs(urllib.parse.urlparse(authorize_url("CLIENT", "https://me.github.io/callback", "S")).query)
-    self.assertEqual(query["scope"], ["openid offline_access vehicle_device_data vehicle_location"])
+    self.assertEqual(query["scope"], ["openid offline_access vehicle_device_data vehicle_location vehicle_cmds"])
     self.assertEqual(query["require_requested_scopes"], ["true"])
     self.assertEqual(query["response_type"], ["code"])
     self.assertEqual(query["client_id"], ["CLIENT"])

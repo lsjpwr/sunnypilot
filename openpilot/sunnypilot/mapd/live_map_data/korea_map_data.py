@@ -45,6 +45,7 @@ from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_MAX_DISTANCE_M, 
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource, PhoneItem
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
+from openpilot.sunnypilot.mapd.korea.tesla import TeslaDestinationSource, Trip, holds_destination
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
@@ -194,7 +195,7 @@ class Section:
 class KoreaMapData(BaseMapData):
   def __init__(self, cameras_path: str = KOREA_CAMERAS_PATH, links_path: str = KOREA_LINKS_PATH,
                bumps_path: str = KOREA_BUMPS_PATH, external: ExternalNavSource | None = None,
-               route_source: RouteSource | None = None):
+               route_source: RouteSource | None = None, tesla: TeslaDestinationSource | None = None):
     super().__init__()
     self.cameras_path = cameras_path
     self.links_path = links_path
@@ -204,6 +205,7 @@ class KoreaMapData(BaseMapData):
     self._failed_mtimes: tuple[float | None, ...] = ()
     self.external = external
     self.route_source = route_source
+    self.tesla = tesla  # gets the phone app's trip, to give the car
     # Last destination this object wrote to NavDestination, or None. An optimisation only --
     # so a phone that repeats the same destination every datagram does not touch /data/params
     # (flash) once a second forever -- not the source of truth. The param is: it is cleared by
@@ -342,28 +344,41 @@ class KoreaMapData(BaseMapData):
     destination keys" and for "the phone sent 0,0 (or a point outside Korea)", and those need
     opposite responses. So key presence in nav.raw -- not the parsed value -- is what tells a
     repeated no-op apart from the phone saying guidance ended.
+
+    The phone app's whole trip also goes to self.tesla, which gives it to the car.
     """
     nav = self.nav()
     if nav is None:
+      if self.tesla is not None:
+        self.tesla.want(None)  # a quiet phone guides the car nowhere
       return
     if "destination_lat" not in nav.raw and "destination_lon" not in nav.raw:
       # Nothing about the destination in this datagram: leave the param exactly as it is,
       # whether that means untouched or already cleared.
       return
+    if self.tesla is not None:
+      self.tesla.want(Trip((*nav.destination, nav.destination_name), nav.vias) if nav.destination else None)
     if nav.destination is None:
       # Keys were present but parsed to None: 0/0 or a coordinate outside Korea, i.e. the
-      # phone's explicit end-of-guidance signal, not "nothing new this tick". Clearing the
+      # phone's explicit end-of-guidance signal, not "nothing new this tick". Only what this
+      # object wrote goes: the car's destination, or athenad's, is not the phone's to end --
+      # and the phone app repeats 0/0 for a while after its guidance ends. Clearing the
       # remembered value too means a later re-send of the same destination writes again.
-      if self.params.get("NavDestination"):
+      if self._last_written_destination is not None and holds_destination(self.params.get("NavDestination"),
+                                                                          self._last_written_destination):
         self.params.remove("NavDestination")
       self._last_written_destination = None
+    elif self.tesla is not None and self.tesla.guides_to(nav.destination):
+      # The phone took the car's destination, which tesla.py wrote already -- and clears when
+      # the car ends it. The phone ending it later leaves the car's.
+      pass
     elif nav.destination != self._last_written_destination or not self.params.get("NavDestination"):
       # The "or" covers a destination unchanged from this object's point of view but cleared
       # by someone else since -- the manager on an offroad transition, or RouteSource on
       # arrival -- which otherwise left the param empty for the rest of that drive (Fix 3).
       self.params.put("NavDestination", json.dumps({
         "latitude": nav.destination[0], "longitude": nav.destination[1],
-        "place_name": nav.road_name or None, "place_details": None,
+        "place_name": nav.destination_name or None, "place_details": None,
       }))
       self._last_written_destination = nav.destination
 

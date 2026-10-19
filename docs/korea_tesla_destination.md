@@ -1,13 +1,13 @@
 # 테슬라 내비 목적지 연결 (1회 설정)
 
-폰에서 NaviToTesla로 테슬라에 보낸 목적지를 콤마 기기가 테슬라 서버에서 읽어 온다. 한 번 설정하면 운전할 때마다 할 일은 없다. 설계: `docs/superpowers/specs/2026-09-25-korea-tesla-destination-design.md`.
+테슬라 내비의 목적지를 콤마 기기가 테슬라 서버에서 읽어 온다. 폰 앱 KNaviLink(sp-knavlink-tesla)로 안내를 시작하면 그 목적지를 기기가 차에 보내고, 차에서 바꾼 목적지는 폰 앱이 따라간다. 한 번 설정하면 운전할 때마다 할 일은 없다. 설계: `docs/superpowers/specs/2026-09-25-korea-tesla-destination-design.md`.
 
 **방법은 두 가지다.** 둘 다 설정돼 있으면 기기는 Fleet을 쓴다.
 
 | | Fleet (추천) | owner (비공식) |
 |---|---|---|
 | 설정 | PC에서 아래 1~4단계, 약 1시간 | PC에서 토큰 발급, 폰 Termius로 명령 두 줄, 약 10분 (아래 "owner 모드" 절) |
-| 토큰 권한 | 읽기 전용. 새도 차를 움직일 수 없다 | 테슬라 앱 로그인과 같은 계정 전체 권한 |
+| 토큰 권한 | 차량 정보·위치 읽기와 차량 명령. 기기가 보내는 명령은 목적지 하나뿐이다 | 테슬라 앱 로그인과 같은 계정 전체 권한 |
 | 요금 | 월 $10 공제 안에서 0원(결제 정보 등록 필요) | 없음 |
 | 수명 | 테슬라 공식 API | 테슬라가 2026년에 단계적으로 닫는 중이라 언제 막힐지 모른다 |
 
@@ -23,7 +23,7 @@
 
 ## 1. 공개키 만들기 (2분)
 
-테슬라는 앱을 등록할 때, 도메인에 올린 공개키를 확인한다. 이 기능은 차에 명령하지 않아 개인키를 쓰지 않지만, 버리지 말고 저장소 밖에 보관한다.
+테슬라는 앱을 등록할 때, 도메인에 올린 공개키를 확인한다. 목적지 명령은 서명 없이 보내므로 개인키를 쓰지 않지만, 버리지 말고 저장소 밖에 보관한다.
 
 ```bash
 openssl ecparam -name prime256v1 -genkey -noout -out tesla-private.pem
@@ -40,11 +40,11 @@ openssl ec -in tesla-private.pem -pubout -out com.tesla.3p.public-key.pem
 ## 3. 테슬라 개발자 앱 등록 (20분)
 
 1. https://developer.tesla.com 에 테슬라 계정으로 로그인하고 앱을 새로 만든다.
-2. 이름과 설명은 자유롭게 적는다. 용도에는 "개인 차량의 내비 목적지 읽기"라고 적는다.
+2. 이름과 설명은 자유롭게 적는다. 용도에는 "개인 차량의 내비 목적지 읽기와 보내기"라고 적는다.
 3. OAuth 방식은 "Authorization Code and Machine-to-Machine"을 고른다.
 4. Allowed Origin: `https://<아이디>.github.io`
 5. Allowed Redirect URI: `https://<아이디>.github.io/callback`
-6. 권한(Scopes)은 **Vehicle Information**과 **Vehicle Location** 두 개만 고른다. 명령 권한은 고르지 않는다.
+6. 권한(Scopes)은 **Vehicle Information**, **Vehicle Location**, **Vehicle Commands** 세 개를 고른다. 충전·에너지 권한은 고르지 않는다.
 7. 결제 정보를 요구하면 등록한다. 월 $10 공제 안에서는 청구액이 0원이다(아래 비용 절).
 8. 만들어진 앱의 **Client ID**와 **Client Secret**을 확인한다. 어디에도 저장하거나 붙여 두지 않는다. 4단계에서 한 번 입력하면 끝이다.
 
@@ -65,6 +65,16 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 5. `Connection OK`와 `Saved to the device`가 나오면 끝이다.
 
 스크립트는 토큰을 화면에 출력하지 않고, PC에 저장하지도 않는다.
+
+### 이미 설정한 경우: 차량 명령 권한 추가 (2026-10)
+
+예전 설정은 읽기 권한만 받았다. 폰 앱의 목적지를 차에 보내려면 한 번 더 한다.
+
+1. developer.tesla.com의 앱 설정에서 **Vehicle Commands** 권한을 추가한다.
+2. 4단계를 다시 실행한다. 권한은 로그인할 때 토큰에 붙으므로, 앱에 권한만 추가해서는 기기의 토큰이 바뀌지 않는다.
+3. 동의 화면에 차량 명령 항목이 있는지 보고 허용한다.
+
+권한 없이도 목적지 읽기와 폰 앱이 차를 따라가는 기능은 그대로 동작한다. 차로 보내기만 안 된다.
 
 ## owner 모드 (개발자 등록 없이, 비공식)
 
@@ -104,12 +114,13 @@ rm /data/params/d/KoreaTeslaOwnerRefreshToken
    ```bash
    ssh comma@<기기IP> cat /data/params/d/NavDestination
    ```
-3. 테슬라에서 안내를 취소하면 1분 안에 비워진다.
-4. 첫 주행이 끝나면 토큰이 새것으로 바뀌었는지 본다. 설정한 시각보다 늦은 시각이 나오면 토큰 교체가 정상이다(owner 모드면 파일 이름이 `KoreaTeslaOwnerRefreshToken`이다):
+3. 테슬라에서 안내를 취소하면 2분 안에 비워진다(빈 응답 두 번 연속일 때만 취소로 본다).
+4. KNaviLink에서 안내를 시작하면 1분 안에 차 화면에 같은 목적지가 뜬다. 처음 한 번은 차 화면의 위치가 폰과 같은지 본다.
+5. 첫 주행이 끝나면 토큰이 새것으로 바뀌었는지 본다. 설정한 시각보다 늦은 시각이 나오면 토큰 교체가 정상이다(owner 모드면 파일 이름이 `KoreaTeslaOwnerRefreshToken`이다):
    ```bash
    ssh comma@<기기IP> stat -c %y /data/params/d/KoreaTeslaRefreshToken
    ```
-5. owner 모드라면 NaviToTesla로 목적지를 보낸 뒤에도 NaviToTesla가 계속 동작하는지 본다. 끊기면 두 곳이 같은 토큰을 쓰고 있는 것이다.
+6. owner 모드라면 NaviToTesla로 목적지를 보낸 뒤에도 NaviToTesla가 계속 동작하는지 본다. 끊기면 두 곳이 같은 토큰을 쓰고 있는 것이다.
 
 ## 문제 해결
 
