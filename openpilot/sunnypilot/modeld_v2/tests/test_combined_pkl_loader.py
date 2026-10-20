@@ -212,7 +212,7 @@ class TestBundleOverrides(OpenpilotTestCase):
     arch = ARCHETYPES[archetype_name]
     state = model_state_factory(arch)
     assert state.LAT_SMOOTH_SECONDS == 0.1
-    assert state.LONG_SMOOTH_SECONDS == 0.3
+    assert state.LONG_SMOOTH_SECONDS == 0.5  # the bundle's .3, raised to LONG_SMOOTH_MIN_SECONDS
 
   @parameterized.expand(ARCHETYPE_NAMES, names=["archetype_name"])
   def test_generation_from_bundle(self, archetype_name, model_state_factory):

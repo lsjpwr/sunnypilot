@@ -49,6 +49,10 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 from openpilot.sunnypilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld_tinygrad"
+# s: the least smoothing of the model's desired accel; a bundle's 'long' under it is raised to it. At Macrostiff's .3 the
+# e2e accel crossed between gas and brake 12.8 times a minute on the Tesla, against 6.3 under ACC (2026-09-30 to 10-18).
+# long_action_t grows by the smoothing too, so the slowdowns the model plans still come on time.
+LONG_SMOOTH_MIN_SECONDS = 0.5
 
 
 def _pkl_exists(path):
@@ -96,7 +100,7 @@ class ModelState(ModelStateBase):
     overrides = {override.key: override.value for override in model_bundle.overrides} if model_bundle else {}
 
     self.LAT_SMOOTH_SECONDS = float(overrides.get('lat', ".0"))
-    self.LONG_SMOOTH_SECONDS = float(overrides.get('long', ".0"))
+    self.LONG_SMOOTH_SECONDS = max(float(overrides.get('long', ".0")), LONG_SMOOTH_MIN_SECONDS)
     self.MIN_LAT_CONTROL_SPEED = 0.3
     self.PLANPLUS_CONTROL: float = 1.0
     self.chestnut = chestnut
