@@ -732,7 +732,10 @@ class KoreaMapData(BaseMapData):
     self.mem_params.put("MapTargetVelocities", json.dumps(
       [{"latitude": lat, "longitude": lon, "velocity": velocity, **extra} for lat, lon, velocity, extra in points]))
     if self.last_position is not None:
-      self.mem_params.put("LastGPSPosition", json.dumps(self.last_position.as_dict()))
+      position = self.last_position.as_dict()
+      if self.last_bearing is not None:
+        position["bearing"] = self.last_bearing  # as osm_map_data writes it: SCC-Map carries the car on along it
+      self.mem_params.put("LastGPSPosition", json.dumps(position))
 
     # SpeedLimitAssist keeps the section's average at its limit; 0 is no section. The start tells a
     # section from the next one when both have the same limit.

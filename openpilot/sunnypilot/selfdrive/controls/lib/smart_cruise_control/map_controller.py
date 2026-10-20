@@ -36,6 +36,9 @@ SLOWDOWN_DECEL_MAX = 1.2
 # the decel is then what takes that speed down to the camera's limit from there, never firmer than
 # MapSlowdownDecel and never softer than this.
 RAMP_DECEL_MIN = 0.05
+# s: how long the car is carried on from one LastGPSPosition (_carried). mapd writes it once a second (p99 1.03 s,
+# max 1.23 s on 2026-10-17/18); held longer than this, mapd has stalled and the distances hold, as before.
+POSITION_CARRY_MAX_S = 1.5
 
 
 def velocities_from_param(param: str, params: Params):
@@ -93,6 +96,10 @@ class SmartCruiseControlMap:
     self._camera_key: tuple[float, float] | None = None
     self._camera_v = 0.
     self._camera_started = False
+    # LastGPSPosition as last read, and how far and for how long the car has gone on from it since (_carried)
+    self._position_key: tuple[float, float] | None = None
+    self._carried_m = 0.
+    self._carried_s = 0.
 
     self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
     self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
@@ -138,10 +145,31 @@ class SmartCruiseControlMap:
       self.enabled = self._get_enabled()
       self.slowdown_decel = self._read_slowdown_decel()
 
+  def _carried(self, lat: float, lon: float, bearing: float | None) -> tuple[float, float]:
+    """How far north and east the car has gone since mapd wrote this position, along the bearing written with it.
+
+    mapd writes the position once a second. Distances read from it alone fell in 1 s steps, and the planner's 1 s
+    speed response turned each step into a brake and a release: through SCC-Map slowdowns the car's accel swung
+    every second, by up to about 0.5 m/s^2 (2026-10-17/18). Carried on at the car's speed, the distances shrink
+    every tick."""
+    if (lat, lon) != self._position_key:
+      self._position_key, self._carried_m, self._carried_s = (lat, lon), 0., 0.
+    elif self._carried_s < POSITION_CARRY_MAX_S:
+      self._carried_m += self.v_ego * DT_MDL
+      self._carried_s += DT_MDL
+    if bearing is None:
+      return 0., 0.  # no heading written with it: the distances hold until the next one, as before
+    return self._carried_m * math.cos(math.radians(bearing)), self._carried_m * math.sin(math.radians(bearing))
+
   def update_calculations(self) -> None:
-    self.last_position = coordinate_from_param("LastGPSPosition", self.mem_params) or Coordinate(0.0, 0.0)
+    position = json.loads(self.mem_params.get("LastGPSPosition") or "{}")
+    if "latitude" in position and "longitude" in position:
+      self.last_position = Coordinate(position["latitude"], position["longitude"])
+    else:
+      self.last_position = Coordinate(0.0, 0.0)
     lat = self.last_position.latitude
     lon = self.last_position.longitude
+    north_m, east_m = self._carried(lat, lon, position.get("bearing"))
 
     self.target_velocities = velocities_from_param("MapTargetVelocities", self.mem_params) or []
 
@@ -158,6 +186,9 @@ class SmartCruiseControlMap:
       tlat = target_velocity["latitude"]
       tlon = target_velocity["longitude"]
       d = distance_to_point(lat * TO_RADIANS, lon * TO_RADIANS, tlat * TO_RADIANS, tlon * TO_RADIANS)
+      if d > 0.:  # less the way the car has come towards the point since that position; one at the car stays due
+        towards_m = ((tlat - lat) * north_m + (tlon - lon) * math.cos(lat * TO_RADIANS) * east_m) * TO_RADIANS * R / d
+        d = max(d - towards_m, 0.)
       distances.append(d)
       if d < min_dist:
         min_dist = d

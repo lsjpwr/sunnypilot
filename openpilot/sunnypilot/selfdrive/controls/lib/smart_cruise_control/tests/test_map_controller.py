@@ -18,7 +18,8 @@ from openpilot.sunnypilot.mapd import MapSource
 from openpilot.sunnypilot.mapd.korea.db import BUMP_MAX_DISTANCE_M, CAMERA_KIND_PARAMS, CAMERA_MAX_DISTANCE_M
 from openpilot.sunnypilot.mapd.korea.route import CURVE_HORIZON_M, MIN_V_MS
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import BUMP_ARCH_SPEED_RANGE, BUMP_TRAPEZOID_SPEED_RANGE, CAMERA_SLOWDOWN_RANGE
-from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import R, SLOWDOWN_DECEL_MIN, TARGET_OFFSET, SmartCruiseControlMap
+from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import POSITION_CARRY_MAX_S, R, SLOWDOWN_DECEL_MIN, \
+                                                                                     TARGET_OFFSET, SmartCruiseControlMap
 from openpilot.common.test import OpenpilotTestCase
 
 MapState = VisionState = custom.LongitudinalPlanSP.SmartCruiseControl.MapState
@@ -161,15 +162,19 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
       self.scc_m.update(True, False, 0., 0., 0.)
     assert self.scc_m.state == VisionState.enabled
 
-  def put_point(self, distance_m, velocity, start_s=None, margin_m=150., car_m=0.):
+  def put_point(self, distance_m, velocity, start_s=None, margin_m=150., car_m=0., bearing=None):
     """One point (camera, bump or curve) distance_m ahead of a car car_m east of 0, 0. A camera's says when its
-    slowdown starts and how far short of the camera it sits; the same car_m + distance_m is the same camera."""
+    slowdown starts and how far short of the camera it sits; the same car_m + distance_m is the same camera. A
+    bearing is the car's heading, written with its position as mapd does (90: east, at the point)."""
     def lon(m):
       return (m / R) * (180.0 / math.pi)
     point = {"latitude": 0.0, "longitude": lon(car_m + distance_m), "velocity": velocity}
     if start_s is not None:
       point.update(start_s=start_s, margin_m=margin_m)
-    self.mem_params.put("LastGPSPosition", json.dumps({"latitude": 0.0, "longitude": lon(car_m)}), block=True)
+    position = {"latitude": 0.0, "longitude": lon(car_m)}
+    if bearing is not None:
+      position["bearing"] = bearing
+    self.mem_params.put("LastGPSPosition", json.dumps(position), block=True)
     self.mem_params.put("MapTargetVelocities", json.dumps([point]), block=True)
 
   def run_at(self, v_ego_kph, v_cruise_kph):
@@ -313,5 +318,31 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
   def test_a_nan_decel_falls_to_the_firmest(self):
     self.params.put("MapSlowdownDecel", float("nan"), block=True)
     assert SmartCruiseControlMap().slowdown_decel == 1.2
+
+  def test_the_target_comes_down_every_tick_between_mapds_positions(self):
+    # mapd writes the position once a second. Carried on along the bearing written with it, the target falls every
+    # tick, not in the 1 s steps the planner braked and released for (2026-10-17/18), and the next position picks
+    # up where the carry left off
+    tick_m = kph(100) * DT_MDL
+    self.put_point(300., kph(80), bearing=90.)
+    self.run_at(100, 125)  # the first tick reads the position, the second carries the car on one tick
+    for k in range(2, int(1. / DT_MDL) + 1):
+      self.scc_m.update(True, False, kph(100), 0., kph(125))
+      self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300. - k * tick_m, kph(80), 0.6), places=3)
+    self.put_point(300. - 21 * tick_m, kph(80), car_m=21 * tick_m, bearing=90.)
+    self.scc_m.update(True, False, kph(100), 0., kph(125))
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300. - 21 * tick_m, kph(80), 0.6), places=3)
+
+  def test_a_point_off_the_heading_closes_in_by_the_cars_way_towards_it(self):
+    # heading 60 deg off the point: a tick on, the car is half a tick's travel nearer
+    self.put_point(300., kph(80), bearing=30.)
+    self.run_at(100, 125)
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300. - 0.5 * kph(100) * DT_MDL, kph(80), 0.6), places=3)
+
+  def test_a_position_mapd_stopped_writing_is_carried_no_further(self):
+    self.put_point(300., kph(80), bearing=90.)
+    for _ in range(int(3. / DT_MDL)):
+      self.scc_m.update(True, False, kph(100), 0., kph(125))
+    self.assertAlmostEqual(self.scc_m.output_v_target, ramp(300. - POSITION_CARRY_MAX_S * kph(100), kph(80), 0.6), places=3)
 
   # TODO-SP: mock data from modelV2 to test other states

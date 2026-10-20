@@ -122,6 +122,7 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
   data.camera_pass_hold = 60
   data._pass_hold = None
   data.last_position = position if position is not None else Coordinate(37.5, 127.0)
+  data.last_bearing = 45.
   data.localizer_valid = localizer_valid
   data.curve_points = []
   data.section = None
@@ -462,6 +463,7 @@ class BumpTargetTestCase(unittest.TestCase):
     position = json.loads(data.mem_params.values["LastGPSPosition"])
     self.assertAlmostEqual(position["latitude"], 37.5)
     self.assertAlmostEqual(position["longitude"], 127.0)
+    self.assertAlmostEqual(position["bearing"], 45.)  # SCC-Map carries the car on along it between writes
 
   def test_trapezoid_bumps_use_the_gentler_target(self):
     data = make_bump_data(bump=Bump(lat=37.5010, lon=127.0010, kind=BUMP_TRAPEZOID, distance_m=150.))
