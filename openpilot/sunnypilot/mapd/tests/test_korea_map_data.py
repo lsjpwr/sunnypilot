@@ -822,8 +822,8 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     data.update_location()
     self.assertEqual(seen, [((37.5000, 127.0223),)] * 2)
 
-  def test_the_route_spans_reach_both_next_camera_calls(self):
-    """The car ~1.1 km off its route still makes both lookups, and both must know the route's levels."""
+  def test_off_route_lookups_ignore_the_stored_routes_levels(self):
+    """A stored old line cannot filter cameras on the road we are now driving."""
     data = make_data()
     data.sm = SingleLocationSM(valid_llk())
     data.last_position = Coordinate(37.5000, 127.0200)
@@ -842,7 +842,8 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     )
 
     data.update_location()
-    self.assertEqual(seen, [spans] * 2)
+    self.assertEqual(seen, [[], []])
+    self.assertEqual(data.route_source.latest(), (route, spans))
 
 
 class TestReadCameraParams(OpenpilotTestCase):
@@ -1259,6 +1260,13 @@ class TestSideRoadCamera(unittest.TestCase):
     left_behind = [(37.5009, 127.0200), (37.5009, 127.0320)]
     data = self.publish_with([(37.5009, 127.0228, 30, 0, CAMERA_ZONE)], route=left_behind)
     self.assertEqual(json.loads(data.mem_params.values["MapTargetVelocities"]), [])
+
+  def test_off_the_route_a_camera_on_the_current_road_still_brakes(self):
+    left_behind = [(37.5009, 127.0200), (37.5009, 127.0320)]
+    data = self.publish_with([(37.5000, 127.0228, 30, 0, CAMERA_ZONE)], route=left_behind)
+    self.assertEqual([p["velocity"] for p in json.loads(data.mem_params.values["MapTargetVelocities"])],
+                     [30 * CV.KPH_TO_MS])
+    self.assertEqual(data.route_source.latest(), (left_behind, []))
 
 
 class TestCurvesOnlyOnTheRoute(unittest.TestCase):

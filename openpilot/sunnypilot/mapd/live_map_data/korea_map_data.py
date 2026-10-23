@@ -400,9 +400,13 @@ class KoreaMapData(BaseMapData):
     # still being copied down or has just been dropped after a corrupt read -- neither is a
     # reason to feed the lookups (and next_camera/next_bump, gated on self.db below) a route
     # that stopped following the driver.
-    self.route, self.grade_separated = self.route_source.latest() if self.route_source is not None else ([], [])
     if self.route_source is not None and self.localizer_valid:
       self.route_source.set_position(self.last_position.latitude, self.last_position.longitude)
+    self.route, self.grade_separated = self.route_source.latest() if self.route_source is not None else ([], [])
+    # Keep the stored line, but never let an old road filter the road we are now driving.
+    if self.last_position is not None and distance_to_route(self.route, self.last_position.latitude,
+                                                          self.last_position.longitude) > ROUTE_CORRIDOR_M:
+      self.route, self.grade_separated = [], []
 
     self.open_db()
     if self.db is None or self.last_position is None:

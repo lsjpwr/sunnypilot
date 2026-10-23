@@ -552,7 +552,7 @@ class TestKoreaSectionsOnCruise(OpenpilotTestCase):
     assert _section_keys(schema, "cruise", "korea_speed_bumps") == [
       "KoreaSpeedBumpEnabled", "KoreaSpeedBumpArchSpeed", "KoreaSpeedBumpTrapezoidSpeed"]
     assert _section_keys(schema, "cruise", "korea_route_map_data") == [
-      "KoreaExternalNavEnabled", "KoreaRouteCurveEnabled", "KoreaRouteApiKey", "KoreaMapAutoDownload"]
+      "KoreaExternalNavEnabled", "KoreaRouteCurveEnabled", "KoreaMapAutoDownload"]
 
   def test_the_speed_limit_sub_panel_keeps_only_speed_limit_settings(self, schema):
     section = _find_section(schema, "cruise", "speed_limits")
@@ -601,7 +601,7 @@ class TestKoreaApiKeyRemote(OpenpilotTestCase):
     """Both device UIs gate the keys on MapDataSource == korea (speed_limit_settings.py, mici
     toggles.py). The korea page carried that gate on its section; on cruise each item carries
     its own, like every other Korea item."""
-    for key in ("KoreaMapApiKey", "KoreaRouteApiKey"):
+    for key in ("KoreaMapApiKey",):
       item = _find_item(schema, key)
       assert item is not None, f"{key} missing from settings_ui schema"
       assert _references_param_equals(item.get("enablement"), "MapDataSource", 1), \

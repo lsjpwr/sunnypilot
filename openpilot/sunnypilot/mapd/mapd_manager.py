@@ -193,13 +193,13 @@ def korea_main() -> None:
   refresher = None
   downloader = None
   live_map_sp = None
-  route_source = None
+  route_source = RouteSource() if external_nav else None
   tesla_source = None
 
   try:
     if external_nav:
       try:
-        external = ExternalNavSource()
+        external = ExternalNavSource(route_source=route_source)
         external.start()
         cloudlog.info("mapd: external nav listening on udp/%d", external.port)
       except OSError:
@@ -209,16 +209,8 @@ def korea_main() -> None:
         external = None
         cloudlog.exception("mapd: external nav failed to start, continuing without it")
 
-    # The route feature follows KoreaExternalNavEnabled, not external's bind success: a
-    # destination can still arrive through athenad's setNavDestination RPC even when this
-    # process's own UDP socket lost the port race, and a separate toggle would only make a
-    # trap where a user has to enable both.
     if external_nav:
-      route_source = RouteSource(save_dir=os.path.join(KOREA_MAP_DIR, "routes"))
-      route_source.start()
-      # It feeds the route thread above, so it follows the same toggle. Until tesla_setup has
-      # written its credentials it asks Tesla nothing.
-      tesla_source = TeslaDestinationSource()
+      tesla_source = TeslaDestinationSource(phone_connected=lambda: external is not None and external.latest() is not None)
       tesla_source.start()
       if external is not None:
         external.car = tesla_source.car  # the answers tell the phone app what the car guides to
@@ -250,6 +242,8 @@ def korea_main() -> None:
         set_offroad_alert("Offroad_KoreaMapMissing", bool(absent), f"Missing {', '.join(absent)}")
         db_missing = absent
 
+      if route_source is not None:
+        route_source.set_started(params.get_bool("IsOnroad"))
       live_map_sp.tick()
       rk.keep_time()
   finally:
@@ -263,8 +257,6 @@ def korea_main() -> None:
     set_offroad_alert("Offroad_KoreaMapMissing", False, "")
     if external is not None:
       external.stop()
-    if route_source is not None:
-      route_source.stop()
     if tesla_source is not None:
       tesla_source.stop()
     if refresher is not None:

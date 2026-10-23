@@ -174,13 +174,13 @@ class TestGetParams(OpenpilotTestCase):
     Tesla account (korea/tesla.py)."""
     Params().put("KoreaTeslaRefreshToken", "REFRESH-1", block=True)
     Params().put("KoreaTeslaOwnerRefreshToken", "OWNER-1", block=True)
-    Params().put("KoreaRouteApiKey", "TMAP", block=True)
+    Params().put_bool("KoreaExternalNavEnabled", True)
 
-    response = sunnylinkd.getParams(["KoreaTeslaRefreshToken", "KoreaTeslaOwnerRefreshToken", "KoreaRouteApiKey"])
+    response = sunnylinkd.getParams(["KoreaTeslaRefreshToken", "KoreaTeslaOwnerRefreshToken", "KoreaExternalNavEnabled"])
 
     self.assertNotIn("KoreaTeslaRefreshToken", response)
     self.assertNotIn("KoreaTeslaOwnerRefreshToken", response)
-    self.assertEqual([p["key"] for p in json.loads(response["params"])], ["KoreaRouteApiKey"])
+    self.assertEqual([p["key"] for p in json.loads(response["params"])], ["KoreaExternalNavEnabled"])
 
   def test_github_log_token_never_leaves_the_device(self):
     """It can write to the repo that holds every drive's GPS track (sunnypilot/system/github_uploader.py)."""

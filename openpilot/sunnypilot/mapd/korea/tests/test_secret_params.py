@@ -11,11 +11,14 @@ import unittest
 PARAMS_KEYS_H = pathlib.Path(__file__).resolve().parents[4] / "common" / "params_keys.h"
 # loggerd copies the value of every param without DONT_LOG into initData, the first record of
 # every boot log and qlog, and the uploaders send both off the device (system/loggerd/logger.cc).
-SECRETS = ("GithubLogToken", "KoreaMapApiKey", "KoreaRouteApiKey", "KoreaTeslaClientId", "KoreaTeslaOwnerRefreshToken",
+SECRETS = ("GithubLogToken", "KoreaMapApiKey", "KoreaTeslaClientId", "KoreaTeslaOwnerRefreshToken",
            "KoreaTeslaRefreshToken", "KoreaTeslaVin")
 
 
 class TestSecretParams(unittest.TestCase):
+  def test_the_comma_no_longer_has_a_route_api_key(self):
+    self.assertNotIn('"KoreaRouteApiKey"', PARAMS_KEYS_H.read_text(encoding="utf-8"))
+
   def test_keys_and_tokens_never_reach_a_log(self):
     text = PARAMS_KEYS_H.read_text(encoding="utf-8")
     for key in SECRETS:

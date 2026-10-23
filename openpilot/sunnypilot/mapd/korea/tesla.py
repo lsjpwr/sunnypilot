@@ -5,7 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
 tesla: reads the destination the car's own navigation is guiding to, through Tesla's
-servers, and hands it to RouteSource through NavDestination.
+servers while the phone is connected, and shares it with the phone through NavDestination.
 
 The other way too: the trip the phone app (sp-knavlink-tesla) guides, which reaches this
 module through KoreaMapData, is sent to the car, and what the car guides to goes back to
@@ -63,8 +63,7 @@ RATE_LIMIT_PAUSE_S = 300.
 # Five hours of driving at one request a minute. Tesla bills 500 data requests per $1 and
 # takes $10 a month off, so this guards against a runaway, not against normal use.
 DAILY_REQUEST_CAP = 300
-# Closer than this is the same destination. Rewriting one that only jittered would have
-# RouteSource drop its route and ask TMAP again (route.py:402).
+# Closer than this is the same destination, avoiding repeated writes for GPS jitter.
 SAME_DESTINATION_M = 50.
 FLEET, OWNER = "fleet", "owner"
 # Where each mode keeps its single-use refresh token.
@@ -245,15 +244,16 @@ class TeslaDestinationSource:
   """Background thread that copies the car's navigation destination into NavDestination, and
   gives the car the phone app's trip.
 
-  Same start/stop shape as RouteSource. step() makes every decision and gets the device
+  step() makes every decision and gets the device
   state as arguments, so the tests drive it with no device stack; _loop only feeds it.
   want() is called from KoreaMapData's loop and car() from the UDP thread: both swap one
   immutable value, which needs no lock.
   """
 
-  def __init__(self, opener=urllib.request.urlopen, clock=time.monotonic):
+  def __init__(self, opener=urllib.request.urlopen, clock=time.monotonic, phone_connected=lambda: False):
     self._opener = opener
     self._clock = clock
+    self.phone_connected = phone_connected
     self.budget = RequestBudget(cap=DAILY_REQUEST_CAP)
     self.commands = RequestBudget(cap=DAILY_COMMAND_CAP)
     self._access_token: str | None = None
@@ -311,7 +311,7 @@ class TeslaDestinationSource:
       # ponytail: join gives up after 2 s while a request can take 10 s, so a korea_main restart
       # in the middle of a token refresh can let two threads spend the same single-use token.
       # Normally that is one spurious alert healed on the next minute, unless Tesla revokes the
-      # whole token family on reuse. RouteSource shares the limit; join longer if it is ever seen.
+      # whole token family on reuse. Join longer if it is ever seen.
       self._thread.join(timeout=2.)
       self._thread = None
 
@@ -328,7 +328,7 @@ class TeslaDestinationSource:
       self._car, self._car_raw, self._empty_polls, self._polled = CAR_UNKNOWN, None, 0, False
       self._sent, self._sent_places, self._sent_at, self._send_tries, self._send_after = None, (), float("-inf"), 0, 0.
     self._was_started = started
-    if not started:
+    if not started or not self.phone_connected():
       return
     if now >= self._next_poll:
       self._next_poll = now + POLL_INTERVAL_S
@@ -336,9 +336,6 @@ class TeslaDestinationSource:
     self._send(now)
 
   def _poll(self, params, set_alert, now: float) -> None:
-    # Without the TMAP key a destination buys no route, only a bill.
-    if not params.get("KoreaRouteApiKey"):
-      return
     client_id, vin = params.get("KoreaTeslaClientId"), params.get("KoreaTeslaVin")
     fleet_token, owner_token = params.get("KoreaTeslaRefreshToken"), params.get("KoreaTeslaOwnerRefreshToken")
     # Fleet first when both are set: it is official, and its token is not the whole account. The
@@ -541,8 +538,7 @@ class TeslaDestinationSource:
       return
     lat, lon, name = destination
     if self._written is not None and haversine(lat, lon, *self._written) <= SAME_DESTINATION_M:
-      # Also the case after RouteSource cleared it on arrival: writing it back would only
-      # have RouteSource clear it again, every minute, for as long as the car is parked there.
+      # An unchanged car destination must not restore a trip the phone already ended.
       return
     params.put("NavDestination", json.dumps({"latitude": lat, "longitude": lon,
                                              "place_name": name or None, "place_details": None}))
@@ -550,7 +546,7 @@ class TeslaDestinationSource:
 
   def _loop(self) -> None:
     # imported here so the module stays importable without the device stack, which is what
-    # lets the tests run under a bare interpreter -- same as RouteSource._loop
+    # lets the tests run under a bare interpreter
     from openpilot.cereal import messaging
     from openpilot.common.params import Params
     from openpilot.selfdrive.selfdrived.alertmanager import set_offroad_alert

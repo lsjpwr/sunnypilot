@@ -83,9 +83,8 @@ class ScriptedOpener:
     return self.events.count(kind)
 
 
-CREDENTIALS = {"KoreaTeslaClientId": "CLIENT", "KoreaTeslaRefreshToken": "REFRESH-1", "KoreaTeslaVin": "VIN123",
-               "KoreaRouteApiKey": "TMAP"}
-OWNER_CREDENTIALS = {"KoreaTeslaOwnerRefreshToken": "OWNER-1", "KoreaTeslaVin": "VIN123", "KoreaRouteApiKey": "TMAP"}
+CREDENTIALS = {"KoreaTeslaClientId": "CLIENT", "KoreaTeslaRefreshToken": "REFRESH-1", "KoreaTeslaVin": "VIN123"}
+OWNER_CREDENTIALS = {"KoreaTeslaOwnerRefreshToken": "OWNER-1", "KoreaTeslaVin": "VIN123"}
 
 
 class FakeParams:
@@ -263,7 +262,7 @@ class SourceTestCase(unittest.TestCase):
 
   def source(self, answers=(), token=TOKENS, products=PRODUCTS, commands=()):
     self.opener = ScriptedOpener(answers, token, self.events, products, commands)
-    return TeslaDestinationSource(opener=self.opener, clock=self.clock)
+    return TeslaDestinationSource(opener=self.opener, clock=self.clock, phone_connected=lambda: True)
 
   def tick(self, source, started=True, seconds=0.):
     self.clock.now += seconds
@@ -288,12 +287,19 @@ class TestPollingConditions(SourceTestCase):
         self.tick(source)
         self.assertEqual(self.opener.requests, [])
 
-  def test_no_tmap_key_asks_nothing(self):
-    """Without it a destination buys no route, only a bill."""
-    self.params.values.pop("KoreaRouteApiKey")
+  def test_disconnected_phone_asks_nothing(self):
     source = self.source([car()])
+    source.phone_connected = lambda: False
     self.tick(source)
     self.assertEqual(self.opener.requests, [])
+
+  def test_reconnecting_phone_reads_without_a_route_key(self):
+    source = self.source([car()])
+    source.phone_connected = lambda: False
+    self.tick(source)
+    source.phone_connected = lambda: True
+    self.tick(source)
+    self.assertEqual(self.opener.count("vehicle_data"), 1)
 
   def test_asks_once_a_minute(self):
     source = self.source([car(), car()])

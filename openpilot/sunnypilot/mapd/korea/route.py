@@ -4,13 +4,8 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
-route: turns a destination into a polyline, and the polyline into slowdown targets.
-
-Only the geometry, and which parts of it are tunnels, overpasses or underpasses, is taken
-from the routing provider. Speed limits and cameras already live in the local sqlite
-databases, so the route's job is telling the lookups which way we go at a fork, and on
-which level. That keeps the parser thin enough to swap providers by editing parse_route
-and parse_grade_separated alone.
+route: receives the phone's geometry and turns it into slowdown targets.
+The REST parsers remain for offline replay. No routing requests run on the comma.
 
 Deliberately free of openpilot imports so it runs under a bare Python interpreter --
 same rule as db.py and geo.py.
@@ -24,7 +19,6 @@ import math
 import os
 import threading
 import time
-import urllib.request
 
 from openpilot.sunnypilot.mapd.korea.geo import closest_point_on_segment, haversine, M_PER_DEG_LAT, point_segment_distance
 
@@ -108,19 +102,13 @@ def parse_grade_separated(payload: dict) -> list[list[tuple[float, float]]]:
     return []
 
 
-ROUTE_URL = "https://apis.openapi.sk.com/tmap/routes?version=1&format=json"
-# Much shorter than camera_refresh's 30 s: that one runs offroad with all day to finish,
-# this one is a driver waiting for a reroute. A request that has not answered in 10 s has
-# already lost to the backoff that follows it.
-HTTP_TIMEOUT_S = 10.
-# A hard ceiling that does not depend on knowing the provider's free tier, which is not
-# published. Real use is a handful of requests per drive, so this only ever fires on a bug.
+# Shared with Tesla's read and command budgets; their callers supply their own caps.
 DAILY_REQUEST_CAP = 200
 _DAY_S = 24 * 3600
 
 
 class RequestBudget:
-  """A per-day request ceiling. Not thread-safe -- one route thread owns it."""
+  """A per-day request ceiling, owned by one caller thread."""
 
   def __init__(self, cap: int = DAILY_REQUEST_CAP, clock=time.time):  # noqa: TID251
     # Wall clock on purpose: 'per day' is a calendar notion, and a monotonic clock has an
@@ -142,61 +130,6 @@ class RequestBudget:
   def spend(self) -> None:
     self._roll()
     self._spent += 1
-
-
-def build_request(api_key: str, start: tuple[float, float],
-                  dest: tuple[float, float]) -> urllib.request.Request:
-  """The key goes in a header, never the URL: urllib puts the URL in exception messages
-  and those reach cloudlog. camera_refresh.py:105 makes the same promise."""
-  body = {
-    "startX": start[1], "startY": start[0],
-    "endX": dest[1], "endY": dest[0],
-    "reqCoordType": "WGS84GEO", "resCoordType": "WGS84GEO",
-    "searchOption": "0",
-  }
-  return urllib.request.Request(
-    ROUTE_URL,
-    data=json.dumps(body).encode(),
-    headers={"appKey": api_key, "Content-Type": "application/json"},
-    method="POST",
-  )
-
-
-def fetch_route(api_key: str, start: tuple[float, float], dest: tuple[float, float],
-                opener=urllib.request.urlopen, budget: RequestBudget | None = None
-                ) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
-  """One routing request: the polyline and its grade-separated spans (parse_grade_separated).
-  ([], []) for anything that does not produce a route we trust.
-
-  Every reason to not make the request is checked before the socket is touched, so a
-  missing key or a bad destination costs nothing.
-  """
-  if not api_key:
-    LOG.warning("route: no KoreaRouteApiKey set")
-    return [], []
-  if not in_korea(*start) or not in_korea(*dest):
-    return [], []
-  if budget is not None and not budget.allow():
-    LOG.warning("route: daily request cap reached")
-    return [], []
-
-  try:
-    if budget is not None:
-      budget.spend()
-    with opener(build_request(api_key, start, dest), timeout=HTTP_TIMEOUT_S) as response:
-      payload = json.loads(response.read())
-  except Exception:
-    # Deliberately broad. urllib raises OSError/HTTPError, json raises ValueError, and a
-    # truncated body can raise almost anything -- all of them mean the same thing here,
-    # and this runs on a thread whose death would silently disable the feature.
-    LOG.warning("route: request failed", exc_info=True)
-    return [], []
-
-  if not isinstance(payload, dict):
-    return [], []
-  LOG.info("route: answer %s", summarize_route(payload))
-  points = parse_route(payload)
-  return points, (parse_grade_separated(payload) if points else [])
 
 
 # What a camera or enforcement point would say in a TMAP text field (description, name)
@@ -232,18 +165,6 @@ def summarize_route(payload: dict) -> str:
   return "; ".join(parts)
 
 
-# Wider than the 30 m corridor the lookups use: the corridor decides whether a camera is
-# on our road, this decides whether the route is wrong. Being strict here buys nothing and
-# costs a request every time the localizer drifts in a tunnel.
-OFF_ROUTE_M = 50.
-# One tick of GPS jitter is not a wrong turn. Three seconds at 1 Hz is.
-OFF_ROUTE_TICKS = 3
-# The first step is the normal reroute latency -- 3 s to confirm plus 5 s is not felt. The
-# rest exist only for the runaway case where the new route is immediately off-route too,
-# which is the failure the cooldown alone used to be asked to cover and could not.
-REROUTE_BACKOFF_S = (5., 15., 60., 300.)
-
-
 def distance_to_route(route: list[tuple[float, float]], lat: float, lon: float) -> float:
   """Metres from (lat, lon) to the nearest point of the polyline."""
   if len(route) < MIN_ROUTE_POINTS:
@@ -261,56 +182,6 @@ def route_progress(route: list[tuple[float, float]], lat: float, lon: float) -> 
   along = sum(haversine(route[k][0], route[k][1], route[k + 1][0], route[k + 1][1]) for k in range(i))
   plat, plon = closest_point_on_segment(lat, lon, route[i][0], route[i][1], route[i + 1][0], route[i + 1][1])
   return along + haversine(route[i][0], route[i][1], plat, plon)
-
-
-class RouteState:
-  """Decides when to ask for a new route. Owns no I/O -- the caller does the fetching.
-
-  Kept apart from the fetching on purpose: this is the part with the interesting states,
-  and a pure object is the only way to test a backoff without waiting five minutes.
-  """
-
-  def __init__(self, clock=time.monotonic):
-    self.route: list[tuple[float, float]] = []
-    self.grade_separated: list[list[tuple[float, float]]] = []  # route's tunnels, overpasses, underpasses
-    self._clock = clock
-    self._off_ticks = 0
-    self._failures = 0
-    self._last_request = None  # None means 'never asked', which must not be a cooldown
-
-  def set_route(self, route: list[tuple[float, float]], grade_separated: list[list[tuple[float, float]]] | None = None) -> None:
-    self.route = route
-    self.grade_separated = grade_separated or []  # spans of another route never outlive it
-    self._off_ticks = 0
-
-  def note_request(self) -> None:
-    """Called after a request goes out, whatever it answered. A request that produced a
-    good route is still followed by a reset -- set_route's caller does that by getting
-    back on the line, not by this method, so a bad answer keeps walking the backoff."""
-    self._last_request = self._clock()
-    self._failures += 1
-
-  def reset_backoff(self) -> None:
-    """A new destination starts a fresh backoff."""
-    self._failures = 0
-    self._last_request = None
-
-  def _wait(self) -> float:
-    return REROUTE_BACKOFF_S[max(0, min(self._failures - 1, len(REROUTE_BACKOFF_S) - 1))]
-
-  def update(self, lat: float, lon: float) -> bool:
-    if distance_to_route(self.route, lat, lon) <= OFF_ROUTE_M:
-      self._off_ticks = 0
-      self._failures = 0  # back on the line: whatever went wrong is over
-      self._last_request = None  # ...and so is any cooldown that went with it
-      return False
-
-    self._off_ticks += 1
-    if self._off_ticks < OFF_ROUTE_TICKS and self.route:
-      return False
-    if self._last_request is not None and self._clock() - self._last_request < self._wait():
-      return False
-    return True
 
 
 # SCC-Map ramps its target down at MapSlowdownDecel (0.5-1.2 m/s^2), which at the gentlest 0.5 takes
@@ -445,112 +316,130 @@ def arrived(position: tuple[float, float] | None, destination: tuple[float, floa
   return haversine(position[0], position[1], destination[0], destination[1]) <= ARRIVED_M
 
 
+def _wire_int(value, minimum=0):
+  return type(value) is int and minimum <= value < 2 ** 53
+
+
 class RouteSource:
-  """Background thread that keeps a polyline for the current destination.
+  """One phone trip, one bounded assembly, and its last fully validated route. No I/O."""
 
-  Runs off the control loop for one reason: a routing request takes seconds, and
-  KoreaMapData.tick() is the 1 Hz path that decides whether to brake. Same split, and the
-  same start/stop shape, as CameraRefresher.
-  """
-
-  def __init__(self, clock=time.monotonic, save_dir: str | None = None):
-    self.state = RouteState(clock=clock)
-    self._save_dir = save_dir
-    self.budget = RequestBudget()
+  def __init__(self):
     self._lock = threading.Lock()
-    self._position: tuple[float, float] | None = None
-    # The destination the current self.state.route was fetched for (or is being fetched
-    # for), so _loop can tell "still the same drive" from "a new one just got picked" --
-    # RouteState.update alone only knows about position, never about the destination.
-    self._route_destination: tuple[float, float] | None = None
-    self._stop = threading.Event()
-    self._thread: threading.Thread | None = None
+    self._session = self._trip = self._sequence = self._wanted = self._applied = 0
+    self._closed = False
+    self._started = None
+    self._destination = None
+    self._route = []
+    self._layers = []
+    self._pending = {}
+    self._count = 0
 
-  def start(self) -> None:
-    if self._thread is not None:
+  def _clear(self):
+    self._route, self._layers, self._pending = [], [], {}
+    self._applied = self._count = 0
+
+  def latest(self):
+    with self._lock:
+      return self._route, self._layers
+
+  def applied(self):
+    with self._lock:
+      return [self._session, self._trip, self._applied] if self._applied else None
+
+  def closed(self):
+    with self._lock:
+      return self._closed
+
+  def set_started(self, started):
+    with self._lock:
+      if self._started is True and not started:
+        self._closed = True
+        self._clear()
+      self._started = started
+
+  def set_position(self, lat, lon):
+    with self._lock:
+      if arrived((lat, lon), self._destination):
+        self._closed = True
+        self._clear()
+
+  def receive(self, payload):
+    session, trip, route_id = (payload.get(k) for k in ("session", "trip", "route_id"))
+    if not any(k in payload for k in ("session", "trip", "route_id", "route")):
+      return True  # legacy item/trip packets still work, but cannot install a route
+    if not _wire_int(session, 1) or not _wire_int(trip) or not _wire_int(route_id):
+      return False
+    with self._lock:
+      if "route" in payload:
+        if ((session, trip, route_id) == (self._session, self._trip, self._wanted)
+            and not self._closed and route_id and route_id != self._applied):
+          self._piece(payload["route"])
+        return False  # route pieces never replace the 2 Hz safety snapshot
+      sequence = payload.get("seq")
+      if not _wire_int(sequence, 1) or session < self._session:
+        return False
+      if session == self._session and (sequence <= self._sequence or trip < self._trip):
+        return False
+      new_trip = (session, trip) != (self._session, self._trip)
+      if not new_trip and self._closed:
+        self._sequence = sequence
+        return True  # safety updates continue; this trip's route stays closed
+      lat, lon = payload.get("destination_lat"), payload.get("destination_lon")
+      ended = type(lat) in (int, float) and type(lon) in (int, float) and lat == lon == 0
+      valid_destination = type(lat) in (int, float) and type(lon) in (int, float) and in_korea(lat, lon)
+      if not new_trip and not ended and route_id < self._wanted:
+        return False
+      if not new_trip and valid_destination and self._destination != (lat, lon):
+        return False
+      if not ended and not valid_destination and trip:
+        return False
+      if new_trip:
+        self._clear()
+        self._closed = False
+        self._wanted = 0
+      self._session, self._trip, self._sequence = session, trip, sequence
+      if ended or not trip:
+        self._closed = True
+        self._clear()
+      else:
+        self._destination = (float(lat), float(lon))
+        if route_id != self._wanted:
+          self._pending = {}
+          self._count = 0
+        self._wanted = route_id
+      return True
+
+  def _piece(self, piece):
+    if not isinstance(piece, dict):
       return
-    self._thread = threading.Thread(target=self._loop, daemon=True)
-    self._thread.start()
-
-  def stop(self) -> None:
-    self._stop.set()
-    if self._thread is not None:
-      self._thread.join(timeout=2.)
-      self._thread = None
-
-  def set_position(self, lat: float, lon: float) -> None:
-    with self._lock:
-      self._position = (lat, lon)
-
-  def latest(self) -> tuple[list[tuple[float, float]], list[list[tuple[float, float]]]]:
-    """The route and its grade-separated spans, read under one lock so both come from the same answer."""
-    # RouteState is single-owner and documents no lock of its own -- this is the boundary
-    # where the control loop's reads and the route thread's writes actually cross, so the
-    # lock belongs here, not inside RouteState.
-    with self._lock:
-      return self.state.route, self.state.grade_separated
-
-  def _destination(self, params) -> tuple[float, float] | None:
-    """The destination athenad's setNavDestination RPC, the UDP socket and korea/tesla.py write."""
-    raw = params.get("NavDestination")
-    if not raw:
-      return None
-    try:
-      dest = json.loads(raw)
-      lat, lon = float(dest["latitude"]), float(dest["longitude"])
-    except (ValueError, TypeError, KeyError):
-      return None
-    return (lat, lon) if in_korea(lat, lon) else None
-
-  def _loop(self) -> None:
-    # imported here so the module stays importable without the device stack, which is what
-    # lets the tests run under a bare interpreter -- same as CameraRefresher._loop
-    from openpilot.common.params import Params
-
-    params = Params()
-    while not self._stop.is_set():
-      try:
-        with self._lock:
-          position = self._position
-        destination = self._destination(params)
-
-        if arrived(position, destination):
-          # Arrived. Clearing here rather than waiting for the phone means a driver who
-          # closes the nav app on the kerb does not keep a route that now points behind
-          # them -- and the reroute machinery would otherwise fire on every tick.
-          params.remove("NavDestination")
-          destination = None
-
-        if destination != self._route_destination:
-          # The destination changed -- including to/from None. The old polyline can still
-          # read as "on route" for a road we are no longer headed down (that is the whole
-          # bug: the car is physically on the new road before RouteState notices anything
-          # is wrong), so drop it rather than let the off-route/backoff machinery hold it.
-          # And the old destination's failure history says nothing about this one, so a
-          # fresh destination gets a fresh backoff rather than inheriting a stale cooldown.
-          with self._lock:
-            self.state.set_route([])
-          self.state.reset_backoff()
-          self._route_destination = destination
-
-        if destination is None or position is None:
-          with self._lock:
-            self.state.set_route([])
-        elif self.state.update(*position):
-          api_key = params.get("KoreaRouteApiKey", return_default=True) or ""
-          route, grade_separated = fetch_route(api_key, position, destination, budget=self.budget)
-          self.state.note_request()
-          if route:
-            with self._lock:
-              self.state.set_route(route, grade_separated)
-            if self._save_dir is not None:
-              try:
-                save_route(self._save_dir, route)
-              except OSError as e:
-                LOG.warning("route: could not save the route: %s", e)
-      except Exception:
-        # This thread dying disables the feature silently until the next reboot, and
-        # nothing it does is worth that. Keep going and try again next second.
-        LOG.exception("route: source loop error")
-
-      self._stop.wait(1.)
+    part, parts, count = (piece.get(k) for k in ("part", "parts", "count"))
+    if not all(_wire_int(v) for v in (part, parts, count)) or not MIN_ROUTE_POINTS <= count <= MAX_ROUTE_POINTS:
+      return
+    if parts != (count + 127) // 128 or not 0 <= part < parts or self._count not in (0, count):
+      return
+    points, layers = piece.get("points"), piece.get("layers", [])
+    if not isinstance(points, list) or len(points) != min(128, count - part * 128):
+      return
+    if not isinstance(layers, list) or len(layers) > 128:
+      return
+    for p in points:
+      if not isinstance(p, list) or len(p) != 2 or any(type(v) not in (int, float) for v in p) or not in_korea(p[1], p[0]):
+        return
+    for span in layers:
+      if not isinstance(span, list) or len(span) != 2 or not all(_wire_int(v) for v in span) or not 0 <= span[0] < span[1] < count:
+        return
+    if part in self._pending:
+      return
+    self._count = count
+    self._pending[part] = ([(float(p[1]), float(p[0])) for p in points], layers)
+    if len(self._pending) != parts:
+      return
+    route = [p for i in range(parts) for p in self._pending[i][0]]
+    spans = [span for i in range(parts) for span in self._pending[i][1]]
+    self._pending = {}
+    self._count = 0
+    if any(b[0] <= a[1] for a, b in zip(spans, spans[1:], strict=False)):
+      return
+    self._route = route
+    self._layers = [route[start:end + 1] for start, end in spans]
+    self._applied = self._wanted

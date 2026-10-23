@@ -86,9 +86,14 @@ class OneShotRatekeeper:
 class FakeExternal:
   """ExternalNavSource stand-in: the real one binds udp/5555 and starts a thread."""
 
-  def __init__(self):
+  def __init__(self, route_source=None):
     self.port = 5555
     self.stopped = False
+    self.route_source = route_source
+    self.nav = None
+
+  def latest(self):
+    return self.nav
 
   def start(self):
     pass
@@ -98,9 +103,7 @@ class FakeExternal:
 
 
 class FakeRouteSource:
-  """RouteSource stand-in: the real one starts a background thread that reads real Params
-  and, given a destination, makes real HTTP requests -- none of which this test's device
-  stack fakes out."""
+  """The route store follows the ignition state without a routing thread."""
 
   def __init__(self, save_dir=None):
     self.save_dir = save_dir
@@ -113,9 +116,16 @@ class FakeRouteSource:
   def stop(self):
     self.stopped = True
 
+  def set_started(self, started):
+    self.started = started
+
 
 class FakeTeslaSource(FakeRouteSource):
   """TeslaDestinationSource stand-in: RouteSource's start/stop shape, plus car() for the UDP answers."""
+
+  def __init__(self, phone_connected):
+    super().__init__()
+    self.phone_connected = phone_connected
 
   def car(self):
     return None
@@ -303,11 +313,13 @@ class TestSourceLoops(MapdSourceTestCase):
     built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))
     self.assertNotIn("tesla_source", built)
 
-  def test_the_route_thread_keeps_its_routes_beside_the_map_databases(self):
-    """Fetched routes go to routes/ in the map directory, for replaying a drive's curve targets."""
+  def test_phone_routes_reach_map_data_and_gate_tesla_reads(self):
     params = FakeParams(MapSource.korea, KoreaExternalNavEnabled=True)
     built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))
-    self.assertEqual(built["route_source"].save_dir, str(self.tmp_path / "routes"))
+    self.assertIs(built["external"].route_source, built["map_data"].route_source)
+    self.assertFalse(built["tesla_source"].phone_connected())
+    built["external"].nav = object()
+    self.assertTrue(built["tesla_source"].phone_connected())
 
   def test_the_korea_loop_returns_when_external_nav_is_toggled(self):
     """The UDP socket binds once at startup, so this toggle only takes effect by ending the

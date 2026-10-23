@@ -1516,22 +1516,6 @@
               ]
             },
             {
-              "key": "KoreaRouteApiKey",
-              "widget": "text",
-              "secret": true,
-              "max_length": 255,
-              "requires_attestation": true,
-              "title": "Route API Key",
-              "description": "TMAP appKey used to fetch the route to a destination sent by a companion navigation app. Without it, speed cameras and bumps are matched by heading alone, which can pick the wrong road at a fork.",
-              "enablement": [
-                {
-                  "type": "param",
-                  "key": "MapDataSource",
-                  "equals": 1
-                }
-              ]
-            },
-            {
               "key": "KoreaMapAutoDownload",
               "widget": "toggle",
               "title": "Download Map Data Automatically",

@@ -18,7 +18,7 @@
 - 차량 소유자의 테슬라 계정
 - 이 저장소가 있는 PC(Git Bash의 `openssl`, PowerShell에서 되는 `ssh`)
 - 기기 SSH 접속(`ssh comma@<기기IP>`가 되는 상태)
-- 기기 설정: `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey` 입력됨
+- 기기 설정: `KoreaExternalNavEnabled` 켜짐, knavlink의 UDP 항목 패킷이 5초 안에 수신됨. 기기에 경로 API 키를 입력하지 않는다. 경로 선은 폰에서만 받으며 폰이 끊기면 새 Tesla 요청도 보내지 않는다.
 - 기기에 커밋 `1eecaa7c2` 이후 빌드가 먼저 설치되어 있을 것. 이 기능이 없는 빌드는 시작할 때 자기가 모르는 파라미터 파일을 지워 토큰이 사라지고, 그 커밋 전 빌드는 토큰을 업로드되는 로그에 남긴다.
 
 ## 1. 공개키 만들기 (2분)
@@ -78,7 +78,7 @@ python -m openpilot.sunnypilot.mapd.korea.tesla_setup --host comma@<기기IP>
 
 ## owner 모드 (개발자 등록 없이, 비공식)
 
-Fleet 설정 1~4단계 대신 쓰는 방법이다. 토큰 발급(tesla_auth)에 PC가 한 번 필요하고, 기기 설정은 폰 Termius로 끝난다. 위 표의 권한·수명 차이를 알고 쓴다. 기기 SSH 접속(Termius), `KoreaExternalNavEnabled` 켜짐, `KoreaRouteApiKey`, 커밋 `1eecaa7c2` 이후 빌드가 필요하다. 그 전 빌드는 시작할 때 owner 토큰 파일을 지우거나, 토큰을 업로드되는 로그에 남긴다.
+Fleet 설정 1~4단계 대신 쓰는 방법이다. 토큰 발급(tesla_auth)에 PC가 한 번 필요하고, 기기 설정은 폰 Termius로 끝난다. 위 표의 권한·수명 차이를 알고 쓴다. 기기 SSH 접속(Termius), `KoreaExternalNavEnabled` 켜짐, knavlink 연결, 커밋 `1eecaa7c2` 이후 빌드가 필요하다. 그 전 빌드는 시작할 때 owner 토큰 파일을 지우거나, 토큰을 업로드되는 로그에 남긴다.
 
 **주의**
 - **NaviToTesla에 넣은 토큰을 복사하지 않는다.** 갱신 토큰은 한 번 쓰면 무효가 되어, 기기와 NaviToTesla가 서로를 끊는다. 기기용은 새로 로그인해 따로 받는다.

@@ -133,7 +133,7 @@ def _vias(payload: dict) -> tuple[tuple[float, float, str], ...]:
   return tuple(vias)
 
 
-def answer(seq: int, car, limit: int) -> bytes:
+def answer(seq: int, car, limit: int, route_ack=None) -> bytes:
   """{"ack": seq}, with car: what the car's navigation guides to, (lat, lon, name), None for no
   route, or CAR_UNKNOWN to leave it out. Never more than limit bytes -- the datagram being
   answered -- so the name goes first, then the place; {"ack": n} is never longer than the
@@ -144,6 +144,8 @@ def answer(seq: int, car, limit: int) -> bytes:
   elif car != CAR_UNKNOWN:
     place = {"lat": round(car[0], 6), "lon": round(car[1], 6)}
     answers[:0] = [{"ack": seq, "car": {**place, "name": car[2]}}, {"ack": seq, "car": place}]
+  if route_ack is not None:
+    answers = [{**out, "route_ack": route_ack} for out in answers] + answers
   for out in answers:
     data = json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode()
     if len(data) <= limit:
@@ -206,9 +208,10 @@ def parse_payload(payload: dict) -> ExternalNav:
 
 
 class ExternalNavSource:
-  def __init__(self, port: int = EXTERNAL_PORT, car=None):
+  def __init__(self, port: int = EXTERNAL_PORT, car=None, route_source=None):
     self.port = port
     self.car = car  # TeslaDestinationSource.car, for the answers; None leaves the car out
+    self.route_source = route_source
     self._lock = threading.Lock()
     self._latest = ExternalNav()
     self._sock: socket.socket | None = None
@@ -246,7 +249,9 @@ class ExternalNavSource:
   def _recv_loop(self, sock: socket.socket) -> None:
     while True:
       try:
-        data, sender = sock.recvfrom(MAX_DATAGRAM)
+        data, sender = sock.recvfrom(MAX_DATAGRAM + 1)
+        if len(data) > MAX_DATAGRAM:
+          continue
       except OSError:
         if self._sock is None:
           return  # socket closed by stop()
@@ -265,22 +270,28 @@ class ExternalNavSource:
         payload = json.loads(data)
         if not isinstance(payload, dict):
           continue
-        nav = parse_payload(payload)
+        accepted = self.route_source.receive(payload) if self.route_source is not None else True
+        if accepted and self.route_source is not None and payload.get("trip", 0) and self.route_source.closed():
+          payload = {**payload, "destination_lat": 0, "destination_lon": 0}
+        nav = parse_payload(payload) if "route" not in payload and accepted else None
       except Exception:
         # One datagram must never kill this loop. Deeply nested JSON raises
         # RecursionError (a RuntimeError, not a ValueError), and anything uncaught
         # here silently disables the feature until the process restarts.
         continue
 
-      with self._lock:
-        resumed = nav.received_at - self._latest.received_at > EXTERNAL_TTL  # also the first one: received_at 0
-        self._latest = nav
+      resumed = False
+      if nav is not None:
+        with self._lock:
+          resumed = nav.received_at - self._latest.received_at > EXTERNAL_TTL
+          self._latest = nav
       if resumed:
         # the only trace of the link itself: the switch to the phone's cameras also needs a fresh SDK
         cloudlog.info("korea_map: datagrams arriving from the phone app")
       seq = payload.get("seq")
       if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq < 2 ** 53:
         try:
-          sock.sendto(answer(seq, CAR_UNKNOWN if self.car is None else self.car(), len(data)), sender)
+          route_ack = self.route_source.applied() if self.route_source is not None else None
+          sock.sendto(answer(seq, CAR_UNKNOWN if self.car is None else self.car(), len(data), route_ack), sender)
         except OSError:
           pass  # the sender went away; it hears from us again with its next datagram
