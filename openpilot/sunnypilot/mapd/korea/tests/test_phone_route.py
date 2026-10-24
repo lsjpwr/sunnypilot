@@ -46,6 +46,19 @@ class TestPhoneRoute(unittest.TestCase):
     self.assertEqual(self.route.latest(), ([(37.5, 127.), (37.501, 127.001)], []))
     self.assertEqual(self.source.latest().speed_limit_kph, 50)
 
+  def test_fleet_stop_preserves_active_trip_safety_and_route_transfer(self):
+    for status in range(1, 5):
+      with self.subTest(status=status):
+        self.source.fleet_status = lambda status=status: status
+        self.assertEqual(self.control(trip=status)['f'], status)
+        self.piece(trip=status)
+        reply = self.control(trip=status, speed_limit_kph=60)
+        self.assertEqual(reply['f'], status)
+        self.assertEqual(reply['route_ack'], [100, status, 1])
+        self.assertEqual(self.source.latest().destination, (37.6, 127.))
+        self.assertEqual(self.source.latest().speed_limit_kph, 60)
+        self.assertEqual(self.route.latest()[0], [(37.5, 127.), (37.501, 127.001)])
+
   def test_no_trip_and_ended_trip_keep_safety_updates_alive(self):
     self.control(trip=0, route_id=0, destination_lat=0, destination_lon=0)
     self.control(trip=0, route_id=0, destination_lat=0, destination_lon=0, speed_limit_kph=60)

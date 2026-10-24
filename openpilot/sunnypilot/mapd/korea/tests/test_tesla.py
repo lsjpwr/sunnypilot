@@ -5,14 +5,18 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import json
+import datetime
+from pathlib import Path
 import ssl
 import sys
 import types
+import tempfile
 import unittest
 import urllib.error
 from unittest import mock
 
 from openpilot.sunnypilot.mapd.korea import tesla
+from openpilot.sunnypilot.mapd.korea.fleet_budget import FleetBudget
 from openpilot.sunnypilot.mapd.korea.route import RequestBudget
 from openpilot.sunnypilot.mapd.korea.tesla import (CAR_UNKNOWN, ECHO_WINDOW_S, OWNER_API_URL, OWNER_TOKEN_URL, POLL_INTERVAL_S, SEND_RETRY_S,
                                                    SEND_TRIES, TOKEN_URL, AuthRejected, TeslaDestinationSource, Trip, VehicleNotFound,
@@ -255,6 +259,10 @@ class SourceTestCase(unittest.TestCase):
 
   def setUp(self):
     super().setUp()
+    directory = tempfile.TemporaryDirectory()
+    self.addCleanup(directory.cleanup)
+    self.budget_path = Path(directory.name) / "fleet_budget.json"
+    self.today = datetime.date(2026, 10, 24)
     self.events = []
     self.clock = FakeClock(1000.)
     self.params = FakeParams(events=self.events)
@@ -262,7 +270,8 @@ class SourceTestCase(unittest.TestCase):
 
   def source(self, answers=(), token=TOKENS, products=PRODUCTS, commands=()):
     self.opener = ScriptedOpener(answers, token, self.events, products, commands)
-    return TeslaDestinationSource(opener=self.opener, clock=self.clock, phone_connected=lambda: True)
+    return TeslaDestinationSource(opener=self.opener, clock=self.clock, phone_connected=lambda: True,
+                                  monthly=FleetBudget(self.budget_path, today=lambda: self.today))
 
   def tick(self, source, started=True, seconds=0.):
     self.clock.now += seconds
@@ -329,6 +338,168 @@ class TestPollingConditions(SourceTestCase):
   def test_the_daily_cap_is_300(self):
     """Five hours of driving at one request a minute (spec, 비용 절)."""
     self.assertEqual(TeslaDestinationSource().budget.cap, 300)
+
+
+class TestFleetLimits(SourceTestCase):
+  def test_failed_read_is_reserved_before_network_and_survives_restart(self):
+    self.assertEqual(FleetBudget(self.budget_path, today=lambda: self.today).reserve(8998), 0)
+    source = self.source([http_error(503)])
+    self.tick(source)
+    self.assertEqual(self.opener.count("vehicle_data"), 1)
+    restarted = self.source([car()])
+    self.tick(restarted)
+    self.assertFalse(any("/vehicle_data?" in request.full_url for request in self.opener.requests))
+    self.assertEqual(restarted.fleet_status(), 3)
+
+  def test_daily_cap_is_checked_before_each_via(self):
+    source = self.source([NO_ROUTE])
+    source.commands = RequestBudget(cap=1, clock=self.clock)
+    source.want(Trip(PHONE.destination, (VIA,)))
+    self.tick(source)
+    self.assertEqual(sum("/command/" in request.full_url for request in self.opener.requests), 1)
+    self.assertEqual(source.fleet_status(), 2)
+
+  def test_read_does_not_clear_command_daily_stop_until_rollover(self):
+    source = self.source([NO_ROUTE, NO_ROUTE, NO_ROUTE])
+    source.budget = RequestBudget(cap=300, clock=self.clock)
+    source.commands = RequestBudget(cap=1, clock=self.clock)
+    source.want(PHONE)
+    self.tick(source)
+    self.assertEqual(source.fleet_status(), 2)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(source.fleet_status(), 2)
+    self.tick(source, seconds=86400)
+    self.assertEqual(source.fleet_status(), 0)
+    restarted = self.source([NO_ROUTE])
+    self.tick(restarted)
+    self.assertEqual(restarted.fleet_status(), 0)
+
+  def test_read_daily_stop_blocks_new_trip_with_cached_access_token(self):
+    source = self.source([NO_ROUTE, NO_ROUTE])
+    source.budget = RequestBudget(cap=1, clock=self.clock)
+    self.tick(source)
+    self.assertEqual(source.fleet_status(), 2)
+    source.want(PHONE)
+    self.tick(source, seconds=1)
+    self.assertFalse(any('/command/' in request.full_url for request in self.opener.requests))
+    self.assertEqual(source.fleet_status(), 2)
+
+  def test_credential_change_does_not_clear_daily_stop_before_recovery(self):
+    source = self.source([NO_ROUTE])
+    source.commands = RequestBudget(cap=1, clock=self.clock)
+    source.want(PHONE)
+    self.tick(source)
+    self.assertEqual(source.fleet_status(), 2)
+    self.params.values['KoreaTeslaRefreshToken'] = 'NEW-REFRESH'
+    self.opener.token = http_error(503)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(source.fleet_status(), 2)
+    self.assertEqual(sum('/command/' in request.full_url for request in self.opener.requests), 1)
+
+  def test_read_monthly_stop_blocks_commands_even_with_one_unit_left(self):
+    source = self.source([NO_ROUTE, NO_ROUTE])
+    self.tick(source)
+    self.assertEqual(source.monthly.reserve(8997), 0)
+    source.want(PHONE)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertFalse(any('/command/' in request.full_url for request in self.opener.requests))
+    self.assertEqual(source.fleet_status(), 3)
+
+  def test_fallback_checks_each_daily_and_monthly_reservation(self):
+    for monthly, expected in ((0, 2), (8997, 3)):
+      with self.subTest(monthly=monthly):
+        self.setUp()
+        source = self.source([NO_ROUTE], commands=[REFUSED])
+        self.assertEqual(source.monthly.reserve(monthly), 0)
+        if not monthly:
+          source.commands = RequestBudget(cap=1, clock=self.clock)
+        source.want(PHONE)
+        self.tick(source)
+        self.assertEqual(sum("/command/" in request.full_url for request in self.opener.requests), 1)
+        self.assertEqual(source.fleet_status(), expected)
+
+  def test_read_and_every_via_share_the_monthly_ceiling(self):
+    source = self.source([NO_ROUTE])
+    self.assertEqual(source.monthly.reserve(8996), 0)
+    source.want(Trip(PHONE.destination, (VIA, (*GANGNAM, "B"))))
+    self.tick(source)
+    self.assertEqual(sum("/command/" in request.full_url for request in self.opener.requests), 2)
+    self.assertEqual(source.fleet_status(), 3)
+
+  def test_failed_command_is_reserved_before_network_and_counted_on_retry(self):
+    source = self.source([NO_ROUTE], commands=[http_error(503)])
+    opener = self.opener
+
+    def network(request, **kwargs):
+      if "/vehicle_data?" in request.full_url:
+        self.assertEqual(source.monthly.reserve(8999), 3)  # the read's two units are already durable
+      elif "/command/" in request.full_url:
+        self.assertEqual(source.monthly.reserve(8998), 3)  # read plus at least one command
+      return opener(request, **kwargs)
+
+    source._opener = network  # external HTTP boundary
+    source.want(PHONE)
+    self.tick(source)
+    self.tick(source, seconds=SEND_RETRY_S)
+    self.assertEqual(source.monthly.reserve(8996), 0)
+    self.assertEqual(source.monthly.reserve(1), 3)
+
+  def test_monthly_and_storage_stop_cached_token_commands_after_a_failed_poll(self):
+    for stopped in (3, 4):
+      with self.subTest(stopped=stopped):
+        self.setUp()
+        source = self.source([NO_ROUTE, NO_ROUTE])
+        self.tick(source)
+        if stopped == 3:
+          self.assertEqual(source.monthly.reserve(8998), 0)
+        else:
+          self.budget_path.write_text('corrupt')
+        count = len(self.opener.requests)
+        source.want(PHONE)
+        self.tick(source, seconds=POLL_INTERVAL_S)
+        self.assertEqual(len(self.opener.requests), count)
+        self.assertEqual(source.fleet_status(), stopped)
+
+  def test_production_storage_failures_prevent_reads_and_cached_token_commands(self):
+    for boundary in ('pathlib.Path.read_text', 'tempfile.NamedTemporaryFile', 'os.replace', 'os.fsync'):
+      with self.subTest(boundary=boundary):
+        self.setUp()
+        source = self.source([NO_ROUTE, NO_ROUTE])
+        self.tick(source)
+        count = len(self.opener.requests)
+        source.want(PHONE)
+        with mock.patch(boundary, side_effect=OSError("storage unavailable")):
+          self.tick(source, seconds=POLL_INTERVAL_S)
+        self.assertEqual(len(self.opener.requests), count)
+        self.assertEqual(source.fleet_status(), 4)
+
+  def test_refused_via_stops_remaining_commands_and_reports_refusal(self):
+    source = self.source([NO_ROUTE], commands=[TOOK, REFUSED])
+    source.want(Trip(PHONE.destination, (VIA, (*GANGNAM, "B"))))
+    self.tick(source)
+    self.assertEqual(sum("/command/" in request.full_url for request in self.opener.requests), 2)
+    self.assertEqual(source.fleet_status(), 1)
+
+  def test_month_and_storage_recovery_report_available_and_resume_commands(self):
+    for stopped in (3, 4):
+      with self.subTest(stopped=stopped):
+        self.setUp()
+        source = self.source([NO_ROUTE, NO_ROUTE, NO_ROUTE])
+        self.tick(source)
+        if stopped == 3:
+          self.assertEqual(source.monthly.reserve(8998), 0)
+        else:
+          self.budget_path.write_text('corrupt')
+        source.want(PHONE)
+        self.tick(source, seconds=POLL_INTERVAL_S)
+        self.assertEqual(source.fleet_status(), stopped)
+        if stopped == 3:
+          self.today = datetime.date(2026, 11, 1)
+        else:
+          self.budget_path.write_text('{"month":"2026-10","units":2}')  # repair known synthetic state
+        self.tick(source, seconds=POLL_INTERVAL_S)
+        self.assertEqual(source.fleet_status(), 0)
+        self.assertEqual(sum('/command/' in request.full_url for request in self.opener.requests), 1)
 
 
 class TestWriteRules(SourceTestCase):

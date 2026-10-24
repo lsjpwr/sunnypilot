@@ -31,6 +31,8 @@ A datagram with a "seq" is answered with {"ack": seq}, sent back to where it cam
 whether the comma hears it. Once the comma knows what the car's navigation guides to, the answer carries it too,
 {"ack": seq, "car": {"lat": 37.5, "lon": 127.0, "name": "강남역"}} or "car": null for no route, and the app follows
 it. The answer is never bigger than the datagram, so it cannot amplify anything: the name goes first, then the place.
+"f" is Fleet state: 0 available/recovered, 1 refusal, 2 daily cap, 3 monthly cap, 4 budget storage failure.
+Car detail yields to f and route_ack. Tiny replies may omit f; absence never means recovery.
 
 Unknown keys are kept in ExternalNav.raw so a future app can extend the payload
 without a wire-format change.
@@ -133,24 +135,28 @@ def _vias(payload: dict) -> tuple[tuple[float, float, str], ...]:
   return tuple(vias)
 
 
-def answer(seq: int, car, limit: int, route_ack=None) -> bytes:
+def answer(seq: int, car, limit: int, route_ack=None, fleet_status=None) -> bytes:
   """{"ack": seq}, with car: what the car's navigation guides to, (lat, lon, name), None for no
   route, or CAR_UNKNOWN to leave it out. Never more than limit bytes -- the datagram being
   answered -- so the name goes first, then the place; {"ack": n} is never longer than the
   {"seq": n} it answers."""
-  answers = [{"ack": seq}]
+  headers = [{"ack": seq}]
+  if type(fleet_status) is int and 0 <= fleet_status <= 4:
+    headers.insert(0, {"ack": seq, "f": fleet_status})
+  if route_ack is not None:
+    headers = [{**out, "route_ack": route_ack} for out in headers] + headers
+  places = [{}]
   if car is None:
-    answers.insert(0, {"ack": seq, "car": None})
+    places.insert(0, {"car": None})
   elif car != CAR_UNKNOWN:
     place = {"lat": round(car[0], 6), "lon": round(car[1], 6)}
-    answers[:0] = [{"ack": seq, "car": {**place, "name": car[2]}}, {"ack": seq, "car": place}]
-  if route_ack is not None:
-    answers = [{**out, "route_ack": route_ack} for out in answers] + answers
-  for out in answers:
-    data = json.dumps(out, separators=(",", ":"), ensure_ascii=False).encode()
-    if len(data) <= limit:
-      break
-  return data
+    places[:0] = [{"car": {**place, "name": car[2]}}, {"car": place}]
+  for header in headers:
+    for place in places:
+      data = json.dumps({**header, **place}, separators=(",", ":"), ensure_ascii=False).encode()
+      if len(data) <= limit:
+        return data
+  return b""
 
 
 def _in_range(value, lower: float, upper: float) -> float | None:
@@ -208,10 +214,11 @@ def parse_payload(payload: dict) -> ExternalNav:
 
 
 class ExternalNavSource:
-  def __init__(self, port: int = EXTERNAL_PORT, car=None, route_source=None):
+  def __init__(self, port: int = EXTERNAL_PORT, car=None, route_source=None, fleet_status=None):
     self.port = port
     self.car = car  # TeslaDestinationSource.car, for the answers; None leaves the car out
     self.route_source = route_source
+    self.fleet_status = fleet_status
     self._lock = threading.Lock()
     self._latest = ExternalNav()
     self._sock: socket.socket | None = None
@@ -292,6 +299,7 @@ class ExternalNavSource:
       if isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq < 2 ** 53:
         try:
           route_ack = self.route_source.applied() if self.route_source is not None else None
-          sock.sendto(answer(seq, CAR_UNKNOWN if self.car is None else self.car(), len(data), route_ack), sender)
+          status = None if self.fleet_status is None else self.fleet_status()
+          sock.sendto(answer(seq, CAR_UNKNOWN if self.car is None else self.car(), len(data), route_ack, status), sender)
         except OSError:
           pass  # the sender went away; it hears from us again with its next datagram

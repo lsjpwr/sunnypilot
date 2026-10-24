@@ -130,6 +130,9 @@ class FakeTeslaSource(FakeRouteSource):
   def car(self):
     return None
 
+  def fleet_status(self):
+    return 0
+
 
 class FakeRefresher:
   def __init__(self, cameras_path):
@@ -308,6 +311,7 @@ class TestSourceLoops(MapdSourceTestCase):
     # the phone app's trip reaches it, and what the car guides to reaches the phone
     self.assertIs(built["map_data"].tesla, built["tesla_source"])
     self.assertEqual(built["external"].car, built["tesla_source"].car)
+    self.assertEqual(built["external"].fleet_status, built["tesla_source"].fleet_status)
 
     params = FakeParams(MapSource.korea)
     built = self.run_source_main(params, "korea_main", lambda: setattr(params, "source", MapSource.osm))

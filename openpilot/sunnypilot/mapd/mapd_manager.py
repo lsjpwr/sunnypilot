@@ -214,6 +214,7 @@ def korea_main() -> None:
       tesla_source.start()
       if external is not None:
         external.car = tesla_source.car  # the answers tell the phone app what the car guides to
+        external.fleet_status = tesla_source.fleet_status
 
     live_map_sp = KoreaMapData(external=external, route_source=route_source, tesla=tesla_source)
 

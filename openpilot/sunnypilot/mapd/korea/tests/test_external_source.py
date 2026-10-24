@@ -176,6 +176,21 @@ class TestParseTrip(unittest.TestCase):
 
 
 class TestAnswer(unittest.TestCase):
+  def test_fleet_and_route_status_take_space_before_optional_car_detail(self):
+    car = (37.4979, 127.0276, "가" * 64)
+    for status in range(5):
+      with self.subTest(status=status):
+        out = answer(7, car, 40, route_ack=123, fleet_status=status)
+        self.assertLessEqual(len(out), 40)
+        self.assertEqual(json.loads(out), {"ack": 7, "route_ack": 123, "f": status})
+        self.assertEqual(json.loads(answer(7, car, 500, 123, status))["f"], status)
+
+  def test_status_reply_always_fits_even_tiny_packets(self):
+    for limit in range(120):
+      out = answer(7, (37.4979, 127.0276, "가" * 64), limit, 123, 4)
+      self.assertLessEqual(len(out), limit)
+    self.assertEqual(json.loads(answer(7, CAR_UNKNOWN, len('{"seq":7}'), 123, 4)), {"ack": 7})
+
   def test_the_cars_destination_rides_along(self):
     self.assertEqual(json.loads(answer(7, (37.4979, 127.0276, "강남역"), 500)),
                      {"ack": 7, "car": {"lat": 37.4979, "lon": 127.0276, "name": "강남역"}})
@@ -255,6 +270,12 @@ class TestExternalNavSource(unittest.TestCase):
   def test_the_answer_carries_what_the_car_guides_to(self):
     self.source.car = lambda: (37.4979, 127.0276, "강남역")
     self.assertEqual(self._exchange({**VALID, "seq": 9})["car"], {"lat": 37.4979, "lon": 127.0276, "name": "강남역"})
+
+  def test_stopped_fleet_status_does_not_interrupt_safety_datagrams(self):
+    for status in range(5):
+      self.source.fleet_status = lambda status=status: status
+      self.assertEqual(self._exchange({**VALID, "seq": 9})["f"], status)
+      self.assertEqual(self.source.latest().speed_limit_kph, 60.)
 
   @parameterized.expand([("none", None), ("bool", True), ("negative", -1), ("float", 1.5), ("string", "812")])
   def test_no_answer_without_a_plain_seq(self, _, seq):

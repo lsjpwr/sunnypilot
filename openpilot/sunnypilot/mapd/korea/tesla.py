@@ -30,7 +30,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
+from pathlib import Path
 
+from openpilot.sunnypilot.mapd.korea.fleet_budget import FleetBudget
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RequestBudget, in_korea
 
@@ -60,8 +62,8 @@ OWNER_TLS.minimum_version = ssl.TLSVersion.TLSv1_3
 
 POLL_INTERVAL_S = 60.
 RATE_LIMIT_PAUSE_S = 300.
-# Five hours of driving at one request a minute. Tesla bills 500 data requests per $1 and
-# takes $10 a month off, so this guards against a runaway, not against normal use.
+# Five hours of driving at one request a minute; monthly accounting uses the agreed units,
+# not a guarantee about current Tesla prices or credits.
 DAILY_REQUEST_CAP = 300
 # Closer than this is the same destination, avoiding repeated writes for GPS jitter.
 SAME_DESTINATION_M = 50.
@@ -95,6 +97,10 @@ class VehicleNotFound(Exception):
 
 class CommandRefused(Exception):
   """The car answered a destination with result false."""
+
+
+class FleetStopped(Exception):
+  """A local budget or its storage prevented a network request."""
 
 
 @dataclass(frozen=True)
@@ -250,12 +256,14 @@ class TeslaDestinationSource:
   immutable value, which needs no lock.
   """
 
-  def __init__(self, opener=urllib.request.urlopen, clock=time.monotonic, phone_connected=lambda: False):
+  def __init__(self, opener=urllib.request.urlopen, clock=time.monotonic, phone_connected=lambda: False, monthly=None):
     self._opener = opener
     self._clock = clock
     self.phone_connected = phone_connected
     self.budget = RequestBudget(cap=DAILY_REQUEST_CAP)
     self.commands = RequestBudget(cap=DAILY_COMMAND_CAP)
+    self.monthly = monthly
+    self._fleet_status = 0
     self._access_token: str | None = None
     # The credentials the access token was minted under. Any change -- the other mode, tesla_setup,
     # a token or VIN written by hand -- must not be judged by it: the two APIs do not take each
@@ -286,6 +294,7 @@ class TeslaDestinationSource:
     self._send_tries = 0
     self._gps: bool | None = None  # does the car take a destination as coordinates? Unknown until asked
     self._refused: tuple | None = None  # the credentials the car refused a destination under
+    self._command_refused: Trip | None = None
 
   def want(self, trip: Trip | None) -> None:
     """The trip the phone app guides, None while it guides nowhere or is quiet."""
@@ -294,6 +303,33 @@ class TeslaDestinationSource:
   def car(self):
     """What the car's navigation guides to, for the phone app: CAR_UNKNOWN, None or (lat, lon, name)."""
     return self._car
+
+  def fleet_status(self) -> int:
+    """Wire f: available, refusal, daily cap, monthly cap, or unsafe budget storage."""
+    return self._fleet_status
+
+  def _reserve(self, daily: RequestBudget, units: int, mode: str) -> None:
+    if not daily.allow():
+      self._fleet_status = 2
+      raise FleetStopped
+    status = 0
+    if mode == FLEET:
+      if self.monthly is None:
+        from openpilot.common.hardware.hw import Paths
+        self.monthly = FleetBudget(Path(Paths.korea_map_root()) / "fleet_budget.json")
+      status = self.monthly.reserve(units)
+      if status:
+        self._fleet_status = status
+        raise FleetStopped
+      status = self.monthly.reserve(0)
+      if status == 4:
+        self._fleet_status = status
+        raise FleetStopped
+    daily.spend()
+    daily_stopped = not self.budget.allow() or not self.commands.allow()
+    refused = (self._refused == self._minted_for
+               or self._command_refused is not None and same_trip(self._want, self._command_refused))
+    self._fleet_status = status or (2 if daily_stopped else int(refused))
 
   def guides_to(self, point) -> bool:
     car = self._car
@@ -351,7 +387,9 @@ class TeslaDestinationSource:
       return
     if credentials != self._minted_for:
       self._access_token = None
+      self._command_refused = None
     if not self.budget.allow():
+      self._fleet_status = 2
       LOG.warning("tesla: daily request cap reached")
       return
 
@@ -371,6 +409,8 @@ class TeslaDestinationSource:
         params.put(REFRESH_TOKEN_KEYS[mode], refresh_token, block=True)
         set_alert(False)
       destination = self._fetch(mode, vin)
+    except FleetStopped:
+      return
     except AuthRejected:
       LOG.warning("tesla: refresh token rejected, set up the Tesla login again")
       self._reject(credentials, set_alert)
@@ -406,12 +446,13 @@ class TeslaDestinationSource:
   def _fetch(self, mode: str, vin: str) -> tuple[float, float, str] | None:
     if mode == OWNER and self._owner_vehicle is None:
       self._owner_vehicle = owner_vehicle_id(self._access_token, vin, self._opener)
-    self.budget.spend()
+    self._reserve(self.budget, 2, mode)
     if mode == FLEET:
       return fetch_destination(self._access_token, vin, self._opener)
     return owner_fetch_destination(self._access_token, self._owner_vehicle, self._opener)
 
   def _reject(self, credentials: tuple, set_alert) -> None:
+    self._fleet_status = 1
     self._rejected = credentials
     self._access_token = None
     set_alert(True)
@@ -452,6 +493,11 @@ class TeslaDestinationSource:
     if trip is None:
       self._sent = None  # the next trip goes to the car even if it is this one again
       return
+    if not self.budget.allow():
+      self._fleet_status = 2
+      return
+    if self._fleet_status in (3, 4):
+      return
     if (not self._polled or self._access_token is None or now < self._send_after or self._minted_for == self._refused
         or same_trip(trip, self._sent, vias=self._gps is not False)):
       return
@@ -460,11 +506,14 @@ class TeslaDestinationSource:
       self._sent, self._sent_places, self._car = trip, trip.places(), trip.destination
       return
     if not self.commands.allow():
+      self._fleet_status = 2
       LOG.warning("tesla: daily command cap reached")
       self._sent = trip
       return
     try:
       self._command(trip)
+    except FleetStopped:
+      self._send_after = now + POLL_INTERVAL_S
     except urllib.error.HTTPError as e:
       LOG.warning("tesla: destination not sent: HTTP %d", e.code)
       if e.code == 401:
@@ -475,12 +524,18 @@ class TeslaDestinationSource:
         # 403 is a grant without vehicle_cmds, which only tesla_setup changes; nothing else
         # here changes by asking again either.
         self._refused = self._minted_for
+        self._fleet_status = 1
     except CommandRefused:
       self._sent = trip
+      self._command_refused = trip
+      self._fleet_status = 1
     except Exception as e:
       LOG.warning("tesla: destination not sent: %s", type(e).__name__)
       self._retry(trip, now)
     else:
+      self._command_refused = None
+      if self._fleet_status == 1:
+        self._fleet_status = 0
       # Not self._car yet: that is the car's answer. A share the car could not find would
       # otherwise read as the car ending the guidance, and end the phone's.
       self._sent, self._sent_places, self._sent_at, self._send_tries = trip, trip.places(), now, 0
@@ -510,7 +565,8 @@ class TeslaDestinationSource:
         # ponytail: order 2 makes a place the next stop (Teslemetry's reading of the command),
         # so the last via goes in first. Unverified on the car: check its trip the first time.
         for via_lat, via_lon, _ in reversed(trip.vias):
-          self._post(base, vehicle, "navigation_gps_request", {"lat": via_lat, "lon": via_lon, "order": 2})
+          if not self._post(base, vehicle, "navigation_gps_request", {"lat": via_lat, "lon": via_lon, "order": 2}):
+            raise CommandRefused
         return
     if not self._post(base, vehicle, "navigation_request", share_body(lat, lon, int(time.time() * 1000))):  # noqa: TID251
       raise CommandRefused
@@ -521,7 +577,7 @@ class TeslaDestinationSource:
 
   def _post(self, base: str, vehicle: str, command: str, body: dict) -> bool:
     """One billed command; True when the car took it."""
-    self.commands.spend()
+    self._reserve(self.commands, 1, self._minted_for[0])
     response = _read_json(command_request(self._access_token, base, vehicle, command, body), self._opener).get("response")
     if isinstance(response, dict) and response.get("result") is True:
       return True
