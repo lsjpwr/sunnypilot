@@ -283,6 +283,7 @@ class TeslaDestinationSource:
     # The car's navigation for the phone: CAR_UNKNOWN until this drive's first answer, None for
     # no route, else (lat, lon, name). It changes only when the car's answer changes.
     self._car = CAR_UNKNOWN
+    self._car_at = float("-inf")
     self._car_raw: tuple[float, float, str] | None = None  # the car's last answer, to tell a change from a repeat
     self._empty_polls = 0
     self._polled = False  # an answer this drive, so the car's destination is known before one is sent
@@ -302,6 +303,8 @@ class TeslaDestinationSource:
 
   def car(self):
     """What the car's navigation guides to, for the phone app: CAR_UNKNOWN, None or (lat, lon, name)."""
+    if not self._was_started or not self.phone_connected() or self._clock() - self._car_at > POLL_INTERVAL_S:
+      return CAR_UNKNOWN
     return self._car
 
   def fleet_status(self) -> int:
@@ -365,6 +368,7 @@ class TeslaDestinationSource:
       self._sent, self._sent_places, self._sent_at, self._send_tries, self._send_after = None, (), float("-inf"), 0, 0.
     self._was_started = started
     if not started or not self.phone_connected():
+      self._car_at, self._empty_polls = float("-inf"), 0
       return
     if now >= self._next_poll:
       self._next_poll = now + POLL_INTERVAL_S
@@ -372,6 +376,9 @@ class TeslaDestinationSource:
     self._send(now)
 
   def _poll(self, params, set_alert, now: float) -> None:
+    if self._car_at == float("-inf"):
+      self._empty_polls = 0
+    self._car_at = float("-inf")  # a failed read says nothing about the car's current guidance
     client_id, vin = params.get("KoreaTeslaClientId"), params.get("KoreaTeslaVin")
     fleet_token, owner_token = params.get("KoreaTeslaRefreshToken"), params.get("KoreaTeslaOwnerRefreshToken")
     # Fleet first when both are set: it is official, and its token is not the whole account. The
@@ -441,11 +448,17 @@ class TeslaDestinationSource:
       # type is logged -- a message can carry the URL, and a body the car's position.
       LOG.warning("tesla: request failed: %s", type(e).__name__)
       return
-    self._observe(params, destination, now)
+    if self.phone_connected():
+      self._observe(params, destination, now)
+      self._car_at = now
 
   def _fetch(self, mode: str, vin: str) -> tuple[float, float, str] | None:
+    if not self.phone_connected():
+      raise FleetStopped
     if mode == OWNER and self._owner_vehicle is None:
       self._owner_vehicle = owner_vehicle_id(self._access_token, vin, self._opener)
+    if not self.phone_connected():
+      raise FleetStopped
     self._reserve(self.budget, 2, mode)
     if mode == FLEET:
       return fetch_destination(self._access_token, vin, self._opener)
@@ -498,6 +511,11 @@ class TeslaDestinationSource:
       return
     if self._fleet_status in (3, 4):
       return
+    if self._sent is not None:
+      removed = len(self._sent.vias) - len(trip.vias)
+      if removed >= 0 and same_trip(trip, Trip(self._sent.destination, self._sent.vias[removed:])):
+        self._sent = trip  # passing a front via advances the baseline; adding it back is a new trip
+        return
     if (not self._polled or self._access_token is None or now < self._send_after or self._minted_for == self._refused
         or same_trip(trip, self._sent, vias=self._gps is not False)):
       return
@@ -577,6 +595,8 @@ class TeslaDestinationSource:
 
   def _post(self, base: str, vehicle: str, command: str, body: dict) -> bool:
     """One billed command; True when the car took it."""
+    if not self.phone_connected():
+      raise FleetStopped
     self._reserve(self.commands, 1, self._minted_for[0])
     response = _read_json(command_request(self._access_token, base, vehicle, command, body), self._opener).get("response")
     if isinstance(response, dict) and response.get("result") is True:

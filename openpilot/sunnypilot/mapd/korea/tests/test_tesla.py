@@ -319,6 +319,20 @@ class TestPollingConditions(SourceTestCase):
     self.tick(source, seconds=1.)
     self.assertEqual(self.opener.count("vehicle_data"), 2)
 
+  def test_disconnect_during_token_refresh_stops_before_reading_the_car(self):
+    connected = [True]
+    self.opener = ScriptedOpener([car()], events=self.events)
+
+    def disconnect(request, **kwargs):
+      response = self.opener(request, **kwargs)
+      connected[0] = False
+      return response
+
+    source = TeslaDestinationSource(opener=disconnect, clock=self.clock, phone_connected=lambda: connected[0],
+                                    monthly=FleetBudget(self.budget_path, today=lambda: self.today))
+    self.tick(source)
+    self.assertEqual(self.opener.count("vehicle_data"), 0)
+
   def test_a_new_drive_asks_at_once(self):
     """The first poll of a drive does not wait out the last drive's minute."""
     source = self.source([car(), car()])
@@ -815,6 +829,47 @@ class TestCarForThePhone(SourceTestCase):
     self.assertTrue(source.guides_to((GANGNAM[0] + 0.0002, GANGNAM[1])))
     self.assertFalse(source.guides_to(CITY_HALL))
 
+  def test_an_unavailable_car_is_omitted_until_a_fresh_answer(self):
+    source = self.source([car(), http_error(503), car()])
+    self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(source.car(), CAR_UNKNOWN)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(source.car(), (*GANGNAM, "강남역"))
+    self.assertEqual(self.events.count("put NavDestination"), 1)
+
+  def test_disconnect_omits_the_previous_observation_until_the_next_minute_read(self):
+    source = self.source([car(), car()])
+    self.tick(source)
+    source.phone_connected = lambda: False
+    self.tick(source, seconds=1.)
+    self.assertEqual(source.car(), CAR_UNKNOWN)
+    source.phone_connected = lambda: True
+    self.tick(source, seconds=1.)
+    self.assertEqual(source.car(), CAR_UNKNOWN)
+    self.assertEqual(self.opener.count("vehicle_data"), 1)
+    self.tick(source, seconds=POLL_INTERVAL_S - 2.)
+    self.assertEqual(source.car(), (*GANGNAM, "강남역"))
+    self.assertEqual(self.opener.count("vehicle_data"), 2)
+
+  def test_a_cached_car_end_expires_without_another_fleet_answer(self):
+    source = self.source([NO_ROUTE, NO_ROUTE])
+    self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertIsNone(source.car())
+    self.clock.now += POLL_INTERVAL_S + 1.
+    self.assertEqual(source.car(), CAR_UNKNOWN)
+
+  def test_unavailable_reads_break_the_consecutive_car_end_observations(self):
+    source = self.source([car(), NO_ROUTE, http_error(503), NO_ROUTE, NO_ROUTE])
+    self.tick(source)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertEqual(source.car(), (*GANGNAM, "강남역"))
+    self.tick(source, seconds=POLL_INTERVAL_S)
+    self.assertIsNone(source.car())
+
 
 class TestSendToTheCar(SourceTestCase):
   def commands(self):
@@ -853,6 +908,60 @@ class TestSendToTheCar(SourceTestCase):
     self.tick(source)
     self.assertEqual([body.get("order") for _, body in self.commands()], [1, 2, 2])
     self.assertEqual([(body["lat"], body["lon"]) for _, body in self.commands()[1:]], [other[:2], VIA[:2]])
+
+  def test_passing_front_vias_does_not_send_the_trip_again(self):
+    other = (37.5, 127.0, "B")
+    source = self.source([NO_ROUTE])
+    source.want(Trip(PHONE.destination, (VIA, other)))
+    self.tick(source)
+    source.want(Trip(PHONE.destination, (other,)))
+    self.tick(source, seconds=1.)
+    source.want(PHONE)
+    self.tick(source, seconds=1.)
+    self.assertEqual(len(self.commands()), 3)
+
+  def test_trip_edits_are_distinct_from_passing_front_vias(self):
+    other, last = (37.5, 127.0, "B"), (37.6, 127.1, "C")
+    for edited in (Trip(PHONE.destination, (VIA, other, last, (*GANGNAM, "D"))),
+                   Trip(PHONE.destination, (other, VIA, last)),
+                   Trip(PHONE.destination, (VIA, last)),
+                   Trip(PHONE.destination, (VIA, other)),
+                   Trip((*GANGNAM, "D"), (VIA, other, last))):
+      with self.subTest(edited=edited):
+        self.setUp()
+        source = self.source([NO_ROUTE])
+        source.want(Trip(PHONE.destination, (VIA, other, last)))
+        self.tick(source)
+        source.want(edited)
+        self.tick(source, seconds=1.)
+        self.assertEqual(len(self.commands()), 5 + len(edited.vias))
+
+  def test_adding_a_passed_via_back_sends_a_new_trip(self):
+    source = self.source([NO_ROUTE])
+    source.want(Trip(PHONE.destination, (VIA,)))
+    self.tick(source)
+    source.want(PHONE)
+    self.tick(source, seconds=1.)
+    source.want(Trip(PHONE.destination, (VIA,)))
+    self.tick(source, seconds=1.)
+    self.assertEqual(len(self.commands()), 4)
+
+  def test_disconnect_during_a_fleet_read_never_sends_the_phone_trip(self):
+    connected = [True]
+    self.opener = ScriptedOpener([car()], events=self.events)
+
+    def disconnect(request, **kwargs):
+      response = self.opener(request, **kwargs)
+      if "/vehicle_data?" in request.full_url:
+        connected[0] = False
+      return response
+
+    source = TeslaDestinationSource(opener=disconnect, clock=self.clock, phone_connected=lambda: connected[0],
+                                    monthly=FleetBudget(self.budget_path, today=lambda: self.today))
+    source.want(PHONE)
+    self.tick(source)
+    self.assertEqual(self.commands(), [])
+    self.assertEqual(source.car(), CAR_UNKNOWN)
 
   def test_a_car_that_takes_no_coordinates_is_shared_the_destination(self):
     for refusal in (http_error(403), http_error(400), REFUSED):
