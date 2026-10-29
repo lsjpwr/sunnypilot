@@ -244,7 +244,7 @@ def korea_main() -> None:
         db_missing = absent
 
       if route_source is not None:
-        route_source.set_started(params.get_bool("IsOnroad"))
+        route_source.set_started(params.get("IsOffroad") is False)
       live_map_sp.tick()
       rk.keep_time()
   finally:

@@ -236,15 +236,6 @@ def share_body(lat: float, lon: float, now_ms: int) -> dict:
           "value": {"android.intent.extra.TEXT": f"{lat:.6f},{lon:.6f}"}}
 
 
-def holds_destination(dest, written: tuple[float, float]) -> bool:
-  """Does NavDestination still hold exactly what its writer wrote? json round-trips a
-  float exactly, so equality is right here -- unlike between two readings of the car."""
-  try:
-    return (float(dest["latitude"]), float(dest["longitude"])) == written
-  except (TypeError, ValueError, KeyError):
-    return False
-
-
 class TeslaDestinationSource:
   """Background thread that copies the car's navigation destination into NavDestination, and
   gives the car the phone app's trip.
@@ -271,7 +262,7 @@ class TeslaDestinationSource:
     # The owner API's id for the car, looked up once per access token.
     self._owner_vehicle: str | None = None
     # What this thread last wrote, so the car repeating it is not another write.
-    self._written: tuple[float, float] | None = None
+    self._written: dict | None = None
     # The credentials Tesla refused: (mode, client id, refresh token, VIN). Polling waits for
     # any of them to change -- tesla_setup writing new ones, or a VIN fixed by hand over ssh.
     self._rejected: tuple | None = None
@@ -607,17 +598,17 @@ class TeslaDestinationSource:
     if destination is None:
       # Guidance ended in the car. Clear only what this thread wrote: a destination from the
       # UDP socket or athenad is not the car's to cancel.
-      if self._written is not None and holds_destination(params.get("NavDestination"), self._written):
+      if self._written is not None and params.get("NavDestination") == self._written:
         params.remove("NavDestination")
       self._written = None
       return
     lat, lon, name = destination
-    if self._written is not None and haversine(lat, lon, *self._written) <= SAME_DESTINATION_M:
+    if self._written is not None and haversine(lat, lon, self._written["latitude"], self._written["longitude"]) <= SAME_DESTINATION_M:
       # An unchanged car destination must not restore a trip the phone already ended.
       return
-    params.put("NavDestination", {"latitude": lat, "longitude": lon,
-                                  "place_name": name or None, "place_details": None})
-    self._written = (lat, lon)
+    written = {"latitude": lat, "longitude": lon, "place_name": name or None, "place_details": None}
+    params.put("NavDestination", written)
+    self._written = written
 
   def _loop(self) -> None:
     # imported here so the module stays importable without the device stack, which is what

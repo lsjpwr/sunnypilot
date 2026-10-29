@@ -45,7 +45,7 @@ from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_MAX_DISTANCE_M, 
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource, PhoneItem
 from openpilot.sunnypilot.mapd.korea.geo import haversine
 from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, distance_to_route
-from openpilot.sunnypilot.mapd.korea.tesla import TeslaDestinationSource, Trip, holds_destination
+from openpilot.sunnypilot.mapd.korea.tesla import TeslaDestinationSource, Trip
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
 from openpilot.sunnypilot.navd.helpers import Coordinate
 
@@ -206,14 +206,9 @@ class KoreaMapData(BaseMapData):
     self.external = external
     self.route_source = route_source
     self.tesla = tesla  # gets the phone app's trip, to give the car
-    # Last destination this object wrote to NavDestination, or None. An optimisation only --
-    # so a phone that repeats the same destination every datagram does not touch /data/params
-    # (flash) once a second forever -- not the source of truth. The param is: it is cleared by
-    # two parties this object hears nothing about (CLEAR_ON_OFFROAD_TRANSITION wipes it when
-    # the drive ends; RouteSource._loop removes it on arrival), and korea_main does not rebuild
-    # this object on either event, so this cache can say "unchanged" while the param itself is
-    # already empty.
-    self._last_written_destination: tuple[float, float] | None = None
+    # Keep the full payload for ownership and avoid rewriting unchanged phone packets.
+    # Another writer can replace it at the same coordinates with new place metadata.
+    self._last_written_destination: dict | None = None
     self.route: list[tuple[float, float]] = []
     self.grade_separated: list[list[tuple[float, float]]] = []  # the route's tunnels, overpasses, underpasses
     self.curve_points: list[tuple[float, float, float]] = []
@@ -330,7 +325,7 @@ class KoreaMapData(BaseMapData):
     return nav.items
 
   def update_destination(self) -> None:
-    """Copy a destination from the socket into the param the route thread reads.
+    """Copy an onroad destination from the socket into the shared navigation param.
 
     The socket's TTL is 5 s (external_source.py:35, checked at :124) and a destination is
     sent once, so it cannot live there. The param is the one place every writer -- this
@@ -338,8 +333,8 @@ class KoreaMapData(BaseMapData):
     JSON shape is athenad's.
 
     Written when it changes (or when the param has been cleared out from under this object --
-    see _last_written_destination above), and removed only on an explicit end-of-guidance
-    signal -- this loop runs forever at 1 Hz and NavDestination lives on flash. nav.destination
+    see _last_written_destination above), and removed on an end-of-guidance signal or arrival
+    in the route store -- this loop runs forever at 1 Hz and NavDestination lives on flash. nav.destination
     alone cannot drive that: ExternalNav.destination is None both for "this datagram carried no
     destination keys" and for "the phone sent 0,0 (or a point outside Korea)", and those need
     opposite responses. So key presence in nav.raw -- not the parsed value -- is what tells a
@@ -348,39 +343,40 @@ class KoreaMapData(BaseMapData):
     The phone app's whole trip also goes to self.tesla, which gives it to the car.
     """
     nav = self.nav()
-    if nav is None:
+    if nav is None or self.params.get_bool("IsOffroad"):
       if self.tesla is not None:
-        self.tesla.want(None)  # a quiet phone guides the car nowhere
+        self.tesla.want(None)
       return
     if "destination_lat" not in nav.raw and "destination_lon" not in nav.raw:
       # Nothing about the destination in this datagram: leave the param exactly as it is,
       # whether that means untouched or already cleared.
       return
+    destination = nav.destination
+    if self.route_source is not None and self.route_source.closed() and nav.raw.get("trip", 0):
+      destination = None
     if self.tesla is not None:
-      self.tesla.want(Trip((*nav.destination, nav.destination_name), nav.vias) if nav.destination else None)
-    if nav.destination is None:
-      # Keys were present but parsed to None: 0/0 or a coordinate outside Korea, i.e. the
-      # phone's explicit end-of-guidance signal, not "nothing new this tick". Only what this
+      self.tesla.want(Trip((*destination, nav.destination_name), nav.vias) if destination else None)
+    if destination is None:
+      # Guidance ended in the phone packet or the route store. Only what this
       # object wrote goes: the car's destination, or athenad's, is not the phone's to end --
       # and the phone app repeats 0/0 for a while after its guidance ends. Clearing the
       # remembered value too means a later re-send of the same destination writes again.
-      if self._last_written_destination is not None and holds_destination(self.params.get("NavDestination"),
-                                                                          self._last_written_destination):
+      if self._last_written_destination is not None and self.params.get("NavDestination") == self._last_written_destination:
         self.params.remove("NavDestination")
       self._last_written_destination = None
-    elif self.tesla is not None and self.tesla.guides_to(nav.destination):
+    elif self.tesla is not None and self.tesla.guides_to(destination):
       # The phone took the car's destination, which tesla.py wrote already -- and clears when
       # the car ends it. The phone ending it later leaves the car's.
       pass
-    elif nav.destination != self._last_written_destination or not self.params.get("NavDestination"):
-      # The "or" covers a destination unchanged from this object's point of view but cleared
-      # by someone else since -- the manager on an offroad transition, or RouteSource on
-      # arrival -- which otherwise left the param empty for the rest of that drive (Fix 3).
-      self.params.put("NavDestination", {
-        "latitude": nav.destination[0], "longitude": nav.destination[1],
+    else:
+      # A new drive can repeat a destination whose param was cleared since the last write.
+      payload = {
+        "latitude": destination[0], "longitude": destination[1],
         "place_name": nav.destination_name or None, "place_details": None,
-      })
-      self._last_written_destination = nav.destination
+      }
+      if payload != self._last_written_destination or not self.params.get("NavDestination"):
+        self.params.put("NavDestination", payload)
+        self._last_written_destination = payload
 
   def update_location(self) -> None:
     location = self.sm['liveLocationKalman']

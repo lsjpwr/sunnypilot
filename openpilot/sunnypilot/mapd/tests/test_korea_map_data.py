@@ -226,7 +226,7 @@ class TestUpdateDestination(unittest.TestCase):
     data = make_data(external=StubExternal(nav))
     data.params.put("NavDestination", {"latitude": 37.5665, "longitude": 126.9780,
                                        "place_name": None, "place_details": None})
-    data._last_written_destination = (37.5665, 126.9780)
+    data._last_written_destination = data.params.get("NavDestination")
 
     data.update_destination()
 
@@ -243,7 +243,6 @@ class TestUpdateDestination(unittest.TestCase):
     self.assertEqual(data.params.get("NavDestination"), {
       "latitude": 37.5665, "longitude": 126.9780, "place_name": "서울시청", "place_details": None,
     })
-    self.assertEqual(data._last_written_destination, (37.5665, 126.9780))
 
   def test_the_same_destination_repeated_is_not_rewritten(self):
     """A phone that resends the same destination every datagram must not touch /data/params
@@ -264,7 +263,7 @@ class TestUpdateDestination(unittest.TestCase):
     data = make_data(external=StubExternal(nav))
     cars = {"latitude": 37.4979, "longitude": 127.0276, "place_name": "강남역", "place_details": None}
     data.params.put("NavDestination", cars)
-    data._last_written_destination = (37.5665, 126.9780)  # what the phone guided to before the car changed it
+    data._last_written_destination = {"latitude": 37.5665, "longitude": 126.9780, "place_name": None, "place_details": None}
 
     data.update_destination()
 

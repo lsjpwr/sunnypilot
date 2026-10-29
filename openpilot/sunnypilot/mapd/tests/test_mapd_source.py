@@ -24,7 +24,7 @@ class FakeParams:
   # runs forever, so new keys get listed here rather than dropping the check.
   # Mapd_ClearCache is upstream's sunnylink map-deletion trigger (#1971), read once
   # per osm_main() tick.
-  GETTABLE = ("MapDataSource", "Mapd_ClearCache")
+  GETTABLE = ("MapDataSource", "Mapd_ClearCache", "IsOffroad")
 
   def __init__(self, source, **bools):
     self.source = source
