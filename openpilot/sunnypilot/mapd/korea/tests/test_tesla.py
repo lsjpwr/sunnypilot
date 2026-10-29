@@ -96,7 +96,7 @@ class FakeParams:
   opener's requests, so a test can check what happened in which order."""
 
   def __init__(self, values=None, events=None):
-    self.values = dict(CREDENTIALS if values is None else values)
+    self.values: dict = dict(CREDENTIALS if values is None else values)
     self.events = [] if events is None else events
     self.blocking = set()  # keys written with block=True, i.e. on flash when put() returns
 
@@ -278,8 +278,7 @@ class SourceTestCase(unittest.TestCase):
     source.step(self.params, started, self.alerts.append)
 
   def nav(self):
-    raw = self.params.values.get("NavDestination")
-    return None if raw is None else json.loads(raw)
+    return self.params.get("NavDestination")
 
 
 class TestPollingConditions(SourceTestCase):
@@ -558,7 +557,7 @@ class TestWriteRules(SourceTestCase):
     """Something else -- the UDP socket, athenad -- wrote after us. Not the car's to cancel."""
     source = self.source([car(), NO_ROUTE, NO_ROUTE])
     self.tick(source)
-    other = json.dumps({"latitude": CITY_HALL[0], "longitude": CITY_HALL[1], "place_name": None, "place_details": None})
+    other = {"latitude": CITY_HALL[0], "longitude": CITY_HALL[1], "place_name": None, "place_details": None}
     self.params.values["NavDestination"] = other
     self.tick(source, seconds=POLL_INTERVAL_S)
     self.tick(source, seconds=POLL_INTERVAL_S)

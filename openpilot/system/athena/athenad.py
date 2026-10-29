@@ -386,14 +386,14 @@ def getVersion() -> dict[str, str]:
 
 
 @dispatcher.add_method
-def setNavDestination(latitude: int = 0, longitude: int = 0, place_name: str | None = None, place_details: str | None = None) -> dict[str, int]:
+def setNavDestination(latitude: float = 0, longitude: float = 0, place_name: str | None = None, place_details: str | None = None) -> dict[str, int]:
   destination = {
     "latitude": latitude,
     "longitude": longitude,
     "place_name": place_name,
     "place_details": place_details,
   }
-  Params().put("NavDestination", json.dumps(destination))
+  Params().put("NavDestination", destination)
 
   return {"success": 1}
 

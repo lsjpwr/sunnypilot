@@ -376,10 +376,10 @@ class KoreaMapData(BaseMapData):
       # The "or" covers a destination unchanged from this object's point of view but cleared
       # by someone else since -- the manager on an offroad transition, or RouteSource on
       # arrival -- which otherwise left the param empty for the rest of that drive (Fix 3).
-      self.params.put("NavDestination", json.dumps({
+      self.params.put("NavDestination", {
         "latitude": nav.destination[0], "longitude": nav.destination[1],
         "place_name": nav.destination_name or None, "place_details": None,
-      }))
+      })
       self._last_written_destination = nav.destination
 
   def update_location(self) -> None:

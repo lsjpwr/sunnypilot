@@ -92,7 +92,7 @@ class StubMemParams:
   the real Params, and put_calls lets a test count writes without monkeypatching put()."""
 
   def __init__(self):
-    self.values: dict[str, str] = {}
+    self.values: dict = {}
     self.put_calls = 0
 
   def put(self, key, value, block=False):
@@ -210,21 +210,22 @@ class TestUpdateDestination(unittest.TestCase):
     """No destination_lat/lon in this datagram at all: neither written nor removed, whether
     that means untouched or already cleared."""
     data = make_data(external=StubExternal(ExternalNav(raw={"speed_limit_kph": 60})))
-    data.params.put("NavDestination", "sentinel")
+    sentinel = {"latitude": 37.5665, "longitude": 126.9780}
+    data.params.put("NavDestination", sentinel)
     puts_before = data.params.put_calls
 
     data.update_destination()
 
     self.assertEqual(data.params.put_calls, puts_before, "a datagram with no destination keys must not write")
-    self.assertEqual(data.params.get("NavDestination"), "sentinel")
+    self.assertEqual(data.params.get("NavDestination"), sentinel)
 
   def test_keys_present_but_parsed_to_none_removes_the_param(self):
     """0/0 (or an out-of-Korea point) parses to None but the keys are still in raw -- the
     phone's explicit end-of-guidance signal, not a no-op tick."""
     nav = ExternalNav(destination=None, raw={"destination_lat": 0, "destination_lon": 0})
     data = make_data(external=StubExternal(nav))
-    data.params.put("NavDestination", json.dumps({"latitude": 37.5665, "longitude": 126.9780,
-                                                   "place_name": None, "place_details": None}))
+    data.params.put("NavDestination", {"latitude": 37.5665, "longitude": 126.9780,
+                                       "place_name": None, "place_details": None})
     data._last_written_destination = (37.5665, 126.9780)
 
     data.update_destination()
@@ -239,7 +240,7 @@ class TestUpdateDestination(unittest.TestCase):
 
     data.update_destination()
 
-    self.assertEqual(json.loads(data.params.get("NavDestination")), {
+    self.assertEqual(data.params.get("NavDestination"), {
       "latitude": 37.5665, "longitude": 126.9780, "place_name": "서울시청", "place_details": None,
     })
     self.assertEqual(data._last_written_destination, (37.5665, 126.9780))
@@ -261,7 +262,7 @@ class TestUpdateDestination(unittest.TestCase):
     """The car's, or athenad's: not the phone's to end. The app repeats 0/0 for a while after its guidance ends."""
     nav = ExternalNav(destination=None, raw={"destination_lat": 0, "destination_lon": 0})
     data = make_data(external=StubExternal(nav))
-    cars = json.dumps({"latitude": 37.4979, "longitude": 127.0276, "place_name": "강남역", "place_details": None})
+    cars = {"latitude": 37.4979, "longitude": 127.0276, "place_name": "강남역", "place_details": None}
     data.params.put("NavDestination", cars)
     data._last_written_destination = (37.5665, 126.9780)  # what the phone guided to before the car changed it
 

@@ -262,7 +262,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Written by athenad's setNavDestination RPC, the Korean external nav socket and the
     // Tesla destination thread (korea/tesla.py); read by mapd. Cleared on manager start and
     // when the drive ends, so a destination never carries into a later drive.
-    {"NavDestination", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, STRING}},
+    {"NavDestination", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
     {"OsmDbUpdatesCheck", {CLEAR_ON_MANAGER_START, BOOL}},  // mapd database update happens with device ON, reset on boot

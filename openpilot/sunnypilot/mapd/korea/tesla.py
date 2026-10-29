@@ -236,11 +236,10 @@ def share_body(lat: float, lon: float, now_ms: int) -> dict:
           "value": {"android.intent.extra.TEXT": f"{lat:.6f},{lon:.6f}"}}
 
 
-def holds_destination(raw, written: tuple[float, float]) -> bool:
+def holds_destination(dest, written: tuple[float, float]) -> bool:
   """Does NavDestination still hold exactly what its writer wrote? json round-trips a
   float exactly, so equality is right here -- unlike between two readings of the car."""
   try:
-    dest = json.loads(raw)
     return (float(dest["latitude"]), float(dest["longitude"])) == written
   except (TypeError, ValueError, KeyError):
     return False
@@ -616,8 +615,8 @@ class TeslaDestinationSource:
     if self._written is not None and haversine(lat, lon, *self._written) <= SAME_DESTINATION_M:
       # An unchanged car destination must not restore a trip the phone already ended.
       return
-    params.put("NavDestination", json.dumps({"latitude": lat, "longitude": lon,
-                                             "place_name": name or None, "place_details": None}))
+    params.put("NavDestination", {"latitude": lat, "longitude": lon,
+                                  "place_name": name or None, "place_details": None})
     self._written = (lat, lon)
 
   def _loop(self) -> None:
