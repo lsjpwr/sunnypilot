@@ -57,7 +57,7 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     self.params.put("MapSlowdownDecel", 0.6, block=True)
 
     # TODO-SP: mock data from gpsLocation
-    self.params.put("LastGPSPosition", "{}", block=True)
+    self.params.put("LastGPSPosition", b"{}", block=True)
     self.params.put("MapTargetVelocities", "{}", block=True)
 
   # Every Korea toggle that feeds SCC-Map. On a device the camera kinds are on by default
@@ -174,7 +174,7 @@ class TestSmartCruiseControlMap(OpenpilotTestCase):
     position = {"latitude": 0.0, "longitude": lon(car_m)}
     if bearing is not None:
       position["bearing"] = bearing
-    self.mem_params.put("LastGPSPosition", json.dumps(position), block=True)
+    self.mem_params.put("LastGPSPosition", json.dumps(position).encode(), block=True)
     self.mem_params.put("MapTargetVelocities", json.dumps([point]), block=True)
 
   def run_at(self, v_ego_kph, v_cruise_kph):
