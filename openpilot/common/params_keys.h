@@ -28,6 +28,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ControlsReady", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"CurrentBootlog", {PERSISTENT, STRING}},
     {"CurrentRoute", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, STRING}},
+    {"DisableDriverCameraIR", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"DisableLogging", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"DisablePowerDown", {PERSISTENT | BACKUP, BOOL}},
     {"DisableUpdates", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -40,8 +41,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"DriverLockoutCount", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, INT, "0"}},
     {"DriverMonitoringMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"AlphaLongitudinalEnabled", {PERSISTENT | DEVELOPMENT_ONLY | BACKUP, BOOL}},
-    {"ExperimentalMode", {PERSISTENT | BACKUP, BOOL}},
-    {"ExperimentalModeConfirmed", {PERSISTENT | BACKUP, BOOL}},
     {"FirmwareQueryDone", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"ForcePowerDown", {PERSISTENT, BOOL}},
     {"GitBranch", {PERSISTENT, STRING}},
@@ -93,6 +92,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ObdMultiplexingEnabled", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
     {"Offroad_CarUnrecognized", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_ChestnutBranch", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_ChestnutNotDetected", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"Offroad_ChestnutOverheated", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_ChestnutPcieUnavailable", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_ChestnutUncompiled", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"Offroad_ChestnutUpdateFailed", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
+    {"Offroad_ChestnutUsbSlow", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_ConnectivityNeeded", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_ConnectivityNeededPrompt", {CLEAR_ON_MANAGER_START, JSON}},
     {"Offroad_ExcessiveActuation", {PERSISTENT, JSON}},
@@ -133,6 +138,15 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"UptimeOnroad", {PERSISTENT, FLOAT, "0.0"}},
     {"ChestnutActive", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
     {"ChestnutLoading", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION | CLEAR_ON_IGNITION_ON, BOOL}},
+    {"ChestnutRetry", {CLEAR_ON_MANAGER_START | CLEAR_ON_IGNITION_ON, BOOL}},
+    {"InitialCruiseSpeedKph", {PERSISTENT, INT, "40"}},
+    {"NavDestination", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
+    {"NavigationEnabled", {PERSISTENT, BOOL, "0"}},
+    {"Offroad_ChestnutModelError", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_Pairing", {CLEAR_ON_MANAGER_START, JSON}},
+    {"Offroad_UploadsIgnored", {CLEAR_ON_MANAGER_START, JSON}},
+    {"PairingEmail", {PERSISTENT, STRING}},
+    {"PairingProvider", {PERSISTENT, STRING}},
     {"Version", {PERSISTENT, STRING}},
 
     // --- sunnypilot params --- //
@@ -239,9 +253,8 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"TeslaMadsScreenButton", {PERSISTENT | BACKUP, INT, "0"}},
     {"ToyotaEnforceStockLongitudinal", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"ToyotaStopAndGoHack", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"ToyotaTSS2Smooth", {PERSISTENT | BACKUP, BOOL, "0"}},
 
-    {"DynamicExperimentalControl", {PERSISTENT | BACKUP, INT, "0"}},
-    {"DynamicExperimentalControlMapMaxSpeed", {PERSISTENT | BACKUP, INT, "60"}},
     {"BlindSpot", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // sunnypilot model params
@@ -251,6 +264,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LagdValueCache", {PERSISTENT, FLOAT, "0.2"}},
     {"LaneTurnDesire", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LaneTurnValue", {PERSISTENT | BACKUP, FLOAT, "19.0"}},
+    {"Blendful", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"PlanplusControl", {PERSISTENT | BACKUP, FLOAT, "1.0"}},
 
     // mapd
@@ -259,10 +273,6 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"Mapd_ClearCache", {CLEAR_ON_MANAGER_START, BOOL}},
     {"MapdVersion", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
-    // Written by athenad's setNavDestination RPC, the Korean external nav socket and the
-    // Tesla destination thread (korea/tesla.py); read by mapd. Cleared on manager start and
-    // when the drive ends, so a destination never carries into a later drive.
-    {"NavDestination", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, JSON}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"Offroad_OSMUpdateRequired", {CLEAR_ON_MANAGER_START, JSON}},
     {"OsmDbUpdatesCheck", {CLEAR_ON_MANAGER_START, BOOL}},  // mapd database update happens with device ON, reset on boot

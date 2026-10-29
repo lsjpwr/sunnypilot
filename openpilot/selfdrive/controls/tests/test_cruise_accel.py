@@ -4,8 +4,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_planner import A_CRUISE_T, ge
 
 
 def cruise_accel(v_cruise, v_ego, a_prev, a_target_prev):
-  # e2e skips the turn and coast limits, which need CarParams
-  return get_cruise_accel(True, v_cruise, v_ego, a_prev, a_target_prev, 0.0, None, DT_MDL, 0.0, True)
+  return get_cruise_accel(v_cruise, v_ego, a_prev, a_target_prev, DT_MDL)
 
 
 class TestCruiseAccel(OpenpilotTestCase):

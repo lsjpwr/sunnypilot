@@ -25,6 +25,7 @@ class HudRendererSP(HudRenderer):
     self._sla_kph: float | None = None
     self._shown_prev: float | None = None
     self._section_avg: tuple[int, bool] | None = None
+    self._sp_engaged: bool = False
 
   def _update_state(self) -> None:
     super()._update_state()
@@ -57,6 +58,11 @@ class HudRendererSP(HudRenderer):
       return super()._set_speed_colors(alpha)
     color = rl.Color(*SLA_GREEN, int(255 * 0.9 * alpha))
     return color, color
+
+    sp_engaged = ui_state.engaged
+    if sp_engaged != self._sp_engaged:
+      self._chestnut_fade_time = rl.get_time() if sp_engaged else 0
+    self._sp_engaged = sp_engaged
 
   def _render(self, rect: rl.Rectangle) -> None:
     super()._render(rect)

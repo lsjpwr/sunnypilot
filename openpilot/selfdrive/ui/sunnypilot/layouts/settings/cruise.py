@@ -10,8 +10,7 @@ from openpilot.selfdrive.ui.sunnypilot.layouts.settings.cruise_sub_layouts.speed
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.sunnypilot.mapd import MapSource
 from openpilot.system.ui.lib.multilang import tr, tr_noop
-from openpilot.system.ui.sunnypilot.widgets.list_view import (toggle_item_sp, option_item_sp, simple_button_item_sp,
-                                                              multiple_button_item_sp)
+from openpilot.system.ui.sunnypilot.widgets.list_view import toggle_item_sp, option_item_sp, simple_button_item_sp
 from openpilot.system.ui.widgets import Widget
 from openpilot.system.ui.widgets.scroller_tici import Scroller
 
@@ -97,24 +96,6 @@ class CruiseLayout(Widget):
       callback=lambda: self._set_current_panel(PanelType.SLA)
     )
 
-    self.dec_option = multiple_button_item_sp(
-      title=tr("Dynamic Experimental Control"),
-      description=tr("Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal."),
-      buttons=[tr("Off"), tr("Dynamic"), tr("Dynamic Map")],
-      button_width=240,
-      param="DynamicExperimentalControl",
-      inline=False)
-
-    self.dec_map_max_speed_option = option_item_sp(
-      param="DynamicExperimentalControlMapMaxSpeed",
-      title=lambda: tr("Dynamic Experimental Control Map - Max Speed"),
-      min_value=20,
-      max_value=120,
-      value_change_step=5,
-      description=lambda: tr("Maximum road speed limit to allow End to End Longitudinal mode in Dynamic Map mode."),
-      label_callback=lambda speed: f'{speed} {"km/h" if ui_state.is_metric else "mph"}',
-    )
-
     self.stop_distance_option = option_item_sp(
       param="StopDistance",
       title=lambda: tr("Stop Distance in Traffic"),
@@ -128,8 +109,6 @@ class CruiseLayout(Widget):
 
     items = [
       self.icbm_toggle,
-      self.dec_option,
-      self.dec_map_max_speed_option,
       self.stop_distance_option,
       self.scc_v_toggle,
       self.scc_m_toggle,
@@ -151,7 +130,6 @@ class CruiseLayout(Widget):
     self._scroller.show_event()
     self.icbm_toggle.show_description(True)
     self.custom_acc_toggle.show_description(True)
-    self.dec_option.show_description(True)
 
   def _set_current_panel(self, panel: PanelType):
     self._current_panel = panel
@@ -184,13 +162,9 @@ class CruiseLayout(Widget):
           self.icbm_toggle.set_description(new_desc)
           self.icbm_toggle.show_description(True)
 
-      dec_val = ui_state.params.get_int("DynamicExperimentalControl")
-      self.dec_map_max_speed_option.set_visible(dec_val == 2)
 
       if has_long or has_icbm:
         self.custom_acc_toggle.action_item.set_enabled(((has_long and not ui_state.CP.pcmCruise) or has_icbm) and ui_state.is_offroad())
-        self.dec_option.action_item.set_enabled(has_long)
-        self.dec_map_max_speed_option.action_item.set_enabled(has_long)
         self.stop_distance_option.action_item.set_enabled(has_long)
         self.scc_v_toggle.action_item.set_enabled(True)
         is_osm = ui_state.params.get("MapDataSource", return_default=True) == MapSource.osm
@@ -200,14 +174,10 @@ class CruiseLayout(Widget):
           self.scc_m_toggle.set_description(new_scc_m_desc)
       else:
         ui_state.params.remove("CustomAccIncrementsEnabled")
-        ui_state.params.remove("DynamicExperimentalControl")
-        ui_state.params.remove("DynamicExperimentalControlMapMaxSpeed")
         ui_state.params.remove("SmartCruiseControlVision")
         ui_state.params.remove("SmartCruiseControlMap")
         ui_state.params.remove("StopDistance")
         self.custom_acc_toggle.action_item.set_enabled(False)
-        self.dec_option.action_item.set_enabled(False)
-        self.dec_map_max_speed_option.action_item.set_enabled(False)
         self.stop_distance_option.action_item.set_enabled(False)
         self.scc_v_toggle.action_item.set_enabled(False)
         self.scc_m_toggle.action_item.set_enabled(False)

@@ -16,7 +16,6 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
   def _planner_and_sm(self, speed_kph, vision_enabled, desired_acceleration):
     params = Params()
     params.put_bool("SmartCruiseControlVision", vision_enabled, block=True)
-    params.put("DynamicExperimentalControl", 0, block=True)
 
     CP = CarInterface.get_non_essential_params(CAR.TESLA_MODEL_Y)
     CP_SP = CarInterface.get_non_essential_params_sp(CP, CAR.TESLA_MODEL_Y)
@@ -33,7 +32,6 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
     sm["carStateSP"].speedLimit = 100.0 / 3.6
     sm["controlsState"].longControlState = "pid"
     sm["selfdriveState"].enabled = True
-    sm["selfdriveState"].experimentalMode = False
     sm["selfdriveState"].personality = "standard"
     sm["radarState"].leadOne.present = False
     sm["radarState"].leadTwo.present = False
@@ -44,7 +42,7 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
     return planner, sm
 
   def test_vision_turn_engagement_brakes_gradually_without_a_lead(self):
-    planner, sm = self._planner_and_sm(60.0, True, 0.0)
+    planner, sm = self._planner_and_sm(60.0, True, 3.5)
     for _ in range(3):
       planner.update(sm)
     targets = [float(planner.output_a_target)]
@@ -64,18 +62,18 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
                            f"Vision-only acceleration jumped {previous:.6f} -> {current:.6f} m/s^2 on cycle {cycle}")
 
   def test_e2e_exit_restores_cruise_acceleration_gradually(self):
-    planner, sm = self._planner_and_sm(90.0, False, -0.8)
+    planner, sm = self._planner_and_sm(90.0, False, 3.5)
     for _ in range(3):
       planner.update(sm)
     self.assertGreater(planner.output_a_target, 0.0)
 
-    sm["selfdriveState"].experimentalMode = True
+    sm["modelV2"].action.desiredAcceleration = -0.8
     planner.update(sm)
     e2e_target = float(planner.output_a_target)
     self.assertAlmostEqual(e2e_target, -0.8, places=6, msg="E2E braking must apply immediately")
     self.assertFalse(planner.output_should_stop)
 
-    sm["selfdriveState"].experimentalMode = False
+    sm["modelV2"].action.desiredAcceleration = 3.5
     targets = [e2e_target]
     for _ in range(int(2.0 / DT_MDL)):
       planner.update(sm)
@@ -89,21 +87,20 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
     self.assertGreater(targets[-1], 0.0, "Cruise acceleration must recover within two seconds")
 
   def test_stronger_e2e_braking_applies_immediately_during_recovery(self):
-    planner, sm = self._planner_and_sm(90.0, False, -0.8)
+    planner, sm = self._planner_and_sm(90.0, False, 3.5)
     for _ in range(3):
       planner.update(sm)
-    sm["selfdriveState"].experimentalMode = True
+    sm["modelV2"].action.desiredAcceleration = -0.8
     planner.update(sm)
     self.assertAlmostEqual(planner.output_a_target, -0.8, places=6)
 
-    sm["selfdriveState"].experimentalMode = False
+    sm["modelV2"].action.desiredAcceleration = 3.5
     for _ in range(3):
       planner.update(sm)
     self.assertGreater(planner.output_a_target, -0.8)
     self.assertLess(planner.output_a_target, 0.0)
     self.assertFalse(planner.output_should_stop)
 
-    sm["selfdriveState"].experimentalMode = True
     sm["modelV2"].action.desiredAcceleration = -2.5
     planner.update(sm)
     self.assertAlmostEqual(planner.output_a_target, -2.5, places=6, msg="Stronger E2E braking must bypass comfort smoothing")
@@ -112,7 +109,7 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
   def test_lead_slowdown_bypasses_vision_comfort_smoothing(self):
     for lead_name in ("leadOne", "leadTwo"):
       with self.subTest(lead=lead_name):
-        planner, sm = self._planner_and_sm(60.0, True, 0.0)
+        planner, sm = self._planner_and_sm(60.0, True, 3.5)
         for _ in range(3):
           planner.update(sm)
         sm["modelV2"].orientationRate.z = [2.5 / sm["carState"].vEgo] * 33
@@ -132,20 +129,21 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
         self.assertLess(planner.output_a_target, 0.0)
 
   def test_low_speed_e2e_exit_releases_stop_and_returns_to_pid(self):
-    planner, sm = self._planner_and_sm(0.36, False, -0.8)
+    planner, sm = self._planner_and_sm(0.36, False, 3.5)
     CP_SP = CarInterface.get_non_essential_params_sp(planner.CP, CAR.TESLA_MODEL_Y)
     controller = LongControl(planner.CP, CP_SP)
     for _ in range(3):
       planner.update(sm)
     self.assertFalse(planner.output_should_stop)
-    sm["selfdriveState"].experimentalMode = True
+    sm["modelV2"].action.desiredAcceleration = -0.8
     sm["modelV2"].action.shouldStop = True
     planner.update(sm)
     self.assertTrue(planner.output_should_stop, "The model stop request must propagate on the same tick")
     controller.update(True, sm["carState"], planner.output_a_target, planner.output_should_stop, (ACCEL_MIN, ACCEL_MAX))
     self.assertEqual(controller.long_control_state, LongCtrlState.stopping)
 
-    sm["selfdriveState"].experimentalMode = False
+    sm["modelV2"].action.desiredAcceleration = 3.5
+    sm["modelV2"].action.shouldStop = False
     for cycle in range(round(1.0 / DT_MDL)):
       planner.update(sm)
       for _ in range(round(DT_MDL / DT_CTRL)):
@@ -159,12 +157,12 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
     for reset in ("off", "unset_cruise"):
       with self.subTest(reset=reset):
         planner, sm = self._planner_and_sm(0.36, False, -0.8)
-        sm["selfdriveState"].experimentalMode = True
         planner.update(sm)
         self.assertLess(planner.output_a_target, 0.0)
         self.assertTrue(planner.output_should_stop)
 
-        sm["selfdriveState"].experimentalMode = False
+        sm["modelV2"].action.desiredAcceleration = 3.5
+        sm["modelV2"].action.shouldStop = False
         sm["carState"].aEgo = 0.2
         if reset == "off":
           sm["controlsState"].longControlState = "off"
@@ -173,6 +171,27 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
         planner.update(sm)
         self.assertGreater(planner.output_a_target, 0.0, "Reset must use measured acceleration instead of stale braking")
         self.assertFalse(planner.output_should_stop)
+
+  def test_model_throttle_suppression_coasts_without_delaying_model_braking(self):
+    planner, sm = self._planner_and_sm(90.0, False, 3.5)
+    sm["carControl"].orientationNED = [0.0, 0.0, 0.0]
+    sm["modelV2"].meta.disengagePredictions.gasPressProbs = [0.0, 0.0]
+    for _ in range(round(2.0 / DT_MDL)):
+      planner.update(sm)
+    self.assertAlmostEqual(planner.output_a_target, -0.3, places=5, msg="No-throttle on level ground must coast")
+
+    sm["modelV2"].action.desiredAcceleration = -2.5
+    planner.update(sm)
+    self.assertAlmostEqual(planner.output_a_target, -2.5, places=6, msg="Model braking must bypass the coast limit on the same tick")
+
+  def test_low_speed_throttle_suppression_allows_restart(self):
+    planner, sm = self._planner_and_sm(0.36, False, 3.5)
+    sm["carControl"].orientationNED = [0.0, 0.0, 0.0]
+    sm["modelV2"].meta.disengagePredictions.gasPressProbs = [0.0, 0.0]
+    for _ in range(3):
+      planner.update(sm)
+    self.assertGreater(planner.output_a_target, 0.0)
+    self.assertFalse(planner.output_should_stop)
 
 
 if __name__ == "__main__":

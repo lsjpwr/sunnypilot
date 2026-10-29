@@ -493,7 +493,7 @@
               "enablement": [
                 {
                   "type": "capability",
-                  "field": "enable_bsm",
+                  "field": "has_bsm",
                   "equals": true
                 },
                 {
@@ -521,75 +521,6 @@
           "title": "",
           "description": "",
           "items": [
-            {
-              "key": "ExperimentalMode",
-              "widget": "toggle",
-              "title": "Experimental Mode",
-              "enablement": [
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                }
-              ]
-            },
-            {
-              "key": "DynamicExperimentalControl",
-              "widget": "multiple_button",
-              "title": "Dynamic Experimental Control",
-              "description": "Let the model or map data decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal.",
-              "options": [
-                {
-                  "value": 0,
-                  "label": "Off"
-                },
-                {
-                  "value": 1,
-                  "label": "Dynamic"
-                },
-                {
-                  "value": 2,
-                  "label": "Dynamic Map"
-                }
-              ],
-              "visibility": [
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                }
-              ]
-            },
-            {
-              "key": "DynamicExperimentalControlMapMaxSpeed",
-              "widget": "option",
-              "title": "Dynamic Experimental Control Map - Max Speed",
-              "description": "Maximum road speed limit to allow End to End Longitudinal mode in Dynamic Map mode.",
-              "min": 20,
-              "max": 120,
-              "step": 5,
-              "visibility": [
-                {
-                  "type": "param",
-                  "key": "DynamicExperimentalControl",
-                  "equals": 2
-                }
-              ],
-              "enablement": [
-                {
-                  "type": "capability",
-                  "field": "has_longitudinal_control",
-                  "equals": true
-                }
-              ]
-            },
             {
               "key": "DisengageOnAccelerator",
               "widget": "toggle",
@@ -2470,6 +2401,27 @@
               ]
             },
             {
+              "key": "NavigationEnabled",
+              "widget": "toggle",
+              "title": "Navigation (Alpha)",
+              "description": "Turn-by-turn navigation with a route map. Set a destination from comma connect.",
+              "visibility": [
+                {
+                  "type": "capability",
+                  "field": "device_type",
+                  "equals": "mici"
+                },
+                {
+                  "type": "not",
+                  "condition": {
+                    "type": "capability",
+                    "field": "is_sp_release",
+                    "equals": true
+                  }
+                }
+              ]
+            },
+            {
               "key": "ShowDebugInfo",
               "widget": "toggle",
               "title": "UI Debug Mode"
@@ -3002,6 +2954,33 @@
               "type": "param",
               "key": "ToyotaEnforceStockLongitudinal",
               "equals": false
+            }
+          ]
+        },
+        {
+          "key": "ToyotaTSS2Smooth",
+          "widget": "toggle",
+          "needs_onroad_cycle": true,
+          "title": "TSS2 Smooth Longitudinal (Alpha)",
+          "description": "Enable smoother longitudinal control for TSS2 vehicles. Uses a custom speed-dependent integral gain curve for smoother traffic driving.",
+          "enablement": [
+            {
+              "type": "not_engaged"
+            },
+            {
+              "type": "capability",
+              "field": "has_longitudinal_control",
+              "equals": true
+            },
+            {
+              "type": "param",
+              "key": "ToyotaEnforceStockLongitudinal",
+              "equals": false
+            },
+            {
+              "type": "capability",
+              "field": "toyota_tss2",
+              "equals": true
             }
           ]
         }
