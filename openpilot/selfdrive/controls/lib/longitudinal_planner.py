@@ -52,7 +52,8 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, a_target_prev, angle_s
   speed_gap = v_cruise - v_ego
   target_accel = np.clip(speed_gap / A_CRUISE_T if speed_gap > 0 else speed_gap, A_CRUISE_MIN, max_accel)
   j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
-  target_accel = float(np.clip(target_accel, min(a_cruise_prev, a_target_prev) - j_cruise * dt, a_cruise_prev + j_cruise * dt))
+  a_prev = min(a_cruise_prev, a_target_prev)
+  target_accel = float(np.clip(target_accel, a_prev - j_cruise * dt, a_prev + j_cruise * dt))
 
   return target_accel
 
@@ -114,11 +115,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    # Get new v_cruise and a_target from Smart Cruise Control and Speed Limit Assist
-    v_cruise, self.output_a_target = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.output_a_target, v_cruise)
+    # Keep the previous output separate from new curve requests used to seed the MPC.
+    a_prev = self.output_a_target
+    v_cruise, a_target = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, a_prev, v_cruise)
+    j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
+    a_target = np.clip(a_target, a_prev - j_cruise * self.dt, a_prev + j_cruise * self.dt)
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
-    self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
+    self.mpc.set_cur_state(self.v_desired_filter.x, a_target)
     self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -130,9 +134,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if self.fcw:
       cloudlog.info("FCW triggered")
 
-    # Save starting point for next iteration
-    a_prev = self.output_a_target
-
     action_t =  self.CP.longitudinalActuatorDelay + DT_MDL
     output_a_target_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
                                               action_t=action_t)
@@ -143,7 +144,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     is_e2e = self.is_e2e(sm)
 
     self.a_cruise = get_cruise_accel(is_e2e, v_cruise, v_ego,
-                                     self.a_cruise, self.output_a_target, steer_angle_without_offset, self.CP, self.dt,
+                                     self.a_cruise, a_prev, steer_angle_without_offset, self.CP, self.dt,
                                      accel_coast, self.allow_throttle)
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
 
