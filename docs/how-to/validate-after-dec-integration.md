@@ -227,6 +227,7 @@ Copy each runtime result JSON back before comparison. Do not reconnect to the de
 **Remaining gate:** full manager/UI startup with the intended model/device configuration. Condition 1 remains partial;
 conditions 2-5 stay met. The following readiness work does not authorize device writes or deployment.
 The user requested **local preparation only** for this pass. No further device connection is needed now.
+A later pass on 2026-11-02 added only the read-only preflight below; no device write is authorized.
 
 ### Additional isolated PC evidence
 
@@ -261,13 +262,17 @@ covers parent/OpenDBC/Panda; the new check supplements it without changing the e
 
 | Item | Verified locally | Live device fact / consequence |
 | --- | --- | --- |
-| AGNOS | Pinned baseline `launch_env.sh` expects 19.6; candidate expects 19.9. | Current `/VERSION` is **UNKNOWN**. On AGNOS, normal candidate launcher enters its update/reboot path if actual version differs. Do not override `AGNOS_VERSION` to hide a mismatch. |
-| Panda | `pandad.py` checks firmware signature, flashes on bootstub/signature mismatch, may recover bootloader/DFU, and resets internal Panda before connection. | Installed MCU signature/version, bootstub/DFU state and transport health are **UNKNOWN**. Different source commits alone do not prove a firmware mismatch. No-flash authority is insufficient to run this wrapper unchecked. |
-| Model selector | Baseline requires JSON version 18; candidate requires 21. Recorded route 233/a721 selected tinygrad MACROSTI ref `d70b13931793bc0e4d8efd36128dd66f227a3f81`, version 18. | Current bundle/slot, hardware and artifact hashes are **UNKNOWN**. Historical selection is not a live preflight. When models_manager runs, candidate validation removes an incompatible selection and the affected active slot falls back to the stock runner; this must be observed and recorded, not called the same selected model. |
-| Checkout and recovery | Parent/dependency pins above are pushed; original PC development worktree was untouched during this pass. | Current device HEAD, branch, dirty files, submodules/worktrees, launch supervisor, staged updates, prebuilt marker and QuickBootToggle are **UNKNOWN**. Earlier a721 inventory is historical. |
+| AGNOS | Pinned baseline `launch_env.sh` expects 19.6; candidate expects 19.9. | 2026-11-02 preflight: `/VERSION` is **19.6**, a mismatch with the candidate. The normal candidate launcher would therefore enter its update/reboot path (`launch_chffrplus.sh` `agnos_init`). Full intended-configuration startup needs a separately authorized OS update with rollback. Do not override `AGNOS_VERSION` to hide a mismatch. |
+| Panda | `pandad.py` checks firmware signature, flashes on bootstub/signature mismatch, may recover bootloader/DFU, and resets internal Panda before connection. | Installed firmware reports `DEV-f6887ad0-DEBUG` (a debug build). The current-boot baseline pandad logged a signature prefix equal to the expected one, with no out-of-date, flash, bootstub or DFU line. Baseline `pandad.py` compares the full 128-byte signature, so the installed signature very likely equals the tail of the on-device `panda_h7.bin.signed`. This is an **inference from log absence**, not a direct readout. The full installed signature therefore stays **PARTIAL**; bootstub version and transport health are not read. Swaglog order shows a DFU recovery and flash in a boot after 2026-10-29, cause unknown, with no flash since. Candidate firmware is not built; its signature is **UNKNOWN**. Panda `board/` differs in 99 files between the pins, so a candidate pandad would very likely flash. No-flash authority is insufficient to run this wrapper unchecked. |
+| Model selector | Baseline requires JSON version 18; candidate requires 21. Recorded route 233/a721 selected tinygrad MACROSTI ref `d70b13931793bc0e4d8efd36128dd66f227a3f81`, version 18. | 2026-11-02 preflight: the live QCOM slot holds this same tinygrad MACROSTI v18 bundle; all four chunk SHA256 values on disk match it. No Chestnut or legacy USBGPU slot exists. Chestnut hardware presence was not read. In the candidate, migration seeds the Chestnut slot from this bundle. Validation then rejects both slots (selector 18 ≠ 21) and the runner falls back to stock. The selection is cleared, not kept. This must be observed and recorded, not called the same selected model. |
+| Checkout and recovery | Parent/dependency pins above are pushed; original PC development worktree was untouched during this pass. | 2026-11-02 preflight: `/data/openpilot` is korea-dev `a721eec2a`: clean, equal to upstream, no stashes, single worktree. Six of seven submodules report their own repository root; `neural_network_data` was not inspected separately. Supervisor: tmux `comma` → `launch_chffrplus.sh` → manager. Finalized staging holds the same a721 with no update pending, but the updater runs with updates enabled. `.overlay_init`/`.overlay_consistent` are present; `old_openpilot` and `prebuilt` are absent. QuickBootToggle 0, DeviceBootMode 0, offroad. DongleId is present in Params and `/persist`. |
+| Watchdog and thermal | Candidate manager refreshes `/var/tmp/power_watchdog` only while `deviceState` is valid (hardwared). | 2026-11-02 preflight: AGNOS `power_monitor.py` powers off after **1 hour** without a watchdog refresh, SSH session, touch or engagement. A 60-second restricted smoke is within this interval. Offroad, 40 of the zones read 37-43 °C. With hardwared blocked, fan management is absent, and the thermal-safe duration was not measured (**PARTIAL**). |
 
-One bounded read-only SSH preflight to the previously known peer timed out before executing any remote command.
-The user cannot connect now and requested local completion; no retries or device changes followed.
+The first bounded read-only SSH preflight timed out before executing any remote command. On 2026-11-02 (10:47-10:54 UTC) the
+parked device was reachable. Five read-only scripts, plus one read-only probe (`date`, `uptime`, `cat /VERSION`), captured the
+facts above; four scripts were piped over SSH on stdin, and the first
+script's transport was not recorded. The scripts made no writes, Git locks, Params writes, Panda access or service control.
+The only known side effects are SSH login records and the power monitor's SSH activity timestamp.
 
 Two retained ONNX payloads in the existing PC runtime do **not** match the candidate LFS OIDs. They were already excluded from
 source-manifest/inference claims and were not used by the recorded-model planner replay or this UI probe. The exact candidate
@@ -284,7 +289,7 @@ runner, every artifact hash, QCOM/Chestnut slot and hardware-specific compiled m
 empty bundle, different custom model, or stock fallback and label it the user's intended configuration. A selected v21 bundle
 is a later explicit configuration decision; the historical MACROSTI v18 payload is not automatically compatible.
 
-### Reviewable stationary procedure (not executed or authorized)
+### Reviewable stationary procedure (step 1 run read-only on 2026-11-02; steps 2-5 not executed or authorized)
 
 This is a two-stage proposal: a no-flash offroad smoke can provide limited device evidence; the full intended-configuration
 startup must separately meet its OS/model/Panda prerequisites. Neither stage requests new driving. Do not use
@@ -367,10 +372,15 @@ selection on rollback. Never reuse mutated candidate Params as the baseline back
 Additional local proof is under `.scratch/after-dec-validation/startup/`: `pc_probe.py`, `pc-probe.json`, `manager.log`,
 `bootlog-build.log`, `runtime-inventory.json`, exact dependency manifests/results, `model-source-preflight.json`,
 `model-input-downloads.json`, the two verified model inputs, failed read-only SSH preflight, independent reviews and recovery state.
+The 2026-11-02 read-only device preflight is under `.scratch/after-dec-validation/device-preflight-20261102/`: five scripts,
+their snapshots and `preflight-findings.md` (status per step-1 item). Device identifiers stay private and out of these notes.
 The initial Claude review's unconditional firmware/OS update claims were corrected to the conditional behavior above.
 Historical full-log and unittest evidence remains unchanged. No inference, full production startup, flash, deployment,
 korea-dev merge, PR or driving was performed in this pass.
 
-Later user action: **request a parked-device read-only preflight** when the connection is available. That preflight establishes
-the concrete OS/model/firmware/recovery decisions before any device-write authorization. There is no local work pending now;
-#7 and parent #2 remain OPEN at 4/5 integration tickets complete.
+The read-only preflight ran on 2026-11-02, but step 1 is **not complete**: the full MCU signature stays PARTIAL, so
+step 1's stop rule blocks step 2; the thermal-safe duration is also PARTIAL, so the optional 60 s smoke stays omitted until
+measured. Next user decisions: **whether to authorize the AGNOS 19.6 → 19.9
+update path with rollback** (without it, condition 1 cannot close), and **whether to accept the signature inference or authorize
+an audited read-only Panda query**. Then come the intended v21 model, candidate Panda flashing with baseline reflash as
+rollback, and updater freezing. Condition 1 stays partial; #7 and parent #2 remain OPEN at 4/5 integration tickets complete.
