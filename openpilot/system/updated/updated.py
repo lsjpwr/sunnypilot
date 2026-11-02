@@ -447,6 +447,11 @@ def main() -> None:
           wait_helper.sleep(60)
           continue
 
+        # manual-only: no automatic check/fetch; a user CHECK/FETCH signal wakes the sleep
+        if params.get_bool("UpdaterManualOnly") and wait_helper.user_request == UserRequest.NONE:
+          wait_helper.sleep(1.5*60*60)
+          continue
+
         update_failed_count += 1
 
         # check for update
