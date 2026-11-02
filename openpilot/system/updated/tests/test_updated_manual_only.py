@@ -15,7 +15,7 @@ class StopLoop(BaseException):  # BaseException: the loop's `except Exception` m
 
 
 class TestUpdatedManualOnly(OpenpilotTestCase):
-  def run_main(self, manual_only, requests):
+  def run_main(self, manual_only, requests, set_params=None):
     """requests[i] is fired (via the real signal handler) during the i-th sleep; the loop stops after the last one."""
     sleeps = []
 
@@ -28,8 +28,10 @@ class TestUpdatedManualOnly(OpenpilotTestCase):
         helper.check_now(None, None)
       elif req == "fetch":
         helper.update_now(None, None)
+      elif req == "manual_on":
+        Params().put_bool("UpdaterManualOnly", True, block=True)
 
-    Params().put_bool("UpdaterManualOnly", manual_only)
+    Params().put_bool("UpdaterManualOnly", manual_only, block=True)
     with tempfile.TemporaryDirectory() as tmp, \
          mock.patch.object(updated, "LOCK_FILE", f"{tmp}/lock"), \
          mock.patch.object(updated, "Updater") as updater_cls, \
@@ -38,6 +40,7 @@ class TestUpdatedManualOnly(OpenpilotTestCase):
          mock.patch.object(updated, "system_time_valid", return_value=True), \
          mock.patch.object(updated.WaitTimeHelper, "sleep", autospec=True, side_effect=fake_sleep), \
          mock.patch("signal.signal"):
+      updater_cls.return_value.set_params.side_effect = set_params
       with self.assertRaises(StopLoop):
         updated.main()
     u = updater_cls.return_value
@@ -66,3 +69,42 @@ class TestUpdatedManualOnly(OpenpilotTestCase):
     self.assertEqual(u.check_for_update.call_count, 2)
     self.assertEqual(u.fetch_update.call_count, 2)
     self.assertEqual(sleeps, [60, LONG, LONG])
+
+  def test_toggle_without_restart(self):
+    u, sleeps = self.run_main(False, [None, "manual_on", None])
+    self.assertEqual(u.check_for_update.call_count, 1)
+    self.assertEqual(sleeps, [60, LONG, LONG, LONG])
+
+  def test_manual_only_fetch_tap_during_set_params(self):
+    # after a manual check the UI shows "download update" while set_params is still running; a tap then must not be lost
+    helper = {}
+    orig_init = updated.WaitTimeHelper.__init__
+
+    def init(self):
+      orig_init(self)
+      helper["h"] = self
+
+    def set_params(update_success, failed_count, exception):
+      if update_success and not helper.get("fired"):
+        helper["fired"] = True
+        helper["h"].update_now(None, None)
+
+    with mock.patch.object(updated.WaitTimeHelper, "__init__", init):
+      u, _ = self.run_main(True, [None, "check", None, None], set_params)
+    self.assertEqual(u.check_for_update.call_count, 2)
+    u.fetch_update.assert_called_once()
+
+  def test_no_connectivity_alert_when_manual_only(self):
+    # a failed manual check is never retried, so "won't start until it connects" would be false (hardwared ignores it)
+    p = Params()
+    p.put("UpdaterTargetBranch", "x", block=True)
+    p.put("UptimeOnroad", 40 * 3600.0, block=True)
+    p.put("RouteCount", 200, block=True)
+    p.put("LastUpdateUptimeOnroad", 0.0, block=True)
+    p.put("LastUpdateRouteCount", 0, block=True)
+    with mock.patch.object(updated, "run", side_effect=updated.subprocess.CalledProcessError(1, "git")), \
+         mock.patch.object(updated, "get_build_metadata"):
+      for manual_only in (False, True):
+        p.put_bool("UpdaterManualOnly", manual_only, block=True)
+        updated.Updater().set_params(False, 1, None)
+        self.assertEqual(p.get("Offroad_ConnectivityNeeded") is not None, not manual_only)

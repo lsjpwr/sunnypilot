@@ -320,7 +320,7 @@ class Updater:
       else:
         extra_text = exception
       set_offroad_alert("Offroad_UpdateFailed", True, extra_text=extra_text)
-    elif failed_count > 0:
+    elif failed_count > 0 and not self.params.get_bool("UpdaterManualOnly"):  # no auto retry: alert would be false
       if dt_uptime_onroad > HOURS_NO_CONNECTIVITY_MAX and dt_route_count > ROUTES_NO_CONNECTIVITY_MAX:
         set_offroad_alert("Offroad_ConnectivityNeeded", True)
       elif dt_uptime_onroad > HOURS_NO_CONNECTIVITY_PROMPT and dt_route_count > ROUTES_NO_CONNECTIVITY_PROMPT:
@@ -452,6 +452,8 @@ def main() -> None:
           wait_helper.sleep(1.5*60*60)
           continue
 
+        # consume the request here: a tap arriving later keeps ready_event set and runs next loop
+        user_request, wait_helper.user_request = wait_helper.user_request, UserRequest.NONE
         update_failed_count += 1
 
         # check for update
@@ -461,10 +463,10 @@ def main() -> None:
         # download update
         last_fetch = params.get("UpdaterLastFetchTime")
         timed_out = last_fetch is None or (datetime.datetime.now(datetime.UTC).replace(tzinfo=None) - last_fetch > datetime.timedelta(days=3))
-        user_requested_fetch = wait_helper.user_request == UserRequest.FETCH
+        user_requested_fetch = user_request == UserRequest.FETCH
         if params.get_bool("NetworkMetered") and not timed_out and not user_requested_fetch:
           cloudlog.info("skipping fetch, connection metered")
-        elif wait_helper.user_request == UserRequest.CHECK:
+        elif user_request == UserRequest.CHECK:
           cloudlog.info("skipping fetch, only checking")
         else:
           updater.fetch_update()
@@ -492,7 +494,6 @@ def main() -> None:
         cloudlog.exception("uncaught updated exception while setting params, shouldn't happen")
 
       # infrequent attempts if we successfully updated recently
-      wait_helper.user_request = UserRequest.NONE
       wait_helper.sleep(5*60 if update_failed_count > 0 else 1.5*60*60)
 
 

@@ -98,6 +98,7 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
       "GsmApn": "attacker.apn",
       "EnableGithubRunner": "1",
       "DisableUpdates": "1",
+      "UpdaterManualOnly": "0",
       "LongitudinalManeuverMode": "1",
       "JoystickDebugMode": "1",
       "StopDistance": "4.0",

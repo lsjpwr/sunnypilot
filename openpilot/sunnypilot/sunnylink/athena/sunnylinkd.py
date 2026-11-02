@@ -71,6 +71,7 @@ SENSITIVE_PARAMS = {
   # Remote code execution
   "EnableGithubRunner",
   "DisableUpdates",
+  "UpdaterManualOnly",
 
   # Require physical presence
   "LongitudinalManeuverMode",
