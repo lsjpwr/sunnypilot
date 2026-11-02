@@ -30,7 +30,7 @@ The original `E:/dev/sunnypilot` was inspected read-only; its partial clone was 
 
 | #7 condition | Result | Evidence or remaining gate |
 | --- | --- | --- |
-| Python/native build and process/config/schema checks | Partial | Relevant native builds, Python compilation, messaging/config/schema and real plannerd socket probe pass. Full manager/UI startup is unexecuted. |
+| Python/native build and process/config/schema checks | Partial | Relevant native builds, Python compilation, messaging/config/schema and real plannerd socket probe pass. Restricted PC manager/UI smoke passes; full intended-configuration startup remains unexecuted. |
 | GPS/destination, Korean SLA/SCC, cruise/curve, Tesla/safety regression | Pass within desktop test scope | Exact-source #6 combined gate reused; no source changes invalidate it. |
 | Representative curve entry/recovery, stronger lead braking, stop/go planner-output comparison | Pass at the declared external boundary | Full-rate recorded model/radar inputs drive each revision's real planner; recorded map/SLA outputs supply the explicitly excluded external-state boundary. Numerical results are below. This is not whole-system replay. |
 | MADS/Ratekeeper and excluded policy preservation | Pass | Prior MADS/RELC/BSM/Blendful regressions, new Ratekeeper tests, and unchanged-source comparisons. |
@@ -224,16 +224,153 @@ Copy each runtime result JSON back before comparison. Do not reconnect to the de
 
 ## Remaining manager/UI gate and device checklist
 
-**Remaining gate:** full manager/UI startup with the intended model/device configuration. Review and separately authorize a
-stationary validation session before any device action. Recorded modelV2 allowed the planner comparison above without video;
-modeld reinference would require synchronized camera video and actual model artifacts. No new drive or pull is requested.
+**Remaining gate:** full manager/UI startup with the intended model/device configuration. Condition 1 remains partial;
+conditions 2-5 stay met. The following readiness work does not authorize device writes or deployment.
+The user requested **local preparation only** for this pass. No further device connection is needed now.
 
-The following checks are **unexecuted** and require a separately authorized device session; this ticket performed none of them:
+### Additional isolated PC evidence
 
-- [ ] Record device/vehicle/HW4 or HW4.5/legacy-EPS configuration, exact parent/dependency/firmware/model revisions and a recoverable configuration backup. Confirm debug-versus-release firmware expectations before any future flash decision.
-- [ ] Validate full manager/UI startup and process health with production model artifacts. Check selected model, compatible fallback, displayed active model, persisted Blendful=true remaining disabled, GPU/camera failures and device Ratekeeper timing.
-- [ ] Check real Panda SPI/USB health/version/CAN compatibility, ignition versus wake, and MADS state. Confirm stock safety behavior, override/re-entry, Summon/Autopark pause and DAS radar behavior in a controlled, separately approved procedure.
-- [ ] Verify phone/knavlink GPS freshness, destination ownership/clear behavior, Fleet budget and offline/network failure behavior; check Korean camera/section/bump SLA and SCC settings/display against recorded expectations.
-- [ ] After the full replay gate and explicit driving authorization, assess curve entry/recovery, stronger lead braking, stop/go, 2s/1s smoothing, coast/reset and unchanged RELC/BSM policy. Record observed outputs and abort criteria; desktop success is not clearance for public-road testing.
+The existing candidate runtime built `openpilot/system/loggerd/bootlog` successfully. Then the real `manager.main`
+initialized fresh PC Params and supervised the real big-screen UI and `logmessaged` for 25 seconds:
+**20 managerState messages, 1,198 uiDebug frames, manager exit 0, both owned children reaped**.
+A real bootlog was produced. Only these two services were allowed; all 56 other configured services were explicitly blocked,
+including Panda, model/camera/control processes, model downloads, updater, deletion and external upload/backup services.
+This probe ran from the runtime repository root. The normal manager-directory launch additionally registers
+`sunnylink_uploader` and `copyparty-sfx` through relative-path checks; those were absent from this PC graph.
+Do not reuse its literal 56-name block list for a device launch.
+`NOBOARD=1`, a unique `OPENPILOT_PREFIX`, dedicated `PARAMS_ROOT`/`LOG_ROOT`, a private Xvfb display and a fresh network namespace
+with only loopback isolated this run. No hardware was connected, no device settings were copied, and no `deviceState.started`
+or ignition message was fabricated. BIG=1 selects the large PC layout; it is not proof of the device's display configuration.
 
-No korea-dev merge, PR, deployment, flash or live driving was performed. Leave #7 and #2 open until their remaining required gates are actually met.
+This proves **restricted offroad PC initialization/rendering**, not full manager, production model, camera/GPU, device timing,
+network/registration, device Params migration or visual correctness of every settings screen. Wi-Fi's missing system D-Bus
+was caught and logged; registration used `UnregisteredDevice`; font glyph warnings and synthetic-runtime Git upstream metadata
+warnings remain in the log. These limitations were not patched away. Two initial harness errors (checking network isolation
+through a shared sysfs mount, then serializing byte-valued key names) are preserved before the final successful probe.
+The final check uses the actual network-interface list. No product source changed or broad test/replay gate was rerun.
+The prior **2,371 pass / 216 skip / 0 fail/error** accounting is unchanged; this probe is not an added unittest count.
+
+The runtime's four additional dependency archives match **1,771 files/symlinks, zero mismatches**, against exact Git archive
+commit identifiers: tinygrad `92b742f711c7d216fd3ed7a46a30a959e3c43bd4`, msgq
+`e7396e76dadbb49e374d4b664ff6bbb43a39bcb0`, rednose `28d4a7f69e80e1c3e0d24ca0733d7daeaeade3d0`,
+and teleoprtc `1aa8fc433bef1519a95c0700c96258c3be6dfb34`. These are archive directories, not independent runtime Git checkouts;
+`git -C` there resolves to synthetic ancestor metadata and is **not** dependency provenance. The earlier 2,164-file manifest
+covers parent/OpenDBC/Panda; the new check supplements it without changing the earlier test claim.
+
+### Model and startup preflight findings
+
+| Item | Verified locally | Live device fact / consequence |
+| --- | --- | --- |
+| AGNOS | Pinned baseline `launch_env.sh` expects 19.6; candidate expects 19.9. | Current `/VERSION` is **UNKNOWN**. On AGNOS, normal candidate launcher enters its update/reboot path if actual version differs. Do not override `AGNOS_VERSION` to hide a mismatch. |
+| Panda | `pandad.py` checks firmware signature, flashes on bootstub/signature mismatch, may recover bootloader/DFU, and resets internal Panda before connection. | Installed MCU signature/version, bootstub/DFU state and transport health are **UNKNOWN**. Different source commits alone do not prove a firmware mismatch. No-flash authority is insufficient to run this wrapper unchecked. |
+| Model selector | Baseline requires JSON version 18; candidate requires 21. Recorded route 233/a721 selected tinygrad MACROSTI ref `d70b13931793bc0e4d8efd36128dd66f227a3f81`, version 18. | Current bundle/slot, hardware and artifact hashes are **UNKNOWN**. Historical selection is not a live preflight. When models_manager runs, candidate validation removes an incompatible selection and the affected active slot falls back to the stock runner; this must be observed and recorded, not called the same selected model. |
+| Checkout and recovery | Parent/dependency pins above are pushed; original PC development worktree was untouched during this pass. | Current device HEAD, branch, dirty files, submodules/worktrees, launch supervisor, staged updates, prebuilt marker and QuickBootToggle are **UNKNOWN**. Earlier a721 inventory is historical. |
+
+One bounded read-only SSH preflight to the previously known peer timed out before executing any remote command.
+The user cannot connect now and requested local completion; no retries or device changes followed.
+
+Two retained ONNX payloads in the existing PC runtime do **not** match the candidate LFS OIDs. They were already excluded from
+source-manifest/inference claims and were not used by the recorded-model planner replay or this UI probe. The exact candidate
+stock inputs were downloaded separately into local scratch, with byte count and SHA256 verified:
+
+| Input | Bytes | Candidate LFS SHA256 |
+| --- | ---: | --- |
+| driving_supercombo.onnx | 60,918,562 | `65a08adc31d5c456219687d99b7bf5e44d61dae2d49ea67850e76105c7248cce` |
+| dmonitoring_model.onnx | 7,844,499 | `dee5a294e8afaacc9295ac5d100e00733ecac278e79264b96331e40a3ede1b04` |
+
+These files are **uninstalled and unexecuted**. No inference was attempted. Stock compiled driving/DM pickles and the big-model
+pickle are absent from the current PC runtime. For a later production run, verify the chosen bundle's compatible version,
+runner, every artifact hash, QCOM/Chestnut slot and hardware-specific compiled model/warp inputs. Do not substitute a CPU model,
+empty bundle, different custom model, or stock fallback and label it the user's intended configuration. A selected v21 bundle
+is a later explicit configuration decision; the historical MACROSTI v18 payload is not automatically compatible.
+
+### Reviewable stationary procedure (not executed or authorized)
+
+This is a two-stage proposal: a no-flash offroad smoke can provide limited device evidence; the full intended-configuration
+startup must separately meet its OS/model/Panda prerequisites. Neither stage requests new driving. Do not use
+`openpilot/selfdrive/test/test_onroad.py` on the user's device: its normal setup changes Params and recursively deletes the log
+root. Do not run the normal launcher, updater or Panda wrapper as a read-only preflight.
+
+1. **Read-only preflight and freeze the recovery identity.** While parked, first read `/VERSION`, the resolved active checkout,
+   exact HEAD/branch/status, all submodule roots/SHAs/remotes, worktree list and launcher/supervisor state. Use
+   `GIT_OPTIONAL_LOCKS=0`, `GIT_NO_LAZY_FETCH=1`, `git -c gc.auto=0`; inspect each dependency's own repository root before treating
+   its HEAD as a dependency. Read only allowlisted model slots/runner, QuickBootToggle, DeviceBootMode and offroad state;
+   inventory/hash the referenced model artifacts and both baseline/candidate firmware files. Verify that the isolated Params
+   copy will contain the existing DongleId; otherwise registration may read `/persist/comma/dongle_id` or attempt an external
+   registration POST. Do not start from an empty device identity or publish private keys/identifiers. Inspect `.overlay_init`,
+   `/data/safe_staging/finalized/.overlay_consistent`, `/data/safe_staging/old_openpilot` and `prebuilt` without changing them.
+   Verify the actual AGNOS power-watchdog timeout and safe supervisor-stop duration: without hardwared/deviceState the
+   restricted smoke does not refresh `/var/tmp/power_watchdog` or run fan management. Do not assume 60 seconds is safe or
+   disable the watchdog; if the permitted interval is insufficient, omit this optional smoke.
+   Obtain the **full installed MCU signature** through an established non-mutating observation or existing complete evidence;
+   the wrapper's truncated log prefix or a file on disk is not proof of the installed signature. Do not instantiate Panda merely
+   to query it without auditing constructor/reconnect side effects. Stop if identity, firmware state or recovery ownership is unknown.
+2. **After separate device-write authorization, stage and back up without altering korea-dev.** Record the exact approved
+   candidate documentation HEAD (whose production source is 8befa34), all gitlinks and LFS hashes. Use a separate candidate
+   directory, e.g. `/data/sp-afterdec-validation`, preserving the baseline checkout, branch, uncommitted files and submodule
+   repositories. Keep a verified private backup of Params with absence/type information, calibration, selected-model metadata,
+   needed model files, baseline firmware/bootstub and launcher/staging state; do not publish secrets or delete driving logs.
+   Hash/compare the backup before proceeding. Use candidate-only package paths and build products; do not relink `/data/pythonpath`
+   or create a candidate `prebuilt` marker to bypass build validation. On device, a prefix alone does not isolate every path:
+   supply dedicated `PARAMS_ROOT` and `LOG_ROOT`, audit shared model/map/staging paths, and keep update/download/delete/upload/
+   backup services blocked for the restricted smoke. `LOG_ROOT` does not redirect `/data/log`: logmessaged uses this shared
+   directory and its rotating handler can delete old files beyond retention. The minimal device smoke therefore blocks
+   logmessaged too and captures managerState/stdout/stderr in the dedicated evidence directory. Cloudlog IPC can drop messages
+   without logmessaged, so this smoke cannot prove complete diagnostic-log coverage. Keep bootlogs/evidence private and outside
+   `/data/media/0/realdata`, e.g. `/data/sp-afterdec-validation-evidence`, to avoid baseline upload/deletion scans.
+   Invoke `manager.main` directly,
+   avoiding the command-line exception handler that attaches a shared file logger. Preserve shared logs before any later full run. In the isolated Params copy, set QuickBootToggle false to prevent
+   `manager_init` writing hardcoded `/data/openpilot/prebuilt`; preserve the user's original value in backup.
+3. **Run only the approved stationary stage.** Stop the baseline supervisor/processes by its verified normal procedure and
+   confirm they have stopped before starting the candidate; retain a recovery shell and avoid competing hardware owners.
+   For an optional no-flash smoke, directly invoke candidate `manager.main` with unique prefix, isolated Params/logs,
+   `NOBOARD=1`, and `BLOCK` containing every configured process except `ui`. Generate this list from `managed_processes`
+   using the **same candidate manager-directory cwd, isolated environment and imports as the actual launch**; save and inspect
+   the resolved list before starting. Explicitly check that `sunnylink_uploader`, `copyparty-sfx`, `logmessaged` and every other
+   non-UI service are blocked when present. The manager and observer must use that same configuration. This differs from the
+   PC two-child smoke because device logging is shared. It bypasses the launcher and excludes model/Panda/camera/control
+   services; record the actual OS and call it restricted offroad smoke.
+   It does **not** close condition 1. For full intended-configuration startup, first resolve any actual AGNOS mismatch,
+   choose/verify the intended v21 model and fallback, and compare installed versus candidate **production** firmware signatures
+   and protocol versions. Prior H7/body debug builds are not deployment firmware. Any needed OS/Panda/bootloader update,
+   or the wrapper's reset/recovery behavior, requires explicit authorization including rollback. Stop rather than entering
+   update paths under no-flash authority. Do not fake ignition, skip model compilation or force a hardware backend to obtain green output.
+4. **Observe explicit pass/stop criteria.** For restricted smoke, require 60 seconds of live UI and regular managerState,
+   only UI running as a managed child, no crash/restart loop, and clean owned-process shutdown, within the verified watchdog/
+   thermal-safe interval. If that interval cannot support 60 seconds, do not run this proposal or claim its smoke criterion met. Record UI/model/settings
+   observations without claiming inference. For the full gate, require exact intended OS/model/firmware identity; expected
+   process health and valid real inputs/outputs; correct selected versus active/fallback display; preserved Korean/Tesla
+   settings; Blendful still disabled; and no unexplained startup errors. Capture process/model/fallback and timing evidence
+   for the exercised state. Parked/offroad does not exercise onroad-only processes; mark them unexecuted unless actually run
+   under separately approved stationary hardware conditions. Stop for unexpected flashing/updating, wrong model/backend,
+   altered baseline files/settings, crash loops, non-finite outputs, unsafe vehicle state or loss of the recovery channel.
+   Leave unexercised device and driving claims open; do not invent a mandatory road test to close this desktop integration ticket.
+5. **Restore and verify before leaving the device.** Stop only the candidate's owned processes and verify they exited. For
+   the isolated no-flash smoke, original Params/checkout/OS/Panda should be unchanged: compare them to the frozen identity,
+   preserve evidence and resume the baseline through its verified supervisor. Do not blindly reboot: pending overlay installation
+   and either launcher's AGNOS check can change the system. If a later authorized full run modified shared settings/models,
+   restore the exact backed-up baseline state while processes are stopped, including missing keys, after reviewing differences.
+   If OS or firmware changed, a Git checkout alone is not rollback: use the separately approved OS/firmware recovery plan;
+   baseline pandad may reflash on signature mismatch. Confirm baseline model selection, process/UI health, logs and configuration
+   before declaring recovery complete. Keep candidate artifacts/evidence for review; cleanup is not required for this gate.
+
+Source anchors for the procedure: `launch_env.sh`, `launch_chffrplus.sh`,
+`openpilot/system/manager/{manager,process_config}.py`, `openpilot/selfdrive/pandad/pandad.py`,
+`panda/python/__init__.py`, `openpilot/sunnypilot/models/helpers.py`,
+`openpilot/sunnypilot/system/params_migration.py`, and `openpilot/common/hardware/hw.py`.
+Model migration seeds the Chestnut slot from the legacy USBGPU/single slot when needed; validation can then clear incompatible
+v18 selections. Preserve both old and new slot metadata. The baseline v18 selector likewise cannot be assumed to accept a v21
+selection on rollback. Never reuse mutated candidate Params as the baseline backup.
+
+### Evidence and remaining action
+
+Additional local proof is under `.scratch/after-dec-validation/startup/`: `pc_probe.py`, `pc-probe.json`, `manager.log`,
+`bootlog-build.log`, `runtime-inventory.json`, exact dependency manifests/results, `model-source-preflight.json`,
+`model-input-downloads.json`, the two verified model inputs, failed read-only SSH preflight, independent reviews and recovery state.
+The initial Claude review's unconditional firmware/OS update claims were corrected to the conditional behavior above.
+Historical full-log and unittest evidence remains unchanged. No inference, full production startup, flash, deployment,
+korea-dev merge, PR or driving was performed in this pass.
+
+Later user action: **request a parked-device read-only preflight** when the connection is available. That preflight establishes
+the concrete OS/model/firmware/recovery decisions before any device-write authorization. There is no local work pending now;
+#7 and parent #2 remain OPEN at 4/5 integration tickets complete.
