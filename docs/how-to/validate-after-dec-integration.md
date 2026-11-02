@@ -367,6 +367,33 @@ Model migration seeds the Chestnut slot from the legacy USBGPU/single slot when 
 v18 selections. Preserve both old and new slot metadata. The baseline v18 selector likewise cannot be assumed to accept a v21
 selection on rollback. Never reuse mutated candidate Params as the baseline backup.
 
+### User-driven install by update (chosen 2026-11-03)
+
+The user decided (2026-11-02): go to AGNOS 19.9, accept the inferred installed MCU signature (no Panda query), keep
+Macrostiff, allow the Panda flash, and freeze automatic updates while keeping the manual update buttons. On 2026-11-03
+the user chose to install the candidate later through the normal update path instead of the operator-run plan
+(`.scratch/after-dec-validation/device-preflight-20261102/PLAN-step2-execution.md` stays as the reviewed, more controlled
+alternative). Parked, on Wi-Fi:
+
+1. Settings > Software > target branch: `integrate/sunnypilot-after-dec-sunset-0.11.3` (the list is the remote's heads except
+   `release2`/`release2-staging`, `updated.py` `check_for_update`). Then "check for update", then "download".
+   korea-dev's `updated` reads the fetched `launch_env.sh` (AGNOS 19.9), flashes it to the inactive slot in the background
+   (`handle_agnos_update`), then finalizes the new checkout. Wait until Software offers "install update" for the new branch (shown only
+   once `UpdateAvailable` is set); a reboot before that keeps korea-dev.
+2. Press "install update" (or reboot). The candidate starts on 19.9. Expect: the baseline-to-candidate Panda flash by pandad; Params keys the
+   candidate does not define are deleted (`ExperimentalMode`, `ExperimentalModeConfirmed`, `DynamicExperimentalControl`,
+   `DynamicExperimentalControlMapMaxSpeed`); the MACROSTI v18 selection is cleared and stock runs until it is reselected.
+3. Models: select Macrostiff again (the v21-catalog bundle with the same ref). Do not press "clear model cache": it
+   deletes the v18 files that a rollback needs.
+4. `UpdaterManualOnly` defaults to on in the candidate (`76fc4f1858`): no automatic check or download; the Software
+   "check for update" / "download" buttons still work. Set it to 0 to restore automatic updates.
+
+Rollback is the same path with target branch `korea-dev`: its AGNOS 19.6 is flashed in the background, and pandad
+reflashes the baseline Panda build on boot. The four deleted keys keep none of their old values: `DynamicExperimentalControl` and its map max speed come back as their defaults 0/60, and
+`ExperimentalMode`/`ExperimentalModeConfirmed` stay absent (read false) until set again; and
+the v18 model must be reselected. This path keeps no Params backup; copy `/data/params/d` first if exact restore matters.
+Condition 1 closes only after this install is observed: startup on 19.9, the selected model loaded, no crash loop.
+
 ### Evidence and remaining action
 
 Additional local proof is under `.scratch/after-dec-validation/startup/`: `pc_probe.py`, `pc-probe.json`, `manager.log`,
@@ -378,9 +405,7 @@ The initial Claude review's unconditional firmware/OS update claims were correct
 Historical full-log and unittest evidence remains unchanged. No inference, full production startup, flash, deployment,
 korea-dev merge, PR or driving was performed in this pass.
 
-The read-only preflight ran on 2026-11-02, but step 1 is **not complete**: the full MCU signature stays PARTIAL, so
-step 1's stop rule blocks step 2; the thermal-safe duration is also PARTIAL, so the optional 60 s smoke stays omitted until
-measured. Next user decisions: **whether to authorize the AGNOS 19.6 → 19.9
-update path with rollback** (without it, condition 1 cannot close), and **whether to accept the signature inference or authorize
-an audited read-only Panda query**. Then come the intended v21 model, candidate Panda flashing with baseline reflash as
-rollback, and updater freezing. Condition 1 stays partial; #7 and parent #2 remain OPEN at 4/5 integration tickets complete.
+The read-only preflight ran on 2026-11-02. The user accepted the MCU signature inference, which closes that step-1 item;
+the thermal-safe duration stays PARTIAL and only gates the optional restricted smoke. All device decisions are made (above).
+Remaining action: the user installs by update when convenient and the startup is observed. Condition 1 stays partial until
+then; #7 and parent #2 remain OPEN at 4/5 integration tickets complete.
