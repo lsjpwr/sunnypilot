@@ -108,3 +108,7 @@ class TestUpdatedManualOnly(OpenpilotTestCase):
         p.put_bool("UpdaterManualOnly", manual_only, block=True)
         updated.Updater().set_params(False, 1, None)
         self.assertEqual(p.get("Offroad_ConnectivityNeeded") is not None, not manual_only)
+
+  def test_default_is_manual_only(self):
+    # a fresh install (manager_init writes defaults) starts with automatic updates frozen
+    self.assertTrue(Params().get_default_value("UpdaterManualOnly"))
