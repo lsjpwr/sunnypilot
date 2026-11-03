@@ -15,6 +15,10 @@ from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.widgets.ssh_key import SshKeyFetcher
 
 BRIDGE_PATH = os.path.join(BASEDIR, "openpilot", "cereal", "messaging", "bridge")
+TAILSCALE_DIR = "/data/tailscale"
+TAILSCALED_PATH = os.path.join(TAILSCALE_DIR, "tailscaled")
+TAILSCALE_START_PATH = os.path.join(TAILSCALE_DIR, "start.sh")
+TAILSCALE_DISABLED_FLAG = os.path.join(TAILSCALE_DIR, "disabled")
 _bridge_proc: subprocess.Popen | None = None
 
 class AlphaLongConfirmPage(NavScroller):
@@ -83,6 +87,10 @@ class DeveloperLayoutMici(NavScroller):
                                       toggle_callback=self._on_joystick_debug_mode, description="Control the car with a joystick for debugging.")
     self._can_bridge_toggle = BigToggle("can bridge", initial_state=_bridge_proc is not None and _bridge_proc.poll() is None,
                                       toggle_callback=self._on_start_can_bridge)
+    self._tailscale_toggle = BigToggle("tailscale", initial_state=not os.path.exists(TAILSCALE_DISABLED_FLAG),
+                                       toggle_callback=self._on_tailscale,
+                                       description="Remote SSH over Tailscale. Off stops tailscaled and stays off after reboot.")
+    self._tailscale_toggle.set_visible(os.path.exists(TAILSCALED_PATH))
     self._long_maneuver_toggle = BigToggle("longitudinal maneuver mode", initial_state=ui_state.params.get_bool("LongitudinalManeuverMode"),
                                            toggle_callback=self._on_long_maneuver_mode,
                                            description="Run longitudinal maneuvers for testing gas and brake control.")
@@ -103,6 +111,7 @@ class DeveloperLayoutMici(NavScroller):
       self._adb_toggle,
       self._ssh_toggle,
       self._ssh_keys_btn,
+      self._tailscale_toggle,
       self._joystick_toggle,
       self._can_bridge_toggle,
       self._long_maneuver_toggle,
@@ -174,6 +183,8 @@ class DeveloperLayoutMici(NavScroller):
       self._lat_maneuver_toggle.set_enabled(False)
       self._alpha_long_toggle.set_visible(False)
 
+    self._tailscale_toggle.set_checked(not os.path.exists(TAILSCALE_DISABLED_FLAG))
+
     # Refresh toggles from params to mirror external changes
     for key, item in self._refresh_toggles:
       item.set_checked(ui_state.params.get_bool(key))
@@ -199,6 +210,19 @@ class DeveloperLayoutMici(NavScroller):
       if _bridge_proc is not None and _bridge_proc.poll() is None:
         _bridge_proc.send_signal(signal.SIGTERM)
         _bridge_proc = None
+
+  def _on_tailscale(self, state: bool):
+    try:
+      if state:
+        if os.path.exists(TAILSCALE_DISABLED_FLAG):
+          os.remove(TAILSCALE_DISABLED_FLAG)
+        subprocess.Popen([TAILSCALE_START_PATH], start_new_session=True)
+      else:
+        open(TAILSCALE_DISABLED_FLAG, "a").close()
+        subprocess.run(["pkill", "-f", TAILSCALED_PATH], check=False)
+    except OSError:
+      cloudlog.exception("failed to toggle tailscale")
+      self._tailscale_toggle.set_checked(not state)
 
   def _on_long_maneuver_mode(self, state: bool):
     ui_state.params.put_bool("LongitudinalManeuverMode", state, block=True)
