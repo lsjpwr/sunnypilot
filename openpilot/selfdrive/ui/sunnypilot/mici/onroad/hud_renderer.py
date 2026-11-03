@@ -30,6 +30,12 @@ class HudRendererSP(HudRenderer):
   def _update_state(self) -> None:
     super()._update_state()
     self.blind_spot_indicators.update()
+
+    sp_engaged = ui_state.engaged
+    if sp_engaged != self._sp_engaged:
+      self._chestnut_fade_time = rl.get_time() if sp_engaged else 0
+    self._sp_engaged = sp_engaged
+
     self._update_auto_sla()
 
   def _update_auto_sla(self) -> None:
@@ -58,11 +64,6 @@ class HudRendererSP(HudRenderer):
       return super()._set_speed_colors(alpha)
     color = rl.Color(*SLA_GREEN, int(255 * 0.9 * alpha))
     return color, color
-
-    sp_engaged = ui_state.engaged
-    if sp_engaged != self._sp_engaged:
-      self._chestnut_fade_time = rl.get_time() if sp_engaged else 0
-    self._sp_engaged = sp_engaged
 
   def _render(self, rect: rl.Rectangle) -> None:
     super()._render(rect)
