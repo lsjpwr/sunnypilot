@@ -32,6 +32,7 @@ ALLOWED_TITLES = {
   "KoreaCameraSignalEnabled": "신호·속도 단속 카메라",
   "KoreaCameraSectionEnabled": "구간단속 카메라",
   "KoreaCameraZoneEnabled": "보호구역 카메라",
+  "KoreaCameraMobileExclude": "이동식 카메라 제외",
   "KoreaSpeedBumpEnabled": "과속방지턱 감속",
   "KoreaMapAutoDownload": "지도 자동 다운로드",
 }
