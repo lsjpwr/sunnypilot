@@ -25,11 +25,11 @@ from openpilot.common.params import Params
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_CAMERAS, SCHEMA_LINKS, insert_cameras,
                                                       insert_links, write_db)
-from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_KIND_PARAMS,
+from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, BUMP_VIRTUAL, CAMERA_KIND_PARAMS, CAMERA_MOBILE,
                                                  CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED,
                                                  CAMERA_ZONE, FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN,
-                                                 Bump, Camera, KoreaMapDB, Link)
-from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, PhoneItem
+                                                 PHONE_MATCH_M, Bump, Camera, KoreaMapDB, Link)
+from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, PhoneItem, parse_payload
 from openpilot.sunnypilot.mapd.korea.tesla import Trip
 from openpilot.sunnypilot.mapd.live_map_data.korea_map_data import (CAMERA_RECENT_MAX, KoreaMapData, camera_options,
                                                                     camera_page, kst_clock, parse_camera_recent, phone_camera)
@@ -859,13 +859,13 @@ class TestReadCameraParams(OpenpilotTestCase):
     """get_bool does not fall back to a default -- manager_init writes the defaults into the
     unset params at boot. So the defaults are checked here, and the read separately below."""
     params = Params()
-    for key in CAMERA_KIND_PARAMS.values():
+    for key in (*CAMERA_KIND_PARAMS.values(), "KoreaCameraMobileExclude"):
       self.assertTrue(params.get_default_value(key), key)
     self.assertEqual(params.get_default_value("KoreaCameraMargin"), 50)
 
   def test_a_kind_that_is_off_is_left_out(self):
     params = Params()
-    for key in CAMERA_KIND_PARAMS.values():
+    for key in (*CAMERA_KIND_PARAMS.values(), "KoreaCameraMobileExclude"):
       params.put_bool(key, True, block=True)
     params.put_bool("KoreaCameraZoneEnabled", False, block=True)
     self.assertEqual(self.read().camera_kinds, {CAMERA_SPEED, CAMERA_SIGNAL, CAMERA_SECTION, CAMERA_SECTION_END})
@@ -1637,16 +1637,17 @@ def phone_nav(*items, gps_age_s=.5, sdk_age_s=.5):
   return ExternalNav(received_at=time.monotonic(), items=tuple(items), gps_age_s=gps_age_s, sdk_age_s=sdk_age_s)
 
 
-def phone_tick(*navs, starts=(), end=None, **attrs):
+def phone_tick(*navs, starts=(), end=None, near=lambda *a: [], **attrs):
   """One update_location per datagram (None: no fresh one), heading east from east(0) by 30 m a tick. The database
-  always answers DB_CAMERA and DB_BUMP, so a test sees which source won, and starts and end for sections."""
+  always answers DB_CAMERA and DB_BUMP, so a test sees which source won, and starts and end for sections. near is
+  cameras_near: (lat, lon, limit_kph, radius_m) -> the database cameras the phone's camera matches."""
   data = make_data(external=StubExternal(None))
   for key, value in attrs.items():
     setattr(data, key, value)
   data.db = SimpleNamespace(reload_if_changed=lambda: False, current_link=lambda *a, **k: None,
                             next_camera=lambda *a, **k: DB_CAMERA, next_bump=lambda *a, **k: DB_BUMP,
                             section_starts_near=lambda *a, **k: list(starts), section_end_ahead=lambda *a, **k: end,
-                            close=lambda: None)
+                            cameras_near=near, close=lambda: None)
   for i, nav in enumerate(navs):
     data.external.nav = nav
     data.sm = SingleLocationSM(valid_llk(*east(30. * i)))
@@ -1784,3 +1785,171 @@ class TestPhoneItems(unittest.TestCase):
     self.assertIsNone(data.camera)
     self.assertIsNotNone(data.db)
     self.assertFalse(data.open_failed)
+
+
+def db_camera(m, limit=50, kind=CAMERA_SPEED, facing=FACING_UNKNOWN):
+  """The database's camera m metres east of where the car starts, as cameras_near gives it."""
+  lat, lon = east(m)
+  return Camera(lat=lat, lon=lon, limit_kph=limit, distance_m=0., section_m=0, kind=kind, facing=facing)
+
+
+def entry(m, limit=50, k="cam", **extra):
+  """One item of the app's datagram, m metres east of the car's start."""
+  lat, lon = east(m)
+  return {"k": k, "lat": lat, "lon": lon, "d": m, "lim": limit, "age": 300, **extra}
+
+
+def parsed_nav(*entries):
+  """The datagram as external_source reads it, so the wire fields (c) take part."""
+  return parse_payload({"gps_age_ms": 300, "tmap_age_ms": 300, "items": list(entries)})
+
+
+def only_limit(limit, cameras):
+  """cameras_near for a database that has these cameras for one limit only."""
+  return lambda lat, lon, asked, radius: cameras if asked == limit else []
+
+
+class TestPhoneCameraMatchesTheDatabase(unittest.TestCase):
+  """A phone camera takes the place, kind and facing of the database camera it is the same as: the same limit within
+  PHONE_MATCH_M. The coordinates differ by vendor, and the database has what the phone does not."""
+
+  def test_the_nearest_candidate_gives_the_place_and_the_phone_keeps_its_limit(self):
+    data = phone_tick(parsed_nav(entry(100.)), near=lambda *a: [db_camera(110.), db_camera(125.)])
+    self.assertEqual((data.camera.lat, data.camera.lon), east(110.))
+    self.assertAlmostEqual(data.camera.distance_m, 110., delta=1.)  # from the car, to the database's place
+    self.assertEqual(data.camera.limit_kph, 50)
+    self.assertIs(data.slowdown_camera, data.camera)
+
+  def test_the_candidates_are_the_same_limit_within_the_match_radius_of_the_phones_place(self):
+    calls = []
+    phone_tick(parsed_nav(entry(100., limit=60)), near=lambda *a: calls.append(a) or [])
+    (lat, lon, limit, radius), = calls
+    self.assertEqual(((lat, lon), limit, radius), (east(100.), 60, PHONE_MATCH_M))
+
+  def test_no_candidate_leaves_the_phones_own_place_and_values(self):
+    data = phone_tick(parsed_nav(entry(100., sig=True)), near=lambda *a: [])
+    self.assertEqual((data.camera.lat, data.camera.lon), east(100.))
+    self.assertEqual((data.camera.kind, data.camera.facing), (CAMERA_SIGNAL, FACING_UNKNOWN))
+
+  @parameterized.expand([
+    ("the SDK says rear, the database says front", True, [db_camera(110., facing=FACING_FRONT)], FACING_REAR),
+    ("the SDK says rear, nothing near", True, [], FACING_REAR),
+    ("every candidate faces front", False, [db_camera(110., facing=FACING_FRONT), db_camera(120., facing=FACING_FRONT)], FACING_FRONT),
+    ("one candidate is not known to face front", False, [db_camera(110., facing=FACING_FRONT), db_camera(120.)], FACING_UNKNOWN),
+    ("a candidate faces rear", False, [db_camera(110., facing=FACING_FRONT), db_camera(120., facing=FACING_REAR)], FACING_UNKNOWN),
+    ("a candidate faces both ways", False, [db_camera(110., facing=FACING_BOTH)], FACING_UNKNOWN),
+    ("nothing near", False, [], FACING_UNKNOWN),
+  ])
+  def test_the_facing(self, _, rear, candidates, expected):
+    data = phone_tick(parsed_nav(entry(100., rear=rear)), near=lambda *a: candidates)
+    self.assertEqual(data.camera.facing, expected)
+
+  def test_a_candidate_inside_a_protected_zone_makes_a_zone_camera(self):
+    data = phone_tick(parsed_nav(entry(100., sig=True)), near=lambda *a: [db_camera(110.), db_camera(120., kind=CAMERA_ZONE)])
+    self.assertEqual(data.camera.kind, CAMERA_ZONE)
+
+  def test_without_a_zone_candidate_the_sdk_says_signal_or_speed(self):
+    def near(*a):
+      return [db_camera(110., kind=CAMERA_SIGNAL), db_camera(120., kind=None)]
+    self.assertEqual(phone_tick(parsed_nav(entry(100., sig=True)), near=near).camera.kind, CAMERA_SIGNAL)
+    self.assertEqual(phone_tick(parsed_nav(entry(100.)), near=near).camera.kind, CAMERA_SPEED)
+
+  def test_the_zone_toggle_decides_on_the_matched_kind(self):
+    nav = parsed_nav(entry(100., limit=30), entry(300., limit=60))
+    data = phone_tick(nav, near=only_limit(30, [db_camera(110., limit=30, kind=CAMERA_ZONE)]),
+                      camera_kinds=frozenset({CAMERA_SPEED, CAMERA_SIGNAL}))
+    self.assertEqual(data.camera.limit_kph, 60)
+
+  def test_a_section_camera_keeps_its_kind_but_takes_the_place_and_facing(self):
+    for k, kind in (("sec_start", CAMERA_SECTION), ("sec_end", CAMERA_SECTION_END)):
+      data = phone_tick(parsed_nav(entry(100., limit=100, k=k)),
+                        near=lambda *a: [db_camera(110., limit=100, kind=CAMERA_ZONE, facing=FACING_FRONT)])
+      self.assertEqual((data.camera.kind, data.camera.facing, data.camera.section_m), (kind, FACING_FRONT, 0))
+      self.assertEqual((data.camera.lat, data.camera.lon), east(110.))
+
+  def test_the_phones_original_place_on_the_exclusion_list_excludes_it(self):
+    """A camera excluded while the phone was the source stays excluded, though its candidate stands 25 m off."""
+    nav = parsed_nav(entry(100.), entry(300., limit=60))
+    data = phone_tick(nav, near=only_limit(50, [db_camera(125.)]), camera_exclude=(east(100.),))
+    self.assertEqual(data.camera.limit_kph, 60)
+
+  def test_the_matched_place_on_the_exclusion_list_excludes_it(self):
+    nav = parsed_nav(entry(100.), entry(300., limit=60))
+    data = phone_tick(nav, near=only_limit(50, [db_camera(125.)]), camera_exclude=(east(125.),))
+    self.assertEqual(data.camera.limit_kph, 60)
+
+  def test_the_passed_camera_is_remembered_at_the_matched_place(self):
+    data = phone_tick(parsed_nav(entry(40.)), parsed_nav(entry(400., limit=60)), near=only_limit(50, [db_camera(45.)]))
+    self.assertEqual(data.camera_recent[0][:2], east(45.))
+    self.assertEqual((data._pass_hold.lat, data._pass_hold.lon), east(45.))
+
+  def test_the_database_is_asked_only_as_far_as_the_first_camera_that_passes(self):
+    calls = []
+    phone_tick(parsed_nav(entry(100.), entry(300., limit=60), entry(500., limit=70)), near=lambda *a: calls.append(a) or [])
+    self.assertEqual(len(calls), 1)
+
+  def test_without_a_database_the_phones_place_and_values_stand(self):
+    data = make_data(external=StubExternal(parsed_nav(entry(100., rear=True, sig=True))))
+    data.sm = SingleLocationSM(valid_llk(*east(0)))
+    data.update_location()
+    self.assertIsNone(data.db)
+    self.assertEqual((data.camera.lat, data.camera.lon, data.camera.kind, data.camera.facing),
+                     (*east(100.), CAMERA_SIGNAL, FACING_REAR))
+
+  @parameterized.expand([sqlite3.DatabaseError("database disk image is malformed"), struct.error("unpack requires a buffer of 16 bytes"),
+                         RuntimeError("anything")])
+  def test_a_failed_lookup_keeps_the_phone_camera_and_does_not_close_the_database(self, exc):
+    def explode(*a):
+      raise exc
+    data = phone_tick(parsed_nav(entry(100., rear=True)), near=explode)
+    self.assertEqual((data.camera.lat, data.camera.lon, data.camera.limit_kph, data.camera.facing), (*east(100.), 50, FACING_REAR))
+    self.assertIsNotNone(data.db)  # the same tick's database path owns closing it
+    self.assertFalse(data.open_failed)
+
+
+class TestMobileCameras(unittest.TestCase):
+  """The app's c code marks an 이동식 spot; KoreaCameraMobileExclude (on by default) leaves it out."""
+
+  MOBILE = frozenset(CAMERA_KIND_PARAMS) | {CAMERA_MOBILE}
+
+  def test_an_excluded_mobile_camera_is_neither_braked_for_nor_on_the_sign(self):
+    data = phone_tick(parsed_nav(entry(100., c="t7"), entry(300., limit=60)))
+    self.assertEqual(data.camera.limit_kph, 60)
+    self.assertEqual(data.get_next_speed_limit_and_distance()[0], 60 * CV.KPH_TO_MS)
+
+  def test_every_form_of_the_code_is_a_mobile_camera(self):
+    for code in ("t7", "kMovableSpeedViolationCamera", "t7+kMovableSpeedViolationCamera"):
+      self.assertEqual(phone_tick(parsed_nav(entry(100., c=code), entry(300., limit=60))).camera.limit_kph, 60, code)
+
+  def test_another_code_is_a_fixed_camera(self):
+    for nav in (parsed_nav(entry(100., c="t8")), parsed_nav(entry(100.))):
+      self.assertEqual(phone_tick(nav).camera.limit_kph, 50)
+
+  def test_with_the_exclusion_off_it_slows_the_car_at_the_phones_place_without_a_match(self):
+    calls = []
+    data = phone_tick(parsed_nav(entry(100., c="t7", rear=True, sig=True)), camera_kinds=self.MOBILE,
+                      near=lambda *a: calls.append(a) or [db_camera(110., kind=CAMERA_ZONE, facing=FACING_FRONT)])
+    self.assertEqual(calls, [])
+    self.assertEqual((data.camera.kind, data.camera.facing, data.camera.limit_kph), (CAMERA_MOBILE, FACING_REAR, 50))
+    self.assertEqual((data.camera.lat, data.camera.lon), east(100.))
+    self.assertIs(data.slowdown_camera, data.camera)
+
+  def test_a_mobile_camera_without_a_rear_mark_has_no_known_facing(self):
+    data = phone_tick(parsed_nav(entry(100., c="t7")), camera_kinds=self.MOBILE)
+    self.assertEqual(data.camera.facing, FACING_UNKNOWN)
+
+  def test_a_mobile_marked_section_camera_is_still_a_section_camera(self):
+    data = phone_tick(parsed_nav(entry(100., limit=100, k="sec_start", c="t7")))
+    self.assertEqual(data.camera.kind, CAMERA_SECTION)
+
+  def read_kinds(self, **toggles):
+    data = make_data()
+    data.params.values.update({"KoreaCameraMargin": 50, "KoreaCameraSlowdownDistance": 0, "KoreaCameraPassHold": 60,
+                               **dict.fromkeys(CAMERA_KIND_PARAMS.values(), True), **toggles})
+    data.read_camera_params()
+    return data.camera_kinds
+
+  def test_the_toggle_adds_the_kind_only_with_speed_cameras_on(self):
+    self.assertNotIn(CAMERA_MOBILE, self.read_kinds(KoreaCameraMobileExclude=True))
+    self.assertIn(CAMERA_MOBILE, self.read_kinds(KoreaCameraMobileExclude=False))
+    self.assertNotIn(CAMERA_MOBILE, self.read_kinds(KoreaCameraMobileExclude=False, KoreaCameraSpeedEnabled=False))

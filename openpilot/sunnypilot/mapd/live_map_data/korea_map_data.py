@@ -19,7 +19,9 @@ confirmation prompt under 80 km/h and add the speed limit offset on top.
 
 While the phone app (sp-knavlink-tesla: the TMAP and Kakao Navi SDKs) is connected, its cameras and bumps stand in
 for the database's (update_from_phone). Each says where it stands, so all of the above -- the slowdown point, the
-pass hold, the exclusions, the recent list -- treats them alike. 구간단속 sections stay with the database.
+pass hold, the exclusions, the recent list -- treats them alike. 구간단속 sections stay with the database. A phone
+camera also takes the place, zone and facing of the database camera it is the same as (phone_camera): the vendors'
+coordinates differ from the database's, and the phone knows neither a zone nor which way a camera faces.
 """
 import datetime
 import json
@@ -38,9 +40,10 @@ from openpilot.common.swaglog import cloudlog
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_MAX_DISTANCE_M, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M,
                                                  CAMERA_EXCLUDE_M, CAMERA_KIND_PARAMS, CAMERA_MAX_DISTANCE_M,
-                                                 CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED,
-                                                 FACING_BOTH, FACING_FRONT, FACING_REAR, FACING_UNKNOWN, ROUTE_CORRIDOR_M,
-                                                 SECTION_PASS_M, Bump, Camera, KoreaMapDB, Link,
+                                                 CAMERA_MOBILE, CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL,
+                                                 CAMERA_SPEED, CAMERA_ZONE, FACING_BOTH, FACING_FRONT, FACING_REAR,
+                                                 FACING_UNKNOWN, PHONE_MATCH_M, ROUTE_CORRIDOR_M, SECTION_PASS_M, Bump,
+                                                 Camera, KoreaMapDB, Link,
                                                  across_the_road, at_section_end, excluded, mtime_or_none)
 from openpilot.sunnypilot.mapd.korea.external_source import ExternalNav, ExternalNavSource, PhoneItem
 from openpilot.sunnypilot.mapd.korea.geo import haversine
@@ -165,20 +168,37 @@ def kst_clock() -> str:
   return datetime.datetime.now(KST).strftime("%m-%d %H:%M")
 
 
-def phone_camera(item: PhoneItem, lat: float, lon: float) -> Camera | None:
+def phone_camera(item: PhoneItem, lat: float, lon: float, db: KoreaMapDB | None = None) -> Camera | None:
   """A phone app camera as the database would give it, so the slowdown, the pass hold and the exclusions treat
   both alike; None for an item that is not a camera with a limit. distance_m is from the car, as the crow flies,
-  like the database's."""
+  like the database's.
+
+  A fixed camera takes the place of the nearest database camera of the same limit within PHONE_MATCH_M: the
+  vendors' coordinates differ from the database's, and everything keyed on a place (the distance, the ramp, the
+  exclusions, the recent list) then agrees with the database's. Only then may it be a protected zone's (the phone
+  has no zones), and it faces the front only when every candidate does; the SDK's rear always wins. Nothing near,
+  no database or a failed lookup leave the phone's own place and values. A mobile spot is no fixed camera: no match."""
   if item.kind == "cam":
-    kind = CAMERA_SIGNAL if item.signal else CAMERA_SPEED
+    kind = CAMERA_MOBILE if item.mobile else CAMERA_SIGNAL if item.signal else CAMERA_SPEED
   elif item.kind in ("sec_start", "sec_end"):
     kind = CAMERA_SECTION if item.kind == "sec_start" else CAMERA_SECTION_END
   else:
     return None
   if item.limit_kph <= 0:
     return None
-  return Camera(lat=item.lat, lon=item.lon, limit_kph=item.limit_kph, distance_m=haversine(lat, lon, item.lat, item.lon),
-                section_m=0, kind=kind, facing=FACING_REAR if item.rear else FACING_UNKNOWN)
+  near: list[Camera] = []
+  if db is not None and kind != CAMERA_MOBILE:
+    try:
+      near = db.cameras_near(item.lat, item.lon, item.limit_kph, PHONE_MATCH_M)
+    except Exception:
+      # Not the database's to be dropped for here: the same tick's database path owns that
+      cloudlog.exception("korea_map: matching a phone camera to the database failed")
+  clat, clon = (near[0].lat, near[0].lon) if near else (item.lat, item.lon)
+  if item.kind == "cam" and any(c.kind == CAMERA_ZONE for c in near):
+    kind = CAMERA_ZONE
+  facing = FACING_REAR if item.rear else FACING_FRONT if near and all(c.facing == FACING_FRONT for c in near) else FACING_UNKNOWN
+  return Camera(lat=clat, lon=clon, limit_kph=item.limit_kph, distance_m=haversine(lat, lon, clat, clon),
+                section_m=0, kind=kind, facing=facing)
 
 
 @dataclass
@@ -464,9 +484,12 @@ class KoreaMapData(BaseMapData):
 
     The datagram is untrusted input: whatever goes wrong with one leaves no camera or bump, never a dead mapd."""
     try:
-      cameras = (phone_camera(item, lat, lon) for item in items)
-      self.camera = self.slowdown_camera = next((c for c in cameras if c is not None and c.kind in self.camera_kinds
+      # lazy, so the database is asked about the items up to the first camera that passes, no further
+      cameras = ((item, phone_camera(item, lat, lon, self.db)) for item in items)
+      # the phone's own place counts too: a camera excluded while the phone was the source has no database place
+      self.camera = self.slowdown_camera = next((c for item, c in cameras if c is not None and c.kind in self.camera_kinds
                                                  and c.distance_m <= CAMERA_MAX_DISTANCE_M
+                                                 and not excluded(item.lat, item.lon, self.camera_exclude)
                                                  and not excluded(c.lat, c.lon, self.camera_exclude)), None)
       self.note_passed_camera()
       # the SDKs do not say which shape a bump is: the harsher one's speed
@@ -588,7 +611,11 @@ class KoreaMapData(BaseMapData):
 
   def read_camera_params(self) -> None:
     """Same 1 Hz as read_bump_params, for the same reason."""
-    self.camera_kinds = frozenset(kind for kind, key in CAMERA_KIND_PARAMS.items() if self.params.get_bool(key))
+    kinds = {kind for kind, key in CAMERA_KIND_PARAMS.items() if self.params.get_bool(key)}
+    # a phone-only kind, and a speed camera: off with KoreaCameraSpeedEnabled, whatever this says
+    if CAMERA_SPEED in kinds and not self.params.get_bool("KoreaCameraMobileExclude"):
+      kinds.add(CAMERA_MOBILE)
+    self.camera_kinds = frozenset(kinds)
     self.camera_margin = get_sanitize_int_param("KoreaCameraMargin", *CAMERA_MARGIN_RANGE, self.params)
     self.camera_slowdown_m = get_sanitize_int_param("KoreaCameraSlowdownDistance", *CAMERA_SLOWDOWN_RANGE, self.params)
     self.camera_pass_hold = get_sanitize_int_param("KoreaCameraPassHold", *CAMERA_PASS_HOLD_RANGE, self.params)
