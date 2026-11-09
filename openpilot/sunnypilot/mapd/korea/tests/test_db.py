@@ -15,7 +15,7 @@ from openpilot.sunnypilot.mapd.korea.build_db import (SCHEMA_BUMPS, SCHEMA_CAMER
                                                       insert_bumps, insert_cameras, insert_links, write_db)
 from openpilot.sunnypilot.mapd.korea.db import (BUMP_ARCH, BUMP_TRAPEZOID, CAMERA_CORRIDOR_M, CAMERA_KIND_PARAMS,
                                                  CAMERA_SECTION, CAMERA_SECTION_END, CAMERA_SIGNAL, CAMERA_SPEED, CAMERA_ZONE,
-                                                 FACING_REAR, FACING_UNKNOWN, KoreaMapDB, has_camera_facing, has_camera_kind,
+                                                 FACING_BOTH, FACING_REAR, FACING_UNKNOWN, KoreaMapDB, has_camera_facing, has_camera_kind,
                                                  has_split_sections, verify)
 
 # a 1 km east-west stretch of road at 60 km/h, and a parallel one at 100 km/h 300 m north
@@ -1001,3 +1001,57 @@ class TestCameraFacing(KoreaMapDBTestCase):
 
     self.assertTrue(database.reload_if_changed())
     self.assertEqual(database.next_camera(37.5000, 127.0200, 90.).facing, FACING_REAR)
+
+
+class TestCamerasNear(KoreaMapDBTestCase):
+  """cameras_near: what korea_map_data matches a phone camera against. Query point (37.5, 127.02); 1 m is 1/88200 deg east."""
+
+  QUERY = (37.5000, 127.0200)
+
+  @staticmethod
+  def east(m, limit=50, kind=CAMERA_SPEED, facing=FACING_UNKNOWN):
+    return (37.5000, 127.0200 + m / 88200., limit, 0, kind, facing)
+
+  def make(self, cameras):
+    cams = str(self.tmp_path / "korea_cameras.sqlite")
+    links = str(self.tmp_path / "korea_links.sqlite")
+    write_db(cams, SCHEMA_CAMERAS, lambda con: insert_cameras(con, cameras))
+    write_db(links, SCHEMA_LINKS, lambda con: insert_links(con, [ROAD_60]))
+    return cams, links
+
+  def near(self, database, limit=50, radius=40.):
+    return database.cameras_near(*self.QUERY, limit, radius)
+
+  def test_the_same_limit_within_the_radius_nearest_first_with_kind_and_facing(self):
+    database = self.open_db(*self.make([self.east(35., kind=CAMERA_ZONE, facing=FACING_BOTH), self.east(-20., facing=FACING_REAR)]))
+    near = self.near(database)
+    self.assertEqual([(c.kind, c.facing, c.limit_kph) for c in near], [(CAMERA_SPEED, FACING_REAR, 50), (CAMERA_ZONE, FACING_BOTH, 50)])
+    self.assertAlmostEqual(near[0].distance_m, 20., delta=1.)
+    self.assertAlmostEqual(near[1].distance_m, 35., delta=1.)
+
+  def test_a_camera_past_the_radius_or_of_another_limit_is_left_out(self):
+    database = self.open_db(*self.make([self.east(45.), self.east(10., limit=60), self.east(1000.), self.east(20.)]))
+    self.assertEqual([round(c.distance_m) for c in self.near(database)], [20])
+
+  def test_the_radius_is_the_caller_s(self):
+    database = self.open_db(*self.make([self.east(45.)]))
+    self.assertEqual(self.near(database, radius=50.)[0].limit_kph, 50)
+
+  def test_a_camera_north_or_south_counts_as_near_too(self):
+    database = self.open_db(*self.make([(37.5000 + 30. / 111000., 127.0200, 50, 0, CAMERA_SPEED, FACING_UNKNOWN)]))
+    self.assertEqual(len(self.near(database)), 1)
+
+  def test_nothing_near_is_an_empty_list(self):
+    self.assertEqual(self.near(self.open_db(*self.make([]))), [])
+
+  def test_a_file_from_before_the_facing_column_reads_as_unknown(self):
+    cams, links = self.make([self.east(20., kind=CAMERA_ZONE, facing=FACING_REAR)])
+    drop_facing(cams)
+    camera, = self.near(self.open_db(cams, links))
+    self.assertEqual((camera.kind, camera.facing), (CAMERA_ZONE, FACING_UNKNOWN))
+
+  def test_a_file_from_before_the_kind_column_reads_as_unknown_too(self):
+    cams, links = self.make([self.east(20., kind=CAMERA_ZONE, facing=FACING_REAR)])
+    drop_kind(cams)
+    camera, = self.near(self.open_db(cams, links))
+    self.assertEqual((camera.kind, camera.facing, camera.limit_kph), (None, FACING_UNKNOWN, 50))

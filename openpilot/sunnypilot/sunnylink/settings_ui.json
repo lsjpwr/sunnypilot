@@ -1085,6 +1085,19 @@
               ]
             },
             {
+              "key": "KoreaCameraMobileExclude",
+              "widget": "toggle",
+              "title": "Exclude Mobile Cameras",
+              "description": "Do not slow down for mobile speed enforcement spots reported by the phone navigation app, and hide them from the speed limit ahead sign. Turn this off to slow down for them like other speed cameras. Box-type cameras are not mobile cameras. Cameras from the public database carry no such mark, so this only applies while the phone app supplies the cameras.",
+              "enablement": [
+                {
+                  "type": "param",
+                  "key": "MapDataSource",
+                  "equals": 1
+                }
+              ]
+            },
+            {
               "key": "KoreaCameraMargin",
               "widget": "option",
               "title": "Camera Arrival Margin",

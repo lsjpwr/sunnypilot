@@ -66,6 +66,7 @@ class TogglesLayoutMici(NavScroller):
       ("KoreaCameraSignalEnabled", BigParamControl("signal + speed cameras", "KoreaCameraSignalEnabled")),
       ("KoreaCameraSectionEnabled", BigParamControl("section enforcement cameras", "KoreaCameraSectionEnabled")),
       ("KoreaCameraZoneEnabled", BigParamControl("protected zone cameras", "KoreaCameraZoneEnabled")),
+      ("KoreaCameraMobileExclude", BigParamControl("exclude mobile cameras", "KoreaCameraMobileExclude")),
     )
 
     def api_key_callback(text):

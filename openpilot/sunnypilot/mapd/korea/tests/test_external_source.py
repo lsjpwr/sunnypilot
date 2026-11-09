@@ -16,9 +16,6 @@ from openpilot.sunnypilot.mapd.korea.tesla import CAR_UNKNOWN, MAX_PLACE_NAME
 
 VALID = {
   "speed_limit_kph": 60,
-  "next_speed_limit_kph": 50,
-  "next_speed_limit_distance_m": 320,
-  "road_name": "테헤란로",
 }
 
 
@@ -42,33 +39,24 @@ class TestParsePayload(unittest.TestCase):
   def test_parse_valid_payload(self):
     nav = parse_payload(VALID)
     self.assertEqual(nav.speed_limit_kph, 60.)
-    self.assertEqual(nav.next_speed_limit_kph, 50.)
-    self.assertEqual(nav.next_speed_limit_distance_m, 320.)
-    self.assertEqual(nav.road_name, "테헤란로")
     self.assertGreater(nav.received_at, 0.)
     self.assertEqual(nav.raw, VALID)
 
   def test_parse_missing_keys_are_zero(self):
     nav = parse_payload({})
     self.assertEqual(nav.speed_limit_kph, 0.)
-    self.assertEqual(nav.next_speed_limit_kph, 0.)
-    self.assertEqual(nav.next_speed_limit_distance_m, 0.)
-    self.assertEqual(nav.road_name, "")
 
   @parameterized.expand([-10, 0, 500, "60", None, [60], True, False])
   def test_parse_clamps_implausible_speed(self, value):
     self.assertEqual(parse_payload({"speed_limit_kph": value}).speed_limit_kph, 0.)
 
-  @parameterized.expand([-1, 99999, "far"])
-  def test_parse_clamps_implausible_distance(self, value):
-    self.assertEqual(parse_payload({"next_speed_limit_distance_m": value}).next_speed_limit_distance_m, 0.)
-
-  def test_parse_truncates_long_road_name(self):
-    nav = parse_payload({"road_name": "가" * 500})
-    self.assertEqual(len(nav.road_name), 64)
-
-  def test_parse_rejects_non_string_road_name(self):
-    self.assertEqual(parse_payload({"road_name": 123}).road_name, "")
+  def test_parse_ignores_the_keys_the_app_still_sends(self):
+    payload = {**VALID, "next_speed_limit_kph": 50, "next_speed_limit_distance_m": 320, "road_name": "테헤란로"}
+    nav = parse_payload(payload)
+    self.assertEqual(nav.speed_limit_kph, 60.)
+    self.assertFalse(hasattr(nav, "next_speed_limit_kph"))
+    self.assertFalse(hasattr(nav, "road_name"))
+    self.assertEqual(nav.raw, payload)
 
   def test_destination_lands(self):
     nav = parse_payload({**VALID, "destination_lat": 37.4979, "destination_lon": 127.0276})
@@ -141,6 +129,24 @@ class TestParseItems(unittest.TestCase):
     item = parse_payload({"items": [{**ITEM, "rear": 1, "sig": "yes"}]}).items[0]
     self.assertFalse(item.rear)
     self.assertFalse(item.signal)
+
+  @parameterized.expand([
+    ("SDI type 7", "t7", True),
+    ("Kakao movable code", "kMovableSpeedViolationCamera", True),
+    ("a merged item", "t7+kMovableSpeedViolationCamera", True),
+    ("mobile among other codes", "t8+t7", True),
+    ("SDI type 8", "t8", False),
+    ("another Kakao code", "kSpeedViolationCamera", False),
+    ("a code that only starts like it", "t70", False),
+    ("empty", "", False),
+    ("not a string", 7, False),
+    ("null", None, False),
+  ])
+  def test_the_source_code_tells_a_mobile_camera(self, _, code, mobile):
+    self.assertIs(parse_payload({"items": [{**ITEM, "c": code}]}).items[0].mobile, mobile)
+
+  def test_no_source_code_is_not_mobile(self):
+    self.assertFalse(parse_payload({"items": [ITEM]}).items[0].mobile)
 
   def test_at_most_ten_items_are_read(self):
     self.assertEqual(len(parse_payload({"items": [ITEM] * 15}).items), MAX_ITEMS)
@@ -269,7 +275,8 @@ class TestExternalNavSource(unittest.TestCase):
 
   def test_the_answer_carries_what_the_car_guides_to(self):
     self.source.car = lambda: (37.4979, 127.0276, "강남역")
-    self.assertEqual(self._exchange({**VALID, "seq": 9})["car"], {"lat": 37.4979, "lon": 127.0276, "name": "강남역"})
+    # the answer is never bigger than the datagram, so this one needs room for the place
+    self.assertEqual(self._exchange({**VALID, "seq": 9, "pad": "x" * 80})["car"], {"lat": 37.4979, "lon": 127.0276, "name": "강남역"})
 
   def test_stopped_fleet_status_does_not_interrupt_safety_datagrams(self):
     for status in range(5):

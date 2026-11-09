@@ -15,7 +15,8 @@ import struct
 from collections.abc import Collection
 from dataclasses import dataclass
 
-from openpilot.sunnypilot.mapd.korea.geo import bearing, bearing_delta, closest_point_on_segment, haversine, point_segment_distance
+from openpilot.sunnypilot.mapd.korea.geo import (M_PER_DEG_LAT, bearing, bearing_delta, closest_point_on_segment, haversine,
+                                                 point_segment_distance)
 from openpilot.sunnypilot.mapd.korea.route import distance_to_route, route_progress
 
 # Shared by all three databases (cameras, links, bumps) -- there is no independent version
@@ -57,6 +58,9 @@ CAMERA_SIGNAL = 1   # 신호·과속, the multi-function intersection cameras
 CAMERA_SECTION = 2  # the start camera of a 구간단속 section
 CAMERA_ZONE = 3     # inside a 노인/어린이 보호구역, whatever else it enforces
 CAMERA_SECTION_END = 4  # the end camera of a 구간단속 section
+# An 이동식 spot, which only the phone app reports (korea_map_data.phone_camera): no database row has it. Not in
+# CAMERA_KIND_PARAMS, whose toggles each turn a kind ON -- KoreaCameraMobileExclude turns this one off.
+CAMERA_MOBILE = 5
 
 # The toggle behind each kind, all on by default (params_keys.h). korea_map_data drops the
 # kinds that are off; map_controller keeps SCC-Map on while any of them is on.
@@ -79,6 +83,9 @@ FACING_BOTH = 3   # 양방향, front and rear
 # ~3.3 km box, then filtered down to CAMERA_MAX_DISTANCE_M
 CAMERA_SEARCH_DEG = 0.03
 CAMERA_MAX_DISTANCE_M = 2000.
+# How far from a phone app camera a database camera of the same limit may stand and still be the same camera.
+# Measured on 71 Kakao cameras: the median distance to the database's was 22 m, 70% matched within 40 m.
+PHONE_MATCH_M = 40.
 CAMERA_AHEAD_TOLERANCE = 60.
 
 # KoreaCameraExclude skips a camera this close to a listed point. Small on purpose: an enforcing
@@ -302,7 +309,7 @@ def excluded(lat: float, lon: float, exclude: Collection[tuple[float, float]]) -
 def on_grade_separated(route: list[tuple[float, float]] | None, grade_separated: Collection[list[tuple[float, float]]],
                        lat: float, lon: float) -> bool:
   """Is the route's nearest point to (lat, lon) on one of its tunnel, overpass or underpass spans?
-  The spans are cut from the route's own points (route.parse_grade_separated), so a tie is the same segment."""
+  The spans are cut from the route's own points (RouteSource.latest: the phone's own spans), so a tie is the same segment."""
   if not route or not grade_separated:
     return False
   return min(distance_to_route(span, lat, lon) for span in grade_separated) <= distance_to_route(route, lat, lon)
@@ -572,6 +579,21 @@ class KoreaMapDB:
       best = Camera(lat=clat, lon=clon, limit_kph=limit_kph, distance_m=distance, section_m=section_m, kind=kind, facing=facing)
 
     return best
+
+  def cameras_near(self, lat: float, lon: float, limit_kph: int, radius_m: float) -> list[Camera]:
+    """Every camera within radius_m of (lat, lon) with this limit, nearest first. Any kind: the caller
+    reads the kind and facing off them. distance_m is from (lat, lon)."""
+    kind_column = "c.kind" if self._cam_has_kind else "NULL"
+    facing_column = "c.facing" if self._cam_has_facing else str(FACING_UNKNOWN)
+    dlat, dlon = radius_m / M_PER_DEG_LAT, radius_m / M_PER_DEG_LON_MIN  # the box only; haversine decides
+    rows = self.cam.execute(
+      f"SELECT c.lat, c.lon, c.section_m, {kind_column}, {facing_column} " +
+      "FROM cameras_idx i JOIN cameras c ON c.id = i.id " + _RTREE_OVERLAP + " AND c.limit_kph = ?",
+      (lat - dlat, lat + dlat, lon - dlon, lon + dlon, limit_kph),
+    ).fetchall()
+    cameras = [Camera(lat=clat, lon=clon, limit_kph=limit_kph, distance_m=haversine(lat, lon, clat, clon), section_m=section_m,
+                      kind=kind, facing=facing) for clat, clon, section_m, kind, facing in rows]
+    return sorted((c for c in cameras if c.distance_m <= radius_m), key=lambda c: c.distance_m)
 
   def next_bump(self, lat: float, lon: float, heading_deg: float | None,
                 route: list[tuple[float, float]] | None = None) -> Bump | None:

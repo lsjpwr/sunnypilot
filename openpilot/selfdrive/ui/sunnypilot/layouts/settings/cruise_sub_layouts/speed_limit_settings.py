@@ -132,7 +132,17 @@ class SpeedLimitSettingsLayout(Widget):
                      "hides its cameras from the speed limit ahead sign."),
       param="KoreaCameraZoneEnabled")
 
-    self._camera_kinds = (self._camera_speed, self._camera_signal, self._camera_section, self._camera_zone)
+    self._camera_mobile = toggle_item_sp(
+      title=lambda: tr("Exclude Mobile Cameras"),
+      description=tr("Do not slow down for mobile speed enforcement spots reported by the phone navigation " +
+                     "app, and hide them from the speed limit ahead sign. Turn this off to slow down for " +
+                     "them like other speed cameras. Box-type cameras are not mobile cameras. Cameras from " +
+                     "the public database carry no such mark, so this only applies while the phone app " +
+                     "supplies the cameras."),
+      param="KoreaCameraMobileExclude")
+
+    self._camera_kinds = (self._camera_speed, self._camera_signal, self._camera_section, self._camera_zone,
+                          self._camera_mobile)
 
     self._camera_margin = option_item_sp(
       title=lambda: tr("Camera Arrival Margin"),
