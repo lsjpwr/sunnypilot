@@ -129,9 +129,9 @@ class PhoneBridge:
 
   def _max_speed(self, auto_sla: bool) -> tuple[int | None, bool | None]:
     """The number in the mici MAX box (HudRendererSP) and whether it is the green one."""
-    if not (self.sm.alive["carState"] and self.sm.alive["controlsState"]):
-      return None, None
     cluster = self.sm["carState"].vCruiseCluster
+    if not self.sm.alive["carState"] or (cluster == 0. and not self.sm.alive["controlsState"]):
+      return None, None
     set_speed = self.sm["controlsState"].deprecated.vCruise if cluster == 0. else cluster
     if not 0 < set_speed < SET_SPEED_NA:
       return None, False
@@ -213,7 +213,7 @@ def make_server(bridge: PhoneBridge, allowed, host: str = "0.0.0.0", port: int =
   class Handler(BaseHTTPRequestHandler):
     timeout = REQUEST_TIMEOUT_S
 
-    def log_message(self, format, *args):
+    def log_message(self, format, *args):  # noqa: A002
       pass  # four lines a second
 
     def _reply(self, status: int, body: dict | None = None) -> None:

@@ -343,6 +343,10 @@ class TestHud:
   def test_max_falls_back_to_controls_without_a_cluster_speed(self, world):
     assert hud(world, carState={"vCruiseCluster": 0.}, controlsState={"deprecated": {"vCruise": 90.}})["max_kph"] == 90
 
+  def test_a_stale_fallback_is_no_max_at_all(self, world):
+    body = hud(world, stale=["controlsState"], carState={"vCruiseCluster": 0.}, controlsState={"deprecated": {"vCruise": 90.}})
+    assert (body["max_kph"], body["max_green"]) == (None, None)
+
   @pytest.mark.parametrize("cruise", [255., -1.])
   def test_no_max_while_cruise_is_not_set(self, world, cruise):
     body = hud(world, carState={"vCruiseCluster": cruise})
@@ -438,7 +442,7 @@ class TestHud:
     ("selfdriveState", ("engaged", "alert")),
     ("selfdriveStateSP", ("engaged",)),
     ("carState", ("max_kph", "max_green", "speed_kph", "blind")),
-    ("controlsState", ("max_kph", "max_green")),
+    ("controlsState", ()),  # only needed without a cluster speed
     ("longitudinalPlan", ("lead",)),
     ("modelV2", ("desire",)),
   ])
