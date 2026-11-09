@@ -13,6 +13,8 @@ nothing, so the control path never depends on it, and selfdrived ignores it bein
 
   POST /v1/pair {"code": "123456"}  ->  {"token": "..."}; a bad code is 403, a bad request 400
   GET  /v1/hud                      ->  see PhoneBridge.hud
+  GET  /v1/settings                 ->  {"v": 1, "items": [...]}, see phone_bridge_settings
+  POST /v1/settings {"key", "value"}  ->  the item; 403 not offered, 409 locked, 400 a bad value
 
 Everything but /v1/pair needs Authorization: Bearer <token>, or it is 401. Requests from outside the
 Wi-Fi subnet are dropped unanswered. The token goes in the clear, inside the hotspot's encryption.
@@ -34,6 +36,7 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.radard import RADAR_TO_CAMERA
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.helpers import comma_target_kph, section_average_display
+from openpilot.sunnypilot.system.phone_bridge_settings import PhoneSettings
 
 PORT = 5556
 WIFI_INTERFACE = "wlan0"
@@ -85,6 +88,7 @@ class PhoneBridge:
     self.params, self.mem_params, self.sm, self.now = params, mem_params, sm, now
     self._failed_code, self._failures = None, 0  # the code the wrong tries were against, and how many
     self._v_ego_cluster_seen = False
+    self._settings = PhoneSettings(params)
 
   def pair(self, code: str) -> str | None:
     """The new token for the code on screen, ending the old one. None for anything else."""
@@ -117,6 +121,17 @@ class PhoneBridge:
     return {"v": 1, "started": started, "engaged": self._engaged(started), "max_kph": max_kph, "max_green": max_green,
             "speed_kph": self._speed_kph(), "section": self._section(auto_sla), "lead": self._lead(), "desire": self._desire(),
             "blind": self._blind(), "alert": self._alert()}
+
+  def settings(self) -> dict:
+    return {"v": 1, "items": self._settings.items(*self._locks())}
+
+  def put_setting(self, key, value) -> tuple[int, dict | None]:
+    return self._settings.write(key, value, *self._locks())
+
+  def _locks(self) -> tuple[bool, bool]:
+    """(offroad, not engaged) as the rules locking a setting read them, False for both while the car's state is unknown."""
+    started = self.sm["deviceState"].started if self.sm.alive["deviceState"] else None
+    return started is False, started is False or self._engaged(started) is False
 
   def _is_tesla(self) -> bool:
     car_params = self.params.get("CarParams")
@@ -242,7 +257,8 @@ def make_server(bridge: PhoneBridge, allowed, host: str = "0.0.0.0", port: int =
 
     def do_GET(self):
       if self._authorized():
-        self._reply(*((200, bridge.hud()) if self.path == "/v1/hud" else (404,)))
+        views = {"/v1/hud": bridge.hud, "/v1/settings": bridge.settings}
+        self._reply(*((200, views[self.path]()) if self.path in views else (404,)))
 
     def do_POST(self):
       if self.path == "/v1/pair":
@@ -253,7 +269,14 @@ def make_server(bridge: PhoneBridge, allowed, host: str = "0.0.0.0", port: int =
         token = bridge.pair(code)
         self._reply(*((200, {"token": token}) if token else (403,)))
       elif self._authorized():
-        self._reply(404)
+        if self.path != "/v1/settings":
+          self._reply(404)
+          return
+        body = self._json_body() or {}
+        if not isinstance(body.get("key"), str) or "value" not in body:
+          self._reply(400)
+          return
+        self._reply(*bridge.put_setting(body["key"], body["value"]))
 
   return _Server((host, port), Handler, allowed)
 
