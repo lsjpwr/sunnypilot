@@ -73,7 +73,7 @@ def wifi_subnet(interface: str = WIFI_INTERFACE) -> ipaddress.IPv4Network | None
       address, netmask = (socket.inet_ntoa(fcntl.ioctl(sock, op, request)[20:24]) for op in (SIOCGIFADDR, SIOCGIFNETMASK))
     except OSError:
       return None
-  return ipaddress.ip_interface(f"{address}/{netmask}").network
+  return ipaddress.IPv4Interface(f"{address}/{netmask}").network
 
 
 def in_subnet(client: str, network: ipaddress.IPv4Network | None) -> bool:
