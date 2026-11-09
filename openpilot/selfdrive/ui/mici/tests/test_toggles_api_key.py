@@ -207,7 +207,8 @@ class TestKoreaModeGating(OpenpilotTestCase):
 
     layout = TogglesLayoutMici()
     toggles = dict(layout._refresh_toggles)
-    keys = ("KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled", "KoreaCameraZoneEnabled")
+    keys = ("KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled", "KoreaCameraZoneEnabled",
+            "KoreaCameraMobileExclude")
 
     ui_state.started = True  # onroad is no reason to lock these
     ui_state.params.put("MapDataSource", int(MapSource.osm), block=True)

@@ -5,7 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 
 route: receives the phone's geometry and turns it into slowdown targets.
-The REST parsers remain for offline replay. No routing requests run on the comma.
+No routing requests run on the comma.
 
 Deliberately free of openpilot imports so it runs under a bare Python interpreter --
 same rule as db.py and geo.py.

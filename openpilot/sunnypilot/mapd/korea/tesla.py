@@ -45,7 +45,7 @@ HTTP_TIMEOUT_S = 10.
 # location_data is what puts coordinates in drive_state: without it Tesla answers with
 # active_route_destination alone (teslamotors/fleet-telemetry#392).
 VEHICLE_DATA_QUERY = urllib.parse.urlencode({"endpoints": "drive_state;location_data"})
-MAX_PLACE_NAME = 64  # same cut as external_source.MAX_ROAD_NAME
+MAX_PLACE_NAME = 64
 
 # The owner API is the Tesla app's own, unofficial one -- NaviToTesla uses it. It needs no
 # developer app and bills nothing, but its token is the whole account, which is why Fleet

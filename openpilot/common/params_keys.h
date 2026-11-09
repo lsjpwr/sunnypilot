@@ -305,6 +305,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"KoreaCameraSignalEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},       // 신호·과속
     {"KoreaCameraSpeedEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},        // 과속
     {"KoreaCameraZoneEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},         // 노인·어린이 보호구역
+    {"KoreaCameraMobileExclude", {PERSISTENT | BACKUP, BOOL, "1"}},       // 이동식 단속 제외
     {"KoreaExternalNavEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"KoreaMapApiKey", {PERSISTENT | BACKUP | DONT_LOG, STRING, ""}},   // DONT_LOG: 업로드되는 로그(initData)에 키를 싣지 않는다
     {"KoreaMapAutoDownload", {PERSISTENT | BACKUP, BOOL, "0"}},
