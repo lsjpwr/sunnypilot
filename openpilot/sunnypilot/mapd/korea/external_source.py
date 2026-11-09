@@ -13,7 +13,7 @@ Wire format, one JSON object per datagram, every key optional:
   {"speed_limit_kph": 60,
    "destination_lat": 37.4979, "destination_lon": 127.0276}
 
-destination_lat/lon start a route the device fetches itself; 0/0 means guidance ended.
+destination_lat/lon is where the phone app guides to; 0/0 means guidance ended. The route itself stays on the phone.
 destination_name and via (up to 5 {"lat", "lon", "name"}, in order) come with them from the
 phone app, which sends its trip to the car through tesla.py.
 
@@ -61,6 +61,9 @@ ITEM_KINDS = frozenset({"cam", "sec_start", "sec_end", "bump"})
 MAX_ITEMS = 10
 MAX_AGE_MS = 600000.  # 10 min; the app drops an item after 5
 MAX_VIAS = 5  # TMAP's own limit
+# The app's "c" of an item is the SDK code it came from, "t<nSdiType>" (TMAP) or "k<KNSafetyCode>" (Kakao), merged items joined
+# with "+". These are the 이동식 (mobile) speed enforcement spots; a box-type camera is not one.
+MOBILE_CODES = frozenset({"t7", "kMovableSpeedViolationCamera"})
 
 
 @dataclass(frozen=True)
@@ -75,6 +78,7 @@ class PhoneItem:
   age_s: float
   rear: bool = False  # the camera photographs the car's back
   signal: bool = False  # it enforces red lights too
+  mobile: bool = False  # an 이동식 spot, not a fixed camera (MOBILE_CODES)
 
 
 @dataclass
@@ -166,6 +170,10 @@ def _age_s(payload: dict, key: str) -> float | None:
   return age / 1000. if age is not None else None
 
 
+def _mobile(code) -> bool:
+  return isinstance(code, str) and not MOBILE_CODES.isdisjoint(code.split("+"))
+
+
 def _item(entry) -> PhoneItem | None:
   """One entry of items, or None when any part of it is implausible."""
   if not isinstance(entry, dict) or not isinstance(entry.get("k"), str) or entry["k"] not in ITEM_KINDS:
@@ -179,7 +187,7 @@ def _item(entry) -> PhoneItem | None:
     return None
   return PhoneItem(kind=entry["k"], lat=float(lat), lon=float(lon),
                    limit_kph=int(_bounded(entry, "lim", MAX_SPEED_LIMIT_KPH)), distance_m=distance, age_s=age,
-                   rear=entry.get("rear") is True, signal=entry.get("sig") is True)
+                   rear=entry.get("rear") is True, signal=entry.get("sig") is True, mobile=_mobile(entry.get("c")))
 
 
 def _items(payload: dict) -> tuple[PhoneItem, ...] | None:

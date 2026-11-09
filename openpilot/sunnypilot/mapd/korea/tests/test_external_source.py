@@ -130,6 +130,24 @@ class TestParseItems(unittest.TestCase):
     self.assertFalse(item.rear)
     self.assertFalse(item.signal)
 
+  @parameterized.expand([
+    ("SDI type 7", "t7", True),
+    ("Kakao movable code", "kMovableSpeedViolationCamera", True),
+    ("a merged item", "t7+kMovableSpeedViolationCamera", True),
+    ("mobile among other codes", "t8+t7", True),
+    ("SDI type 8", "t8", False),
+    ("another Kakao code", "kSpeedViolationCamera", False),
+    ("a code that only starts like it", "t70", False),
+    ("empty", "", False),
+    ("not a string", 7, False),
+    ("null", None, False),
+  ])
+  def test_the_source_code_tells_a_mobile_camera(self, _, code, mobile):
+    self.assertIs(parse_payload({"items": [{**ITEM, "c": code}]}).items[0].mobile, mobile)
+
+  def test_no_source_code_is_not_mobile(self):
+    self.assertFalse(parse_payload({"items": [ITEM]}).items[0].mobile)
+
   def test_at_most_ten_items_are_read(self):
     self.assertEqual(len(parse_payload({"items": [ITEM] * 15}).items), MAX_ITEMS)
 
