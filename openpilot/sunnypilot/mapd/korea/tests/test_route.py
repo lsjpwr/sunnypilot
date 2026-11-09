@@ -4,43 +4,13 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import itertools
 import json
 import math
-import os
-import tempfile
 import unittest
-from types import SimpleNamespace
-from unittest import mock
 
-from openpilot.sunnypilot.mapd.korea import route
 from openpilot.sunnypilot.mapd.korea.geo import haversine
-from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP, MAX_ROUTE_POINTS, MIN_V_MS,
-                                                   RequestBudget,
-                                                   arrived, curve_targets,
-                                                   distance_to_route, in_korea, parse_grade_separated,
-                                                   parse_route, route_progress, save_route, summarize_route)
-
-
-def feature(coords, kind="LineString"):
-  return {"type": "Feature", "geometry": {"type": kind, "coordinates": coords}}
-
-
-def road(coords, facility):
-  """A LineString the way TMAP sends it, with its facilityType."""
-  return {**feature(coords), "properties": {"facilityType": facility}}
-
-
-# TMAP answers GeoJSON: coordinates are [lon, lat], LineString features carry the road
-# geometry and Point features carry the turn markers. Seoul city hall -> Gangnam, trimmed.
-SAMPLE = {
-  "type": "FeatureCollection",
-  "features": [
-    feature([126.9780, 37.5665], kind="Point"),
-    feature([[126.9780, 37.5665], [126.9800, 37.5600], [126.9850, 37.5500]]),
-    feature([[126.9850, 37.5500], [127.0276, 37.4979]]),
-  ],
-}
+from openpilot.sunnypilot.mapd.korea.route import (A_LAT_MAX, DAILY_REQUEST_CAP, MIN_V_MS, RequestBudget, arrived,
+                                                   curve_targets, distance_to_route, in_korea, route_progress)
 
 
 class TestInKorea(unittest.TestCase):
@@ -52,64 +22,6 @@ class TestInKorea(unittest.TestCase):
 
   def test_null_island_is_outside(self):
     self.assertFalse(in_korea(0., 0.))
-
-
-class TestParseRoute(unittest.TestCase):
-  def test_linestrings_concatenate_in_order(self):
-    with self.assertLogs(route.LOG, level="DEBUG"):
-      result = parse_route(SAMPLE)
-    self.assertEqual(result, [
-      (37.5665, 126.9780), (37.5600, 126.9800), (37.5500, 126.9850), (37.4979, 127.0276),
-    ])
-
-  def test_point_features_are_ignored(self):
-    only_points = {"features": [feature([126.9780, 37.5665], kind="Point")]}
-    with self.assertLogs(route.LOG, level="DEBUG"):
-      self.assertEqual(parse_route(only_points), [])
-
-  def test_a_coordinate_outside_korea_discards_the_whole_route(self):
-    payload = {"features": [feature([[126.9780, 37.5665], [139.6503, 35.6762]])]}
-    with self.assertLogs(route.LOG, level="DEBUG"):
-      self.assertEqual(parse_route(payload), [])
-
-  def test_too_many_points_are_discarded(self):
-    coords = [[126.9780 + i * 1e-5, 37.5665] for i in range(MAX_ROUTE_POINTS + 1)]
-    with self.assertLogs(route.LOG, level="DEBUG"):
-      self.assertEqual(parse_route({"features": [feature(coords)]}), [])
-
-  def test_a_single_point_is_not_a_route(self):
-    with self.assertLogs(route.LOG, level="DEBUG"):
-      self.assertEqual(parse_route({"features": [feature([[126.9780, 37.5665]])]}), [])
-
-  def test_malformed_payload_is_empty_not_an_exception(self):
-    for bad in ({}, {"features": None}, {"features": [{}]}, {"features": [{"geometry": 7}]},
-                {"features": [feature([["nope", "nope"]])]}):
-      with self.assertLogs(route.LOG, level="DEBUG"):
-        self.assertEqual(parse_route(bad), [])
-
-
-class TestParseGradeSeparated(unittest.TestCase):
-  def test_tunnels_overpasses_and_underpasses_are_kept_in_route_order(self):
-    payload = {"features": [
-      road([[126.9780, 37.5665], [126.9800, 37.5600]], 0),  # 일반도로
-      road([[126.9800, 37.5600], [126.9850, 37.5500]], 3),  # 고가도로
-      road([[126.9850, 37.5500], [126.9900, 37.5450]], 1),  # 교량: junctions at both ends, left out
-      road([[126.9900, 37.5450], [126.9950, 37.5400]], 4),  # 지하도로
-      road([[126.9950, 37.5400], [127.0000, 37.5350]], 2),  # 터널
-      feature([126.9800, 37.5600], kind="Point"),
-    ]}
-    self.assertEqual(parse_grade_separated(payload), [
-      [(37.5600, 126.9800), (37.5500, 126.9850)],
-      [(37.5450, 126.9900), (37.5400, 126.9950)],
-      [(37.5400, 126.9950), (37.5350, 127.0000)],
-    ])
-
-  def test_an_answer_without_facility_codes_has_none(self):
-    self.assertEqual(parse_grade_separated(SAMPLE), [])
-
-  def test_unreadable_spans_are_none_not_an_exception(self):
-    with self.assertLogs(route.LOG, level="WARNING"):
-      self.assertEqual(parse_grade_separated({"features": [{"properties": "x"}]}), [])
 
 
 class FakeResponse:
@@ -167,21 +79,6 @@ class TestRequestBudget(unittest.TestCase):
 
   def test_the_default_cap_is_the_documented_one(self):
     self.assertEqual(RequestBudget().cap, DAILY_REQUEST_CAP)
-
-
-class TestSummarizeRoute(unittest.TestCase):
-  def test_it_counts_codes_and_camera_words_but_never_places_the_car(self):
-    start = feature([126.9780, 37.5665], kind="Point")
-    start["properties"] = {"turnType": 200, "pointType": "S", "name": "시청", "description": "세종대로 과속카메라 지나 출발"}
-    road = feature([[126.9780, 37.5665], [126.9800, 37.5600]])
-    road["properties"] = {"facilityType": 11, "roadType": 2, "name": "세종대로"}
-    summary = summarize_route({"type": "FeatureCollection", "features": [start, road]})
-    self.assertIn("Point x1 keys ['description', 'name', 'pointType', 'turnType'] pointType {'S': 1} turnType {200: 1}", summary)
-    self.assertIn("LineString x1 keys ['facilityType', 'name', 'roadType'] facilityType {11: 1} roadType {2: 1}", summary)
-    self.assertIn("camera words {'description': 1}", summary)
-    for leak in ("126.97", "37.56", "세종", "시청"):
-      self.assertNotIn(leak, summary)
-    self.assertEqual(summarize_route({"features": [7]}), "keys ['features'], features unreadable")
 
 
 # A 1.1 km straight leg north-east of Seoul city hall. ~0.001 deg lat is ~111 m.
@@ -357,27 +254,6 @@ class TestCurveTargets(unittest.TestCase):
     route = list(STRAIGHT)
     route[2] = (route[1][0], route[1][1] + 0.01 / m_per_deg_lon)  # ~1 cm from route[1]
     self.assertEqual(curve_targets(route, STRAIGHT[0][0], STRAIGHT[0][1], 30.), [])
-
-
-class TestSaveRoute(unittest.TestCase):
-  """Fetched routes stay on the device, the newest ROUTES_KEPT of them, for replaying a drive."""
-
-  def test_a_route_is_written_with_its_points(self):
-    with tempfile.TemporaryDirectory() as d:
-      save_route(d, STRAIGHT)
-      files = os.listdir(d)
-      self.assertEqual(len(files), 1)
-      with open(os.path.join(d, files[0])) as f:
-        self.assertEqual(json.load(f)["points"], [list(p) for p in STRAIGHT])
-
-  def test_only_the_newest_are_kept(self):
-    clock = itertools.count(1_790_000_000)
-    with tempfile.TemporaryDirectory() as d, mock.patch.object(route, "time", SimpleNamespace(time=lambda: next(clock))):
-      for _ in range(22):
-        save_route(d, STRAIGHT)
-      names = sorted(os.listdir(d))
-    self.assertEqual(len(names), 20)
-    self.assertEqual(names[0], "route-1790000002000.json")
 
 
 class TestRouteProgress(unittest.TestCase):

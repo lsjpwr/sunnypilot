@@ -11,12 +11,7 @@ Deliberately free of openpilot imports so it runs under a bare Python interprete
 same rule as db.py and geo.py.
 """
 import bisect
-from collections import Counter
-import glob
-import json
-import logging
 import math
-import os
 import threading
 import time
 
@@ -32,74 +27,10 @@ KOREA_BBOX = (33., 39., 124., 132.)  # min_lat, max_lat, min_lon, max_lon
 MAX_ROUTE_POINTS = 5000
 MIN_ROUTE_POINTS = 2
 
-LOG = logging.getLogger(__name__)
-
 
 def in_korea(lat: float, lon: float) -> bool:
   min_lat, max_lat, min_lon, max_lon = KOREA_BBOX
   return min_lat <= lat <= max_lat and min_lon <= lon <= max_lon
-
-
-def parse_route(payload: dict) -> list[tuple[float, float]]:
-  """Concatenated LineString geometry as (lat, lon), or [] for anything we will not trust.
-
-  [] rather than an exception: every caller is on a path that must keep running with no
-  route, and 'no route' is already a state the rest of the feature handles.
-  """
-  points: list[tuple[float, float]] = []
-  try:
-    for feat in payload.get("features") or []:
-      geometry = feat.get("geometry") or {}
-      if geometry.get("type") != "LineString":
-        continue
-      for lon, lat in geometry.get("coordinates") or []:
-        lat, lon = float(lat), float(lon)
-        if not in_korea(lat, lon):
-          LOG.warning("route: coordinate outside Korea, discarding the route")
-          return []
-        if points and points[-1] == (lat, lon):
-          # TMAP emits one LineString per road segment; adjacent segments repeat their
-          # shared joint coordinate. Collapse it so the join isn't counted twice.
-          continue
-        points.append((lat, lon))
-        if len(points) > MAX_ROUTE_POINTS:
-          LOG.warning("route: over %d points, discarding the route", MAX_ROUTE_POINTS)
-          return []
-  except (AttributeError, TypeError, ValueError):
-    # A payload shaped differently from what we expect is the same as no route. Deliberately
-    # broad over the shape errors only -- a real bug in this function should still raise.
-    LOG.warning("route: malformed payload")
-    return []
-
-  if len(points) < MIN_ROUTE_POINTS:
-    # A 200 with no usable geometry: the request worked and the budget was spent, but there
-    # is nothing to show for it. This is the one shape of this response TMAP has never been
-    # checked against live, so it is the likeliest place a wrong assumption shows up.
-    LOG.warning("route: parsed %d point(s), below the %d needed for a usable route",
-               len(points), MIN_ROUTE_POINTS)
-    return []
-
-  LOG.info("route: parsed %d points", len(points))
-  return points
-
-
-# TMAP's LineString facilityType for a road on a level of its own: 2 터널, 3 고가도로, 4 지하도로
-# (tmapRouteDoc; ints in the live answers). 1 교량 is left out: a bridge has junctions at both ends.
-GRADE_SEPARATED_FACILITIES = frozenset({2, 3, 4})
-
-
-def parse_grade_separated(payload: dict) -> list[list[tuple[float, float]]]:
-  """The route's tunnels, overpasses and underpasses: each LineString TMAP marks with one of
-  GRADE_SEPARATED_FACILITIES, as (lat, lon), in route order. [] for anything unreadable, which
-  is what an answer without them gives too. Read only from an answer parse_route accepted."""
-  try:
-    return [[(float(lat), float(lon)) for lon, lat in feat["geometry"]["coordinates"]]
-            for feat in payload.get("features") or []
-            if (feat.get("properties") or {}).get("facilityType") in GRADE_SEPARATED_FACILITIES
-            and (feat.get("geometry") or {}).get("type") == "LineString"]
-  except (AttributeError, KeyError, TypeError, ValueError):
-    LOG.warning("route: unreadable facility spans, using none")
-    return []
 
 
 # Shared with Tesla's read and command budgets; their callers supply their own caps.
@@ -130,39 +61,6 @@ class RequestBudget:
   def spend(self) -> None:
     self._roll()
     self._spent += 1
-
-
-# What a camera or enforcement point would say in a TMAP text field (description, name)
-CAMERA_WORDS = ("카메라", "단속", "과속")
-
-
-def summarize_route(payload: dict) -> str:
-  """What a routing answer carries besides its geometry: the property keys of each feature kind, the counts
-  of every *Type code, and which text fields name a camera. Logged to find out whether TMAP sends the cameras
-  along the route (2026-10-09). No coordinates and no text values -- those place the car."""
-  counts: Counter = Counter()
-  keys: dict[str, set[str]] = {}
-  codes: dict[str, dict[str, Counter]] = {}
-  words: Counter = Counter()
-  try:
-    for feat in payload.get("features") or []:
-      props = feat.get("properties") or {}
-      kind = str((feat.get("geometry") or {}).get("type"))
-      counts[kind] += 1
-      keys.setdefault(kind, set()).update(props)
-      for key, value in props.items():
-        if key.endswith("Type") and (isinstance(value, int) or (isinstance(value, str) and len(value) <= 4)):
-          codes.setdefault(kind, {}).setdefault(key, Counter())[value] += 1
-        if isinstance(value, str) and any(word in value for word in CAMERA_WORDS):
-          words[key] += 1
-  except (AttributeError, TypeError):
-    return f"keys {sorted(payload)}, features unreadable"
-  parts = [f"keys {sorted(payload)}"]
-  for kind in sorted(counts):
-    parts.append(" ".join([f"{kind} x{counts[kind]} keys {sorted(keys[kind])}",
-                           *(f"{key} {dict(sorted(c.items(), key=str))}" for key, c in sorted(codes.get(kind, {}).items()))]))
-  parts.append(f"camera words {dict(words)}")
-  return "; ".join(parts)
 
 
 def distance_to_route(route: list[tuple[float, float]], lat: float, lon: float) -> float:
@@ -284,24 +182,6 @@ def curve_targets(route: list[tuple[float, float]], lat: float, lon: float,
       targets.append((route[i][0], route[i][1], velocity))
 
   return targets
-
-
-# Routes kept on the device, so a drive's curve targets can be replayed against its logs later.
-ROUTES_KEPT = 20
-
-
-def save_route(directory: str, points: list[tuple[float, float]], keep: int = ROUTES_KEPT) -> None:
-  """Write a fetched route to directory as route-<ms>.json and keep only the newest `keep`. Local only:
-  a route is where the car went, and nothing reads this directory but a person pulling it by hand."""
-  os.makedirs(directory, exist_ok=True)
-  # The wall clock on purpose: the file is matched to a drive's logs by time.
-  now = time.time()  # noqa: TID251
-  path = os.path.join(directory, f"route-{int(now * 1000)}.json")
-  with open(path + ".tmp", "w") as f:
-    json.dump({"saved": now, "points": points}, f)
-  os.replace(path + ".tmp", path)
-  for old in sorted(glob.glob(os.path.join(directory, "route-*.json")))[:-keep]:
-    os.remove(old)
 
 
 # Close enough to be there. Generous on purpose -- the destination the phone sends is a

@@ -302,7 +302,7 @@ def excluded(lat: float, lon: float, exclude: Collection[tuple[float, float]]) -
 def on_grade_separated(route: list[tuple[float, float]] | None, grade_separated: Collection[list[tuple[float, float]]],
                        lat: float, lon: float) -> bool:
   """Is the route's nearest point to (lat, lon) on one of its tunnel, overpass or underpass spans?
-  The spans are cut from the route's own points (route.parse_grade_separated), so a tie is the same segment."""
+  The spans are cut from the route's own points (RouteSource.latest: the phone's own spans), so a tie is the same segment."""
   if not route or not grade_separated:
     return False
   return min(distance_to_route(span, lat, lon) for span in grade_separated) <= distance_to_route(route, lat, lon)
