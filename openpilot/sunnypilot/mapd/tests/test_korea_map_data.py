@@ -159,18 +159,15 @@ class TestPublishedValues(unittest.TestCase):
     self.assertAlmostEqual(limit, 50 * CV.KPH_TO_MS, places=9)
     self.assertEqual(distance, 320.)
 
-  def test_external_source_wins_over_the_database(self):
-    nav = ExternalNav(speed_limit_kph=40., next_speed_limit_kph=30.,
-                      next_speed_limit_distance_m=150., road_name="시장길",
-                      received_at=time.monotonic())
+  def test_external_speed_limit_wins_over_the_database(self):
+    nav = ExternalNav(speed_limit_kph=40., received_at=time.monotonic())
     data = make_data(link=Link(max_spd=60, name="테헤란로"),
                      camera=Camera(lat=37.5029, lon=127.0276, limit_kph=50, distance_m=320., section_m=0,
                                    kind=CAMERA_SPEED),
                      external=StubExternal(nav))
     self.assertAlmostEqual(data.get_current_speed_limit(), 40 * CV.KPH_TO_MS, places=9)
-    self.assertAlmostEqual(data.get_next_speed_limit_and_distance()[0], 30 * CV.KPH_TO_MS, places=9)
-    self.assertEqual(data.get_next_speed_limit_and_distance()[1], 150.)
-    self.assertEqual(data.get_current_road_name(), "시장길")
+    self.assertAlmostEqual(data.get_next_speed_limit_and_distance()[0], 50 * CV.KPH_TO_MS, places=9)
+    self.assertEqual(data.get_current_road_name(), "테헤란로")
 
   def test_stale_external_source_falls_back_to_the_database(self):
     data = make_data(link=Link(max_spd=60, name="테헤란로"), external=StubExternal(None))
@@ -178,11 +175,10 @@ class TestPublishedValues(unittest.TestCase):
     self.assertEqual(data.get_current_road_name(), "테헤란로")
 
   def test_empty_external_fields_fall_back_per_field(self):
-    # an app that only knows the road name must not blank out the database speed limit
-    nav = ExternalNav(road_name="시장길", received_at=time.monotonic())
+    nav = ExternalNav(received_at=time.monotonic())
     data = make_data(link=Link(max_spd=60, name="테헤란로"), external=StubExternal(nav))
     self.assertAlmostEqual(data.get_current_speed_limit(), 60 * CV.KPH_TO_MS, places=9)
-    self.assertEqual(data.get_current_road_name(), "시장길")
+    self.assertEqual(data.get_current_road_name(), "테헤란로")
 
 
 class StubTesla:
@@ -234,7 +230,7 @@ class TestUpdateDestination(unittest.TestCase):
     self.assertIsNone(data._last_written_destination)
 
   def test_a_new_destination_is_written_in_athenads_json_shape(self):
-    nav = ExternalNav(destination=(37.5665, 126.9780), destination_name="서울시청", road_name="테헤란로",
+    nav = ExternalNav(destination=(37.5665, 126.9780), destination_name="서울시청",
                       raw={"destination_lat": 37.5665, "destination_lon": 126.9780})
     data = make_data(external=StubExternal(nav))
 
@@ -247,7 +243,7 @@ class TestUpdateDestination(unittest.TestCase):
   def test_the_same_destination_repeated_is_not_rewritten(self):
     """A phone that resends the same destination every datagram must not touch /data/params
     (flash) once a second forever."""
-    nav = ExternalNav(destination=(37.5665, 126.9780), road_name="테헤란로",
+    nav = ExternalNav(destination=(37.5665, 126.9780),
                       raw={"destination_lat": 37.5665, "destination_lon": 126.9780})
     data = make_data(external=StubExternal(nav))
     data.update_destination()
@@ -304,7 +300,7 @@ class TestUpdateDestination(unittest.TestCase):
     object for neither event, so _last_written_destination alone must not decide whether to
     write. Without this, the second drive to the same place (the commute home) would see
     "unchanged" and never rewrite an already-empty param."""
-    nav = ExternalNav(destination=(37.5665, 126.9780), road_name="테헤란로",
+    nav = ExternalNav(destination=(37.5665, 126.9780),
                       raw={"destination_lat": 37.5665, "destination_lon": 126.9780})
     data = make_data(external=StubExternal(nav))
     data.update_destination()
@@ -1740,6 +1736,47 @@ class TestPhoneItems(unittest.TestCase):
     data = phone_tick(phone_nav(phone_item(limit=60)), starts=[start], end=end)
     self.assertEqual(data.camera.limit_kph, 60)
     self.assertEqual(data.section.limit_kph, 100)
+
+  def test_the_sign_ahead_follows_the_filtered_camera_not_the_phones_own_first_item(self):
+    """The app sends its first item as next_speed_limit_*; the sign must not bypass the kind toggles and the exclusions."""
+    def sign(**attrs):
+      nav = phone_nav(phone_item(m=100., limit=30, signal=True))
+      nav.raw = {"next_speed_limit_kph": 30, "next_speed_limit_distance_m": 100}  # the app still sends them; ignored
+      return phone_tick(nav, **attrs).get_next_speed_limit_and_distance()
+    self.assertEqual(sign(camera_kinds=frozenset({CAMERA_SPEED})), (0., 0.))
+    self.assertEqual(sign(camera_exclude=(east(100.),)), (0., 0.))
+    limit, distance = sign()
+    self.assertAlmostEqual(limit, 30 * CV.KPH_TO_MS, places=9)
+    self.assertAlmostEqual(distance, 100., delta=1.)
+
+  def test_the_phone_still_brakes_when_there_is_no_database(self):
+    data = make_data(external=StubExternal(phone_nav(phone_item(limit=50), phone_item("bump", m=80., limit=0))))
+    data.sm = SingleLocationSM(valid_llk(*east(0)))
+    data.update_location()
+    self.assertIsNone(data.db)
+    self.assertEqual(data.camera.limit_kph, 50)
+    self.assertEqual(data.bump.kind, BUMP_ARCH)
+
+  @parameterized.expand([sqlite3.DatabaseError("database disk image is malformed"),
+                         struct.error("unpack requires a buffer of 16 bytes")])
+  def test_the_phone_still_brakes_when_the_database_query_fails(self, exc):
+    db = ExplodingDB(exc)
+    data = make_data(external=StubExternal(phone_nav(phone_item(limit=50), phone_item("bump", m=80., limit=0))))
+    data.sm = SingleLocationSM(valid_llk(*east(0)))
+    data.db = db
+    data.update_location()
+    self.assertIsNone(data.db)
+    self.assertTrue(db.closed)
+    self.assertEqual(data.camera.limit_kph, 50)
+    self.assertEqual(data.bump.kind, BUMP_ARCH)
+
+  def test_no_position_yet_fills_nothing_and_does_not_raise(self):
+    data = make_data(external=StubExternal(phone_nav(phone_item(limit=50))))
+    data.sm = location_message()  # uninitialized, so last_position stays unset
+    data.last_position = None
+    data.update_location()
+    self.assertIsNone(data.camera)
+    self.assertIsNone(data.bump)
 
   def test_a_phone_item_that_breaks_leaves_no_camera_and_keeps_the_database(self):
     with mock.patch("openpilot.sunnypilot.mapd.live_map_data.korea_map_data.phone_camera", side_effect=ValueError):

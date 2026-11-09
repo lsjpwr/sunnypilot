@@ -10,8 +10,7 @@ for only starting it when KoreaExternalNavEnabled is set.
 
 Wire format, one JSON object per datagram, every key optional:
 
-  {"speed_limit_kph": 60, "next_speed_limit_kph": 50,
-   "next_speed_limit_distance_m": 320, "road_name": "테헤란로",
+  {"speed_limit_kph": 60,
    "destination_lat": 37.4979, "destination_lon": 127.0276}
 
 destination_lat/lon start a route the device fetches itself; 0/0 means guidance ended.
@@ -57,7 +56,6 @@ RECV_TIMEOUT = .25  # s, how long recvfrom holds the socket before letting stop(
 
 MAX_SPEED_LIMIT_KPH = 130.
 MAX_DISTANCE_M = 10000.
-MAX_ROAD_NAME = 64
 
 ITEM_KINDS = frozenset({"cam", "sec_start", "sec_end", "bump"})
 MAX_ITEMS = 10
@@ -82,9 +80,6 @@ class PhoneItem:
 @dataclass
 class ExternalNav:
   speed_limit_kph: float = 0.
-  next_speed_limit_kph: float = 0.
-  next_speed_limit_distance_m: float = 0.
-  road_name: str = ""
   destination: tuple[float, float] | None = None
   destination_name: str = ""
   vias: tuple[tuple[float, float, str], ...] = ()  # (lat, lon, name) in the order the trip passes them
@@ -195,13 +190,9 @@ def _items(payload: dict) -> tuple[PhoneItem, ...] | None:
 
 
 def parse_payload(payload: dict) -> ExternalNav:
-  name = payload.get("road_name", "")
   sdk_ages = [age for age in (_age_s(payload, "tmap_age_ms"), _age_s(payload, "kakao_age_ms")) if age is not None]
   return ExternalNav(
     speed_limit_kph=_bounded(payload, "speed_limit_kph", MAX_SPEED_LIMIT_KPH),
-    next_speed_limit_kph=_bounded(payload, "next_speed_limit_kph", MAX_SPEED_LIMIT_KPH),
-    next_speed_limit_distance_m=_bounded(payload, "next_speed_limit_distance_m", MAX_DISTANCE_M),
-    road_name=name[:MAX_ROAD_NAME] if isinstance(name, str) else "",
     destination=_destination(payload),
     destination_name=_name(payload.get("destination_name")),
     vias=_vias(payload),

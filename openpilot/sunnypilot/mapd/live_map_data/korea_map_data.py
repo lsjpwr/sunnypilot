@@ -405,52 +405,52 @@ class KoreaMapData(BaseMapData):
       self.route, self.grade_separated = [], []
 
     self.open_db()
-    if self.db is None or self.last_position is None:
+    if self.last_position is None:
       return
-
-    # Task 13 swaps the camera file underneath us with os.replace. This is the only place
-    # that notices; drop it and a refresh never reaches the running process.
-    self.db.reload_if_changed()
 
     lat, lon = self.last_position.latitude, self.last_position.longitude
     phone = self.phone_items()
     if (phone is not None) != bool(self._from_phone):
       cloudlog.info("korea_map: cameras and bumps from %s", "the phone app" if phone is not None else "the database")
     self._from_phone = phone is not None
-    try:
-      self.link = self.db.current_link(lat, lon, self.last_bearing, route=self.route)
-      if phone is None:
-        self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds,
-                                          exclude=self.camera_exclude, grade_separated=self.grade_separated)
-        # The sign keeps the wide cone, but only a camera on our road may brake the car. While
-        # the car is on the route, next_camera has already held the sign's camera to
-        # ROUTE_CORRIDOR_M of the polyline, which bends with the road -- the heading line would
-        # only drop the cameras round a bend. Off it, or with no route (distance_to_route is
-        # inf), the heading line decides: RouteSource keeps a polyline the car has left until a
-        # reroute succeeds, and that road's cameras are not on ours.
-        if distance_to_route(self.route, lat, lon) <= ROUTE_CORRIDOR_M:
-          self.slowdown_camera = self.camera
-        else:
-          self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
-                                                     kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M,
-                                                     exclude=self.camera_exclude, grade_separated=self.grade_separated)
-        self.note_passed_camera()
-        self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
-      # 구간단속 sections come from the database on both paths: it knows where a section's end camera stands, and
-      # neither SDK does (TMAP put one 313 m off the road on a highway replay; Kakao gives no place at all)
-      self.update_section(lat, lon)
-    except Exception:
-      # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
-      # geometry blob raises struct.error from _unpack_geom -- not a sqlite exception at
-      # all -- and anything that escapes here reaches mapd_manager's bare `while True`,
-      # kills the process, and raises processNotRunning, which blocks engagement. Whatever
-      # the corruption is, it raises on every query from here on, so retrying at 1 Hz would
-      # only crash-loop. Drop the database and keep publishing zeros: no speed limit is a
-      # safe answer, a dead mapd is a worse one.
-      self._give_up()
-      self.close()
-      cloudlog.exception("korea_map: dropping the database after a query error")
-      return
+    # No database (still being copied down, or just dropped) must not cost the phone's items: they need only the position.
+    if self.db is not None:
+      # Task 13 swaps the camera file underneath us with os.replace. This is the only place
+      # that notices; drop it and a refresh never reaches the running process.
+      self.db.reload_if_changed()
+      try:
+        self.link = self.db.current_link(lat, lon, self.last_bearing, route=self.route)
+        if phone is None:
+          self.camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route, kinds=self.camera_kinds,
+                                            exclude=self.camera_exclude, grade_separated=self.grade_separated)
+          # The sign keeps the wide cone, but only a camera on our road may brake the car. While
+          # the car is on the route, next_camera has already held the sign's camera to
+          # ROUTE_CORRIDOR_M of the polyline, which bends with the road -- the heading line would
+          # only drop the cameras round a bend. Off it, or with no route (distance_to_route is
+          # inf), the heading line decides: RouteSource keeps a polyline the car has left until a
+          # reroute succeeds, and that road's cameras are not on ours.
+          if distance_to_route(self.route, lat, lon) <= ROUTE_CORRIDOR_M:
+            self.slowdown_camera = self.camera
+          else:
+            self.slowdown_camera = self.db.next_camera(lat, lon, self.last_bearing, route=self.route,
+                                                       kinds=self.camera_kinds, corridor_m=CAMERA_CORRIDOR_M,
+                                                       exclude=self.camera_exclude, grade_separated=self.grade_separated)
+          self.note_passed_camera()
+          self.bump = self.db.next_bump(lat, lon, self.last_bearing, route=self.route)
+        # 구간단속 sections come from the database on both paths: it knows where a section's end camera stands, and
+        # neither SDK does (TMAP put one 313 m off the road on a highway replay; Kakao gives no place at all)
+        self.update_section(lat, lon)
+      except Exception:
+        # Deliberately broad. A corrupt page raises sqlite3.DatabaseError, but a truncated
+        # geometry blob raises struct.error from _unpack_geom -- not a sqlite exception at
+        # all -- and anything that escapes here reaches mapd_manager's bare `while True`,
+        # kills the process, and raises processNotRunning, which blocks engagement. Whatever
+        # the corruption is, it raises on every query from here on, so retrying at 1 Hz would
+        # only crash-loop. Drop the database; the phone app's items below keep braking the car,
+        # and without them no speed limit is a safe answer, a dead mapd is a worse one.
+        self._give_up()
+        self.close()
+        cloudlog.exception("korea_map: dropping the database after a query error")
     if phone is not None:
       self.update_from_phone(phone, lat, lon)
 
@@ -569,17 +569,11 @@ class KoreaMapData(BaseMapData):
     return 0.
 
   def get_next_speed_limit_and_distance(self) -> tuple[float, float]:
-    nav = self.nav()
-    if nav is not None and nav.next_speed_limit_kph > 0.:
-      return nav.next_speed_limit_kph * CV.KPH_TO_MS, nav.next_speed_limit_distance_m
     if self.camera is not None:
       return self.camera.limit_kph * CV.KPH_TO_MS, self.camera.distance_m
     return 0., 0.
 
   def get_current_road_name(self) -> str:
-    nav = self.nav()
-    if nav is not None and nav.road_name:
-      return nav.road_name
     return self.link.name if self.link is not None else ""
 
   def read_bump_params(self) -> None:
