@@ -39,7 +39,7 @@ PORT = 5556
 WIFI_INTERFACE = "wlan0"
 PAIR_CODE_PARAM = "PhoneBridgePairCode"
 TOKEN_PARAM = "PhoneBridgeToken"
-PAIR_CODE_S = 60.
+PAIR_CODE_LIFETIME_S = 60.
 MAX_CODE_FAILURES = 5
 MAX_BODY = 4096  # bytes
 REQUEST_TIMEOUT_S = 2.  # per socket operation, since one slow client holds up the rest
@@ -61,7 +61,7 @@ def new_pair_code(params, now=time.monotonic) -> str:
   """Puts up a fresh code for the bridge to accept, and returns it for the screen. CLOCK_MONOTONIC
   is the same in both processes and the param does not outlive a boot."""
   code = f"{secrets.randbelow(1_000_000):06d}"
-  params.put(PAIR_CODE_PARAM, {"code": code, "expires": now() + PAIR_CODE_S}, block=True)
+  params.put(PAIR_CODE_PARAM, {"code": code, "expires": now() + PAIR_CODE_LIFETIME_S}, block=True)
   return code
 
 
@@ -83,7 +83,7 @@ def in_subnet(client: str, network: ipaddress.IPv4Network | None) -> bool:
 class PhoneBridge:
   def __init__(self, params, mem_params, sm, now=time.monotonic):
     self.params, self.mem_params, self.sm, self.now = params, mem_params, sm, now
-    self._failures = (None, 0)  # the code the wrong tries were against, and how many
+    self._failed_code, self._failures = None, 0  # the code the wrong tries were against, and how many
     self._v_ego_cluster_seen = False
 
   def pair(self, code: str) -> str | None:
@@ -92,9 +92,9 @@ class PhoneBridge:
     if not entry or self.now() >= entry["expires"]:
       return None
     if not hmac.compare_digest(code.encode(), entry["code"].encode()):
-      failures = self._failures[1] + 1 if self._failures[0] == entry["code"] else 1
-      self._failures = (entry["code"], failures)
-      if failures >= MAX_CODE_FAILURES:
+      self._failures = self._failures + 1 if self._failed_code == entry["code"] else 1
+      self._failed_code = entry["code"]
+      if self._failures >= MAX_CODE_FAILURES:
         self.params.remove(PAIR_CODE_PARAM)
       return None
     self.params.remove(PAIR_CODE_PARAM)
@@ -159,7 +159,7 @@ class PhoneBridge:
   def _lead(self) -> dict | None:
     """The first of the leads mici draws (ModelRenderer._update_leads)."""
     alive = self.sm.alive
-    if not alive["longitudinalPlan"]:
+    if not alive["longitudinalPlan"] or not self.sm.valid["radarState"]:  # mici draws no lead at all on an invalid radarState
       return None
     e2e = self.sm["longitudinalPlan"].longitudinalPlanSource == log.LongitudinalPlan.LongitudinalPlanSource.e2e
     if e2e and not alive["modelV2"]:

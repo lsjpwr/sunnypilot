@@ -16,8 +16,8 @@ import pytest
 from opendbc.car.structs import car
 from openpilot.cereal import log
 from openpilot.common.constants import CV
-from openpilot.sunnypilot.system.phone_bridge import (MAX_BODY, PAIR_CODE_PARAM, PAIR_CODE_S, SERVICES, TOKEN_PARAM, PhoneBridge, in_subnet, make_server,
-                                                      new_pair_code, wifi_subnet)
+from openpilot.sunnypilot.system.phone_bridge import (MAX_BODY, PAIR_CODE_PARAM, PAIR_CODE_LIFETIME_S, SERVICES, TOKEN_PARAM, PhoneBridge, in_subnet,
+                                                      make_server, new_pair_code, wifi_subnet)
 
 
 class FakeParams:
@@ -118,7 +118,7 @@ class TestPairing:
     code = new_pair_code(params, clock)
     phone = start()
 
-    clock.t += PAIR_CODE_S + 1
+    clock.t += PAIR_CODE_LIFETIME_S + 1
 
     assert phone.pair(code)[0] == 403
     assert params.get(TOKEN_PARAM) is None
@@ -277,27 +277,30 @@ class FakeSM:
   def __init__(self, **messages):
     self.data = {s: reader(s, messages.get(s, {})) for s in SERVICES}
     self.alive = dict.fromkeys(SERVICES, True)
+    self.valid = dict.fromkeys(SERVICES, True)
 
   def __getitem__(self, service):
     return self.data[service]
 
 
 TESLA = car.CarParams.new_message(brand="tesla").to_bytes()
-KPH = CV.KPH_TO_MS
+KPH_TO_MS = CV.KPH_TO_MS
 AUTO_SLA = {"TeslaAutoSpeedLimitAssist": True, "CarParams": TESLA}
-IN_SECTION = {"KoreaSectionAverage": 72 * KPH, "KoreaSectionSpeedLimit": 80 * KPH}
+IN_SECTION = {"KoreaSectionAverage": 72 * KPH_TO_MS, "KoreaSectionSpeedLimit": 80 * KPH_TO_MS}
 CRUISE = {"vCruiseCluster": 127.}
 BY_PLAN = {"longitudinalPlanSource": "cruise"}
 BY_MODEL = {"longitudinalPlanSource": "e2e"}
 ALL_FIELDS = ("started", "engaged", "max_kph", "max_green", "speed_kph", "section", "lead", "desire", "blind", "alert")
 
 
-def hud(world, params=None, mem_params=None, stale=(), **messages):
+def hud(world, params=None, mem_params=None, stale=(), invalid=(), **messages):
   bridge_params, clock, start = world
   bridge_params.values.update(params or {})
   sm = FakeSM(**messages)
   for service in stale:
     sm.alive[service] = False
+  for service in invalid:
+    sm.valid[service] = False
   phone = start(sm=sm, mem_params=FakeParams(**(mem_params or {})))
   status, body = phone.request("GET", "/v1/hud", token=phone.pair(new_pair_code(bridge_params, clock))[1]["token"])
   assert status == 200
@@ -305,7 +308,7 @@ def hud(world, params=None, mem_params=None, stale=(), **messages):
 
 
 def sla_plan(kph):
-  return {"speedLimit": {"assist": {"enabled": True, "vTarget": kph * KPH}}, "smartCruiseControl": {"map": {"active": False, "vTarget": 255.}}}
+  return {"speedLimit": {"assist": {"enabled": True, "vTarget": kph * KPH_TO_MS}}, "smartCruiseControl": {"map": {"active": False, "vTarget": 255.}}}
 
 
 def e2e_leads(prob, x):
@@ -369,15 +372,15 @@ class TestHud:
     assert (body["max_kph"], body["max_green"], body["section"]) == (127, False, None)
 
   def test_speed_is_the_cluster_speed_once_the_car_has_one(self, world):
-    assert hud(world, carState={"vEgo": 20., "vEgoCluster": 78 * KPH})["speed_kph"] == 78
+    assert hud(world, carState={"vEgo": 20., "vEgoCluster": 78 * KPH_TO_MS})["speed_kph"] == 78
 
   def test_speed_is_the_wheel_speed_without_one(self, world):
-    assert hud(world, carState={"vEgo": 78 * KPH, "vEgoCluster": 0.})["speed_kph"] == 78
+    assert hud(world, carState={"vEgo": 78 * KPH_TO_MS, "vEgoCluster": 0.})["speed_kph"] == 78
 
   @pytest.mark.parametrize("average,expected", [(72, {"avg": 72, "over": False}), (90, {"avg": 90, "over": True})])
   def test_section_average(self, world, average, expected):
     body = hud(world, params=AUTO_SLA, carState=CRUISE, longitudinalPlanSP=sla_plan(80),
-               mem_params={"KoreaSectionAverage": average * KPH, "KoreaSectionSpeedLimit": 80 * KPH})
+               mem_params={"KoreaSectionAverage": average * KPH_TO_MS, "KoreaSectionSpeedLimit": 80 * KPH_TO_MS})
     assert body["section"] == expected
 
   def test_section_stays_in_kph_on_a_car_shown_in_miles(self, world):
@@ -405,6 +408,11 @@ class TestHud:
 
   def test_e2e_with_a_dead_model_does_not_borrow_the_radar(self, world):
     body = hud(world, stale=["modelV2"], longitudinalPlan=BY_MODEL, modelV2=e2e_leads(.9, 32.), radarState={"leadOne": {"present": True, "dRel": 30.}})
+    assert body["lead"] is None
+
+  @pytest.mark.parametrize("plan", [BY_MODEL, BY_PLAN])
+  def test_mici_draws_no_lead_on_an_invalid_radar_state(self, world, plan):
+    body = hud(world, invalid=["radarState"], longitudinalPlan=plan, modelV2=e2e_leads(.9, 32.), radarState={"leadOne": {"present": True, "dRel": 30.}})
     assert body["lead"] is None
 
   @pytest.mark.parametrize("state,direction,expected", [

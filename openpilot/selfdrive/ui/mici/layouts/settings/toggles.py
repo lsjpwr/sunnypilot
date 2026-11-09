@@ -10,7 +10,7 @@ from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callba
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.mici.layouts.settings.initial_cruise_speed import InitialCruiseSpeedButton
 from openpilot.sunnypilot.mapd import MapSource
-from openpilot.sunnypilot.system.phone_bridge import PAIR_CODE_PARAM, PAIR_CODE_S, new_pair_code
+from openpilot.sunnypilot.system.phone_bridge import PAIR_CODE_PARAM, PAIR_CODE_LIFETIME_S, new_pair_code
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
 
@@ -20,7 +20,7 @@ class PairCodeDialog(BigDialog):
 
   def __init__(self, code: str):
     super().__init__(code, "enter this code in the phone app")
-    self._until = time.monotonic() + PAIR_CODE_S
+    self._until = time.monotonic() + PAIR_CODE_LIFETIME_S
 
   def _update_state(self):
     super()._update_state()
@@ -95,7 +95,7 @@ class TogglesLayoutMici(NavScroller):
     self._api_key_btn.set_click_callback(edit_api_key)
 
     phone_bridge_toggle = BigParamControl("phone app connection", "PhoneBridgeEnabled",
-                                          description="Lets a paired phone on the same Wi-Fi read this screen's driving status.")
+                                          description="Lets a paired phone on the same Wi-Fi read the driving status.")
     self._pair_btn = BigButton("connect phone")
     self._pair_btn.set_click_callback(lambda: gui_app.push_widget(PairCodeDialog(new_pair_code(ui_state.params))))
 

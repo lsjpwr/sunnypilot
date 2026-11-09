@@ -10,9 +10,10 @@ from unittest.mock import patch
 import pyray as rl
 
 from openpilot.common.test import OpenpilotTestCase
-from openpilot.sunnypilot.system.phone_bridge import PAIR_CODE_PARAM, PAIR_CODE_S
+from openpilot.sunnypilot.system.phone_bridge import PAIR_CODE_PARAM, PAIR_CODE_LIFETIME_S
 
 
+@unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
 class TestPhoneBridgeToggles(OpenpilotTestCase):
   def _layout(self):
     rl.set_config_flags(rl.ConfigFlags.FLAG_WINDOW_HIDDEN)
@@ -32,7 +33,6 @@ class TestPhoneBridgeToggles(OpenpilotTestCase):
     self.addCleanup(setattr, ui_state, "started", original_started)
     return TogglesLayoutMici(), ui_state, gui_app
 
-  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_the_switch_only_moves_while_parked(self):
     layout, ui_state, _ = self._layout()
     switch = dict(layout._refresh_toggles)["PhoneBridgeEnabled"]
@@ -43,7 +43,6 @@ class TestPhoneBridgeToggles(OpenpilotTestCase):
     ui_state.started = True
     self.assertFalse(switch.enabled)
 
-  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_the_button_needs_the_switch(self):
     layout, ui_state, _ = self._layout()
 
@@ -53,7 +52,6 @@ class TestPhoneBridgeToggles(OpenpilotTestCase):
     ui_state.params.put_bool("PhoneBridgeEnabled", True, block=True)
     self.assertTrue(layout._pair_btn.enabled)
 
-  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_the_button_shows_the_code_the_bridge_will_accept(self):
     layout, ui_state, gui_app = self._layout()
 
@@ -64,7 +62,6 @@ class TestPhoneBridgeToggles(OpenpilotTestCase):
     self.assertEqual(dialog._card.text, code)
     self.assertEqual((len(code), code.isdigit()), (6, True))
 
-  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_the_code_stays_up_for_its_minute(self):
     layout, _, gui_app = self._layout()
     layout._pair_btn._click_callback()
@@ -75,11 +72,10 @@ class TestPhoneBridgeToggles(OpenpilotTestCase):
       dialog._update_state()
     self.assertFalse(dialog.is_dismissing)
 
-    with patch.object(toggles.time, "monotonic", return_value=dialog._until + PAIR_CODE_S):
+    with patch.object(toggles.time, "monotonic", return_value=dialog._until + PAIR_CODE_LIFETIME_S):
       dialog._update_state()
     self.assertTrue(dialog.is_dismissing)
 
-  @unittest.skipIf(not os.environ.get("DISPLAY"), "needs a display; run under xvfb-run")
   def test_the_code_goes_away_once_the_bridge_used_it_up(self):
     layout, ui_state, gui_app = self._layout()
     layout._pair_btn._click_callback()
