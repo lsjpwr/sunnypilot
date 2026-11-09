@@ -109,6 +109,9 @@ def uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
 def github_uploader_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
   return bool(params.get("GithubLogToken")) and bool(params.get("GithubLogRepo"))
 
+def phone_bridge_enabled(started: bool, params: Params, CP: car.CarParams) -> bool:
+  return params.get_bool("PhoneBridgeEnabled")
+
 def or_(*fns):
   return lambda *args: operator.or_(*(fn(*args) for fn in fns))
 
@@ -185,6 +188,9 @@ procs += [
 
   # Drive logs to the owner's GitHub repo
   PythonProcess("github_uploader", "openpilot.sunnypilot.system.github_uploader", github_uploader_ready),
+
+  # The phone app's HUD and settings
+  PythonProcess("phone_bridge", "openpilot.sunnypilot.system.phone_bridge", phone_bridge_enabled),
 
   # Backup
   PythonProcess("backup_manager", "openpilot.sunnypilot.sunnylink.backups.manager", and_(only_offroad, sunnylink_ready_shim)),

@@ -48,6 +48,12 @@ class TestSunnylinkdMethods(OpenpilotTestCase):
 
     self.assertEqual(len(self.saved_params), 0)
 
+  def test_saveParams_cannot_reach_the_phone_bridge(self):
+    """A remote write could open the port, or pair a phone without anyone at the comma's screen."""
+    sunnylinkd.saveParams({"PhoneBridgeEnabled": "1", "PhoneBridgeToken": "ATTACKER", "PhoneBridgePairCode": "123456"})
+
+    self.assertEqual(len(self.saved_params), 0)
+
   def test_saveParams_allowed(self):
     allowed_params = {
       "SpeedLimitOffset": "5",
@@ -191,6 +197,15 @@ class TestGetParams(OpenpilotTestCase):
     response = sunnylinkd.getParams(["GithubLogToken", "GithubLogRepo"])
 
     self.assertEqual([p["key"] for p in json.loads(response["params"])], ["GithubLogRepo"])
+
+  def test_phone_bridge_secrets_never_leave_the_device(self):
+    """The token, or a code still on screen, is the right to change the comma's settings."""
+    Params().put("PhoneBridgeToken", "TOKEN", block=True)
+    Params().put("PhoneBridgeEnabled", True, block=True)
+
+    response = sunnylinkd.getParams(["PhoneBridgeToken", "PhoneBridgePairCode", "PhoneBridgeEnabled"])
+
+    self.assertEqual([p["key"] for p in json.loads(response["params"])], ["PhoneBridgeEnabled"])
 
   def test_camera_locations_never_leave_the_device(self):
     """The excluded and the recently passed cameras are where the driver goes. sunnylink gets the

@@ -334,6 +334,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"GithubLogRepo", {PERSISTENT, STRING, ""}},
     {"GithubLogToken", {PERSISTENT | DONT_LOG, STRING, ""}},
 
+    // sunnypilot/system/phone_bridge.py. Not BACKUP and blocked in sunnylinkd: whoever holds the token or
+    // the code on screen can change the comma's settings. DONT_LOG: loggerd copies every other param into the qlogs.
+    {"PhoneBridgeEnabled", {PERSISTENT, BOOL, "0"}},
+    {"PhoneBridgePairCode", {CLEAR_ON_MANAGER_START | DONT_LOG, JSON}},
+    {"PhoneBridgeToken", {PERSISTENT | DONT_LOG, STRING, ""}},
+
     // Speed Limit
     {"SpeedLimitMode", {PERSISTENT | BACKUP, INT, "1"}},
     {"SpeedLimitOffsetType", {PERSISTENT | BACKUP, INT, "0"}},

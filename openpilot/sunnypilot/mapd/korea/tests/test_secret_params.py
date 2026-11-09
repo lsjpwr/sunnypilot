@@ -12,7 +12,7 @@ PARAMS_KEYS_H = pathlib.Path(__file__).resolve().parents[4] / "common" / "params
 # loggerd copies the value of every param without DONT_LOG into initData, the first record of
 # every boot log and qlog, and the uploaders send both off the device (system/loggerd/logger.cc).
 SECRETS = ("GithubLogToken", "KoreaMapApiKey", "KoreaTeslaClientId", "KoreaTeslaOwnerRefreshToken",
-           "KoreaTeslaRefreshToken", "KoreaTeslaVin")
+           "KoreaTeslaRefreshToken", "KoreaTeslaVin", "PhoneBridgePairCode", "PhoneBridgeToken")
 
 
 class TestSecretParams(unittest.TestCase):
@@ -26,6 +26,13 @@ class TestSecretParams(unittest.TestCase):
         entry = re.search(r'\{"' + key + r'", \{([^}]*)\}', text)
         self.assertIsNotNone(entry, f"{key} is not registered")
         self.assertIn("DONT_LOG", entry.group(1))
+
+  def test_the_phone_bridge_token_is_never_backed_up(self):
+    """A backup ships it off the device, and with it the right to change the comma's settings."""
+    text = PARAMS_KEYS_H.read_text(encoding="utf-8")
+    for key in ("PhoneBridgePairCode", "PhoneBridgeToken"):
+      with self.subTest(key=key):
+        self.assertNotIn("BACKUP", re.search(r'\{"' + key + r'", \{([^}]*)\}', text).group(1))
 
 
 if __name__ == "__main__":

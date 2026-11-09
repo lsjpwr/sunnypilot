@@ -57,6 +57,9 @@ BLOCKED_PARAMS = {
   "HasAcceptedTermsSP",
   "OnroadCycleRequested",      # Prevent remote cycle trigger
   "ParamsVersion",         # Device-managed version counter
+  "PhoneBridgeEnabled",    # Opens a port on the car's network, set at the comma only
+  "PhoneBridgePairCode",   # A code written from here would pair a phone with nobody at the comma
+  "PhoneBridgeToken",      # The same, for good
   "SunnylinkAllowSensitiveWrite",
 }
 
@@ -100,6 +103,8 @@ REMOTE_READ_DENYLIST = {
   "KoreaCameraExclude",  # cameras on the driver's own roads; sunnylink sees only KoreaCameraExcludeCount
   "KoreaCameraRecent",  # the last cameras passed, so where the car was; sunnylink sees KoreaCameraExcludeOptions
   "KoreaCameraPage",  # both of the above as map links, for the log repo only (sunnypilot/system/github_uploader.py)
+  "PhoneBridgePairCode",  # the code on the comma's screen buys the token below
+  "PhoneBridgeToken",  # changes the comma's settings (sunnypilot/system/phone_bridge.py)
 }
 
 
