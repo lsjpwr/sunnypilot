@@ -1,15 +1,31 @@
+import time
+
 from openpilot.cereal import log
 
 from openpilot.system.ui.widgets.scroller import NavScroller
 from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigToggle, BigParamControl, BigMultiParamToggle
-from openpilot.selfdrive.ui.mici.widgets.dialog import BigInputDialog
+from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigInputDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
 from openpilot.selfdrive.ui.ui_state import ui_state
 from openpilot.selfdrive.ui.mici.layouts.settings.initial_cruise_speed import InitialCruiseSpeedButton
 from openpilot.sunnypilot.mapd import MapSource
+from openpilot.sunnypilot.system.phone_bridge import PAIR_CODE_PARAM, PAIR_CODE_S, new_pair_code
 
 PERSONALITY_TO_INT = log.LongitudinalPersonality.schema.enumerants
+
+
+class PairCodeDialog(BigDialog):
+  """The code the phone app asks for. Closes when it runs out, or when phone_bridge has used it up and removed it."""
+
+  def __init__(self, code: str):
+    super().__init__(code, "enter this code in the phone app")
+    self._until = time.monotonic() + PAIR_CODE_S
+
+  def _update_state(self):
+    super()._update_state()
+    if not self.is_dismissing and (time.monotonic() > self._until or not ui_state.params.get(PAIR_CODE_PARAM)):
+      self.dismiss()
 
 
 class TogglesLayoutMici(NavScroller):
@@ -78,6 +94,11 @@ class TogglesLayoutMici(NavScroller):
     self._api_key_btn = BigButton("speed camera API key", "Set" if has_key else "Not set")
     self._api_key_btn.set_click_callback(edit_api_key)
 
+    phone_bridge_toggle = BigParamControl("phone app connection", "PhoneBridgeEnabled",
+                                          description="Lets a paired phone on the same Wi-Fi read this screen's driving status.")
+    self._pair_btn = BigButton("connect phone")
+    self._pair_btn.set_click_callback(lambda: gui_app.push_widget(PairCodeDialog(new_pair_code(ui_state.params))))
+
     self._scroller.add_widgets([
       self._personality_toggle,
       self._initial_cruise_speed,
@@ -93,6 +114,8 @@ class TogglesLayoutMici(NavScroller):
       korea_bump_toggle,
       korea_download_toggle,
       self._api_key_btn,
+      phone_bridge_toggle,
+      self._pair_btn,
     ])
 
     # Toggle lists
@@ -107,6 +130,7 @@ class TogglesLayoutMici(NavScroller):
       *korea_camera_toggles,
       ("KoreaSpeedBumpEnabled", korea_bump_toggle),
       ("KoreaMapAutoDownload", korea_download_toggle),
+      ("PhoneBridgeEnabled", phone_bridge_toggle),
     )
 
     enable_openpilot.set_enabled(lambda: not ui_state.engaged)
@@ -132,6 +156,9 @@ class TogglesLayoutMici(NavScroller):
       lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea
               and ui_state.is_offroad())
     self._api_key_btn.set_enabled(lambda: ui_state.params.get("MapDataSource", return_default=True) == MapSource.korea)
+    # Offroad-gated: this opens a port on the car's network.
+    phone_bridge_toggle.set_enabled(lambda: ui_state.is_offroad())
+    self._pair_btn.set_enabled(lambda: ui_state.params.get_bool("PhoneBridgeEnabled"))
 
 
     if ui_state.params.get_bool("ShowDebugInfo"):
