@@ -571,7 +571,8 @@ class TestSettingsList:
 
 
 class TestSettingsLocks:
-  """What mici's toggles panel enables (selfdrive/ui/mici/layouts/settings/toggles.py), key by key."""
+  """What mici's toggles panel enables (selfdrive/ui/mici/layouts/settings/toggles.py), key by key.
+  One deliberate difference: mici leaves driver monitoring mode open while driving, the phone follows settings_ui.json and waits for offroad."""
 
   def test_driver_monitoring_mode_waits_for_offroad(self, settings_world):
     _, _, pair = settings_world
@@ -617,7 +618,7 @@ class TestSettingsLocks:
     _, _, pair = settings_world
     assert settings_of(pair(DRIVING)[0])[key]["enabled"] is True
 
-  @pytest.mark.parametrize(("rule", "idle", "reason"), [
+  @pytest.mark.parametrize(("rule", "not_engaged", "reason"), [
     ({"type": "not_engaged"}, True, None),
     ({"type": "not_engaged"}, False, "engaged"),
     ({"type": "param_compare", "key": "Level", "op": ">", "value": 0}, True, "requires"),
@@ -627,14 +628,14 @@ class TestSettingsLocks:
     ({"type": "any", "conditions": [{"type": "capability", "field": "brand", "equals": "rivian"}, {"type": "param", "key": "Level", "equals": 0}]}, True, None),
     ({"type": "a rule from the future"}, True, "requires"),
   ])
-  def test_each_rule_kind(self, settings_world, monkeypatch, rule, idle, reason):
+  def test_each_rule_kind(self, settings_world, monkeypatch, rule, not_engaged, reason):
     params, caps, _ = settings_world
     params.values["Level"] = 0
     caps["brand"] = "tesla"
     only_item = {"IsMetric": {"key": "IsMetric", "widget": "toggle", "title": "t", "enablement": [rule]}}
     monkeypatch.setattr(phone_bridge_settings, "_definitions", lambda: only_item)
 
-    item = PhoneSettings(params, {"IsMetric": ""}).items(offroad=True, idle=idle)[0]
+    item = PhoneSettings(params, {"IsMetric": ""}).items(offroad=True, not_engaged=not_engaged)[0]
 
     assert (item["enabled"], item["reason"]) == (reason is None, reason)
 
@@ -642,8 +643,8 @@ class TestSettingsLocks:
     params, _, _ = settings_world
     rules = [{"type": "offroad_only"}, {"type": "param", "key": "MapDataSource", "equals": 9}]
     monkeypatch.setattr(phone_bridge_settings, "_definitions", lambda: {"IsMetric": {"key": "IsMetric", "widget": "toggle", "title": "t", "enablement": rules}})
-    assert PhoneSettings(params, {"IsMetric": ""}).items(offroad=False, idle=True)[0]["reason"] == "offroad_only"
-    assert PhoneSettings(params, {"IsMetric": ""}).items(offroad=True, idle=True)[0]["reason"] == "requires"
+    assert PhoneSettings(params, {"IsMetric": ""}).items(offroad=False, not_engaged=True)[0]["reason"] == "offroad_only"
+    assert PhoneSettings(params, {"IsMetric": ""}).items(offroad=True, not_engaged=True)[0]["reason"] == "requires"
 
 
 class TestInitialCruiseSpeed:

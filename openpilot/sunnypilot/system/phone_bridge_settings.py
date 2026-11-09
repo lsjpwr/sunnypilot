@@ -39,6 +39,7 @@ ALLOWED_TITLES = {
 # cannot see the API key, and cannot switch off the link it is using.
 EXCLUDED = ("OpenpilotEnabledToggle", "KoreaMapApiKey", "RecordFront", "RecordAudio", "PhoneBridgeEnabled")
 
+# the reason an item is locked, as the app gets it: "offroad_only", "engaged", or "requires" for any other rule
 LOCK_REASONS = {"offroad_only": "offroad_only", "not_engaged": "engaged"}  # any other failed rule is "requires"
 COMPARE = {">": operator.gt, "<": operator.lt, ">=": operator.ge, "<=": operator.le}
 CRUISE_SPEED_STEP = 5  # in display units, as mici's picker
@@ -86,14 +87,14 @@ class PhoneSettings:
   def __init__(self, params, allowed_titles: dict[str, str] = ALLOWED_TITLES):
     self.params, self.allowed_titles = params, allowed_titles
 
-  def items(self, offroad: bool, idle: bool) -> list[dict]:
-    """`offroad` and `idle` (not engaged) say what the rules locking an item may assume; both False while the car is unknown."""
+  def items(self, offroad: bool, not_engaged: bool) -> list[dict]:
+    """`offroad` and `not_engaged` say what the rules locking an item may assume; both False while the car is unknown."""
     capabilities = generate_capabilities(self.params)
-    return [item for key in self.allowed_titles if (item := self._item(key, capabilities, offroad, idle)) is not None]
+    return [item for key in self.allowed_titles if (item := self._item(key, capabilities, offroad, not_engaged)) is not None]
 
-  def write(self, key: str, value, offroad: bool, idle: bool) -> tuple[int, dict | None]:
+  def write(self, key: str, value, offroad: bool, not_engaged: bool) -> tuple[int, dict | None]:
     """(HTTP status, body). The rules are looked at again here, the app's list may be old."""
-    item = self._item(key, generate_capabilities(self.params), offroad, idle) if key in self.allowed_titles else None
+    item = self._item(key, generate_capabilities(self.params), offroad, not_engaged) if key in self.allowed_titles else None
     if item is None:
       return 403, None
     if not item["enabled"]:
@@ -106,9 +107,9 @@ class PhoneSettings:
       if isinstance(value, bool) or value not in [option["value"] for option in item["options"]]:
         return 400, None
       self.params.put(key, int(value), block=True)
-    return 200, self._item(key, generate_capabilities(self.params), offroad, idle)
+    return 200, self._item(key, generate_capabilities(self.params), offroad, not_engaged)
 
-  def _item(self, key, capabilities, offroad, idle) -> dict | None:
+  def _item(self, key, capabilities, offroad, not_engaged) -> dict | None:
     """None for a key the comma does not have or settings_ui.json does not describe."""
     try:
       self.params.check_key(key)
@@ -123,18 +124,18 @@ class PhoneSettings:
       return None
     ok, reason = True, None
     for rule in spec.get("enablement", []):
-      if not self._passes(rule, capabilities, offroad, idle):
+      if not self._passes(rule, capabilities, offroad, not_engaged):
         ok, reason = False, LOCK_REASONS.get(rule["type"], "requires")
         break
     return {"key": key, "title": self.allowed_titles[key] or spec["title"], "widget": spec["widget"], "value": value,
             "options": spec.get("options"), "enabled": ok, "reason": reason}
 
-  def _passes(self, rule, capabilities, offroad, idle) -> bool:
+  def _passes(self, rule, capabilities, offroad, not_engaged) -> bool:
     kind = rule["type"]
     if kind == "offroad_only":
       return offroad
     if kind == "not_engaged":
-      return idle
+      return not_engaged
     if kind == "capability":
       return capabilities.get(rule["field"]) == rule["equals"]
     if kind == "param":
@@ -143,9 +144,9 @@ class PhoneSettings:
       value = self._param(rule["key"])
       return isinstance(value, int | float) and COMPARE[rule["op"]](value, rule["value"])
     if kind == "not":
-      return not self._passes(rule["condition"], capabilities, offroad, idle)
+      return not self._passes(rule["condition"], capabilities, offroad, not_engaged)
     if kind in ("any", "all"):
-      return (any if kind == "any" else all)(self._passes(child, capabilities, offroad, idle) for child in rule["conditions"])
+      return (any if kind == "any" else all)(self._passes(child, capabilities, offroad, not_engaged) for child in rule["conditions"])
     return False  # a rule this code does not know locks the item
 
   def _param(self, key):
