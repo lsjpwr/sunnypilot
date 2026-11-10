@@ -11,7 +11,7 @@ from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
-from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
+from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop, smooth_value
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.common.swaglog import cloudlog
 
@@ -19,23 +19,15 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import Lon
 
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 J_CRUISE_BP = [0., 10.0, 25., 40.]
-A_CRUISE_MIN = -1.2
-A_CRUISE_T = 2.  # s: speed increases use this horizon; slowing down retains the 1 s response.
+A_CRUISE_MIN = -0.5
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
-ALLOW_THROTTLE_THRESHOLD = 0.4
-MIN_ALLOW_THROTTLE_SPEED = 2.5
 
 
-def get_coast_accel(pitch):
-  return np.sin(pitch) * -5.65 - 0.3  # Fitted coast acceleration, including road pitch.
-
-
-def get_cruise_accel(v_cruise, v_ego, a_cruise_prev, a_target_prev, dt, max_accel=ACCEL_MAX):
-  speed_gap = v_cruise - v_ego
-  target_accel = np.clip(speed_gap / A_CRUISE_T if speed_gap > 0 else speed_gap, A_CRUISE_MIN, max_accel)
+def get_cruise_accel(v_cruise, v_ego, a_cruise_prev, a_target_prev, dt):
+  target_accel = smooth_value(v_cruise - v_ego, a_cruise_prev, tau=1.0, dt=dt)
+  target_accel = np.clip(target_accel, A_CRUISE_MIN, ACCEL_MAX)
   j_cruise = np.interp(v_ego, J_CRUISE_BP, J_CRUISE_VALS)
-  a_prev = min(a_cruise_prev, a_target_prev)
-  target_accel = float(np.clip(target_accel, a_prev - j_cruise * dt, a_prev + j_cruise * dt))
+  target_accel = float(np.clip(target_accel, min(a_cruise_prev, a_target_prev) - j_cruise * dt, a_cruise_prev + j_cruise * dt))
 
   return target_accel
 
@@ -48,7 +40,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.fcw = False
     self.dt = dt
     self.accel_boost = AccelBoost()
-    self.allow_throttle = True
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.a_cruise = init_a
@@ -76,14 +67,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     v_cruise_initialized = sm['carState'].vCruise != V_CRUISE_UNSET
     reset_state = reset_state or not v_cruise_initialized
 
-    throttle_probs = sm['modelV2'].meta.disengagePredictions.gasPressProbs
-    throttle_prob = throttle_probs[1] if len(throttle_probs) > 1 else 1.0
-    self.allow_throttle = throttle_prob > ALLOW_THROTTLE_THRESHOLD or v_ego <= MIN_ALLOW_THROTTLE_SPEED
-    max_accel = ACCEL_MAX
-    if not self.allow_throttle and len(sm['carControl'].orientationNED) == 3:
-      coast = max(get_coast_accel(sm['carControl'].orientationNED[1]), ACCEL_MIN)
-      max_accel = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED * 2], [ACCEL_MAX, coast])
-
     if reset_state:
       self.v_desired_filter.x = v_ego
       self.output_a_target = np.clip(sm['carState'].aEgo, ACCEL_MIN, ACCEL_MAX)
@@ -95,9 +78,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
-    # Keep actual output separate from new curve requests used to seed the MPC.
+    # Save starting point for next iteration, before SCC and SLA targets seed the MPC
     a_prev = self.output_a_target
     v_cruise, a_target = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, a_prev, v_cruise)
+    # sunnypilot: a new SCC/SLA seed must not jump the MPC's start past the jerk limit (curve onset)
     j_cruise = np.interp(v_ego, J_CRUISE_BP, J_CRUISE_VALS)
     a_target = np.clip(a_target, a_prev - j_cruise * self.dt, a_prev + j_cruise * self.dt)
 
@@ -124,7 +108,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    self.a_cruise = get_cruise_accel(v_cruise, v_ego, self.a_cruise, a_prev, self.dt, max_accel)
+    self.a_cruise = get_cruise_accel(v_cruise, v_ego, self.a_cruise, self.output_a_target, self.dt)
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
 
     output_a_target_e2e = self.accel_boost.update(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
@@ -146,7 +130,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     longitudinalPlan = plan_send.longitudinalPlan
     longitudinalPlan.modelMonoTime = sm.logMonoTime['modelV2']
-    longitudinalPlan.processingDelay = (plan_send.logMonoTime / 1e9) - sm.logMonoTime['modelV2']
+    longitudinalPlan.processingDelay = (plan_send.logMonoTime - sm.logMonoTime['modelV2']) / 1e9
     longitudinalPlan.solverExecutionTime = self.mpc.solve_time
 
     longitudinalPlan.speeds = self.v_desired_trajectory.tolist()
@@ -161,7 +145,6 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     longitudinalPlan.accelBoost = float(self.accel_boost.total_boost)
     longitudinalPlan.shouldStop = bool(self.output_should_stop)
     longitudinalPlan.allowBrake = True
-    longitudinalPlan.allowThrottle = bool(self.allow_throttle)
 
     pm.send('longitudinalPlan', plan_send)
 
