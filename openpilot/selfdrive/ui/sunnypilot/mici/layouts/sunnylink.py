@@ -6,7 +6,7 @@ See the LICENSE.md file in the root directory for more details.
 """
 from collections.abc import Callable
 
-import pyray as rl
+import raylib_nb as rl
 
 
 from openpilot.cereal import custom

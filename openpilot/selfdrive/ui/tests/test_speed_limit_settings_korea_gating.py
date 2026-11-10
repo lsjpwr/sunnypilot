@@ -21,7 +21,7 @@ import shutil
 import unittest
 from types import SimpleNamespace
 
-import pyray as rl
+import raylib_nb as rl
 
 from openpilot.common.test import OpenpilotTestCase
 

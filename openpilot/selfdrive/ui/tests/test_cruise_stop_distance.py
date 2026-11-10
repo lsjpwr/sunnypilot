@@ -15,7 +15,7 @@ import os
 import shutil
 import unittest
 
-import pyray as rl
+import raylib_nb as rl
 
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.selfdrive.controls.lib.stop_distance import STOP_DISTANCE_MAX, STOP_DISTANCE_MIN

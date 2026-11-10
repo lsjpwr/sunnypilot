@@ -28,7 +28,7 @@ import shutil
 import time
 import unittest
 
-import pyray as rl
+import raylib_nb as rl
 
 from openpilot.common.test import OpenpilotTestCase
 

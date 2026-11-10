@@ -7,7 +7,7 @@ import shutil
 import unittest
 from unittest.mock import patch
 
-import pyray as rl
+import raylib_nb as rl
 
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.sunnypilot.system.phone_bridge import PAIR_CODE_PARAM, PAIR_CODE_LIFETIME_S
