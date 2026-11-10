@@ -4,6 +4,7 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
+import base64
 import json
 from unittest.mock import MagicMock, patch
 
@@ -219,3 +220,35 @@ class TestGetParams(OpenpilotTestCase):
     response = sunnylinkd.getParams(["KoreaCameraExclude", "KoreaCameraRecent", "KoreaCameraExcludeOptions", "KoreaCameraPage"])
 
     self.assertEqual([p["key"] for p in json.loads(response["params"])], ["KoreaCameraExcludeOptions"])
+
+
+class TestSunnylinkdRpcValidators(OpenpilotTestCase):
+  """commaai #39190 rejects any RPC param without a passing validator; korea-dev keys must still get through."""
+  KEYS = ["KoreaCameraExclude", "KoreaCameraExcludeCount", "KoreaTeslaRefreshToken", "PhoneBridgeEnabled",
+          "UpdaterManualOnly", "StopDistance", "TeslaDasLeadConfirm", "AccelBoostSP", "GithubLogRepo"]
+
+  def setUp(self):
+    super().setUp()
+    self.saved = []
+    for name, fn in (('save_param_from_base64_encoded_string', lambda k, v, c=False: self.saved.append(k)),
+                     ('params', MagicMock(**{'get_bool.return_value': False}))):
+      patcher = patch.object(sunnylinkd, name, fn)
+      patcher.start()
+      self.addCleanup(patcher.stop)
+
+  def test_our_keys_pass_save_validation(self):
+    value = base64.b64encode(b"1").decode()
+    sunnylinkd.dispatcher["saveParams"](params_to_update={k: value for k in self.KEYS}, compression=False)
+    # validation passed; the denylists inside saveParams still decide what is written
+    self.assertIn("KoreaCameraExclude", self.saved)
+    self.assertNotIn("GithubLogRepo", self.saved)
+
+  def test_our_keys_pass_get_validation(self):
+    with patch.object(sunnylinkd, 'get_param_as_byte', return_value=None):
+      sunnylinkd.dispatcher["getParams"](params_keys=self.KEYS, compression=False)
+
+  def test_bad_input_is_rejected(self):
+    with self.assertRaises(TypeError):
+      sunnylinkd.dispatcher["saveParams"](params_to_update={"Korea/../x": "MQ=="})
+    with self.assertRaises(TypeError):
+      sunnylinkd.dispatcher["saveParams"](params_to_update={"KoreaCameraExclude": "not base64!"})
