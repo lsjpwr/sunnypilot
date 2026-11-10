@@ -19,7 +19,10 @@ from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import Lon
 
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 J_CRUISE_BP = [0., 10.0, 25., 40.]
-A_CRUISE_MIN = -0.5
+# korea-dev: commaai uses -0.5 (#39060). SCC-Map and SLA brake through the cruise candidate (they return a_ego as
+# their a_target), so -0.5 caps their slowdowns: closed loop, SCC-Map 100->60 km/h at 0.6 m/s^2 arrives 10.2 km/h
+# over and a 1.2 m/s^2 curve 33.8 km/h over, against 0.2 and 7.5 at -1.2 (test_cruise_min_closed_loop.py).
+A_CRUISE_MIN = -1.2
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
 
