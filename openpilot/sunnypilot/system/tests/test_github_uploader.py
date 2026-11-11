@@ -17,7 +17,7 @@ import zstandard
 
 from openpilot.sunnypilot.system.github_uploader import (IDLE_S, KEEP_DRIVES, MAX_BACKOFF_S, RATE_LIMIT_BACKOFF_S, SETTLE_S, SWAGLOG_AFTER_S,
                                                          GithubReleases, GithubUploader, PartialAsset, drive_windows, is_uploaded, mark_uploaded,
-                                                         next_backoff, pending_qlogs, pending_swaglogs)
+                                                         next_backoff, pending_qlogs, pending_swaglogs, qlog_start)
 from openpilot.system.manager.process_config import procs
 
 NOW = 1_790_000_000.
@@ -28,6 +28,14 @@ REPO = "owner/comma-logs"
 
 def route(counter: int) -> str:
   return f"{counter:08x}--0123456789"
+
+
+def recorded_qlog(start: float) -> bytes:
+  from openpilot.cereal import log
+
+  event = log.Event.new_message()
+  event.init("initData").wallTimeNanos = int(start * 1e9)
+  return zstandard.ZstdCompressor().compress(event.to_bytes())
 
 
 class LogDirs(unittest.TestCase):
@@ -250,6 +258,28 @@ class TestGithubReleases(unittest.TestCase):
     GithubReleases(TOKEN, REPO, opener).prune()
     self.assertEqual(len(opener.requests), 3)
 
+  def test_prune_protects_current_drives_when_older_backfill_was_published_later(self):
+    releases = drive_releases(3)
+    for r in releases:
+      r["created_at"] = "2026-10-18T00:00:00Z"  # GitHub uses the tagged commit's date
+      r["published_at"] = f"2026-11-0{4-r['id']}T00:00:00Z"
+    opener = ScriptedOpener(releases, None, None)
+    GithubReleases(TOKEN, REPO, opener).prune(keep=2, protected={route(2), route(3)})
+    self.assertEqual(opener.calls()[1:], [("DELETE", f"https://api.github.com/repos/{REPO}/releases/1"),
+                                        ("DELETE", f"https://api.github.com/repos/{REPO}/git/refs/tags/{route(1)}")])
+
+  def test_prune_can_keep_a_new_drive_after_the_counter_was_reset(self):
+    releases = drive_releases(4)
+    opener = ScriptedOpener(releases, None, None)
+    GithubReleases(TOKEN, REPO, opener).prune(keep=3, protected={route(1)})
+    self.assertEqual(opener.calls()[1], ("DELETE", f"https://api.github.com/repos/{REPO}/releases/2"))
+
+  def test_status_updates_the_release_name_and_body(self):
+    opener = ScriptedOpener({"id": 7})
+    GithubReleases(TOKEN, REPO, opener).update_release(7, "actual drive date", "upload progress")
+    self.assertEqual(opener.calls(), [("PATCH", f"https://api.github.com/repos/{REPO}/releases/7")])
+    self.assertEqual(json.loads(opener.requests[0].data), {"name": "actual drive date", "body": "upload progress"})
+
   def test_the_token_goes_in_a_header_never_in_a_url(self):
     opener = ScriptedOpener(http_error(404), {"id": 8}, {"id": 1})
     releases = GithubReleases(TOKEN, REPO, opener)
@@ -296,6 +326,8 @@ class FakeReleases:
     self.upload_error: Exception | None = None
     self.prune_error: Exception | None = None
     self.put_error: Exception | None = None
+    self.updates: list[tuple[int, str, str]] = []
+    self.update_error: Exception | None = None
 
   def release_id(self, tag):
     self.lookups += 1
@@ -309,11 +341,16 @@ class FakeReleases:
       raise self.upload_error
     self.assets.append((release_id, name, data))
 
-  def prune(self):
+  def prune(self, protected=None):
     if self.prune_error is not None:
       error, self.prune_error = self.prune_error, None
       raise error
     self.prunes += 1
+
+  def update_release(self, release_id, name, body):
+    if self.update_error is not None:
+      raise self.update_error
+    self.updates.append((release_id, name, body))
 
   def put_file(self, path, text):
     if self.put_error is not None:
@@ -326,6 +363,86 @@ class FakeReleases:
 class TestGithubUploader(LogDirs):
   def uploader(self, releases: FakeReleases) -> GithubUploader:
     return GithubUploader(releases, self.log_root, self.swaglog_root, clock=lambda: NOW)
+
+  def test_latest_drive_and_its_diagnostics_precede_older_qlogs(self):
+    older = self.segment(1, 0, mtime=OLD - 3600)
+    newest = self.segment(2, 0)
+    diagnostic = self.swaglog(1, OLD)
+    self.swaglog(2, NOW)
+    uploader = self.uploader(FakeReleases())
+    self.assertEqual([path for _, _, path in uploader.pending()], [newest, diagnostic, older])
+
+  def test_a_new_drive_preempts_the_backlog_on_the_next_step(self):
+    self.segment(1, 0)
+    self.segment(1, 1)
+    releases = FakeReleases()
+    uploader = self.uploader(releases)
+    uploader.step()
+    self.segment(2, 0)
+    uploader.step()
+    self.assertEqual([name for _, name, _ in releases.assets],
+                     [f"{route(1)}--0--qlog.zst", f"{route(2)}--0--qlog.zst"])
+
+  def test_release_shows_recorded_date_and_progress_without_an_update_per_segment(self):
+    for segment in range(3):
+      self.segment(1, segment, qlog=recorded_qlog(1_700_000_000.))
+    releases = FakeReleases()
+    uploader = self.uploader(releases)
+    uploader.step()
+    self.assertTrue(releases.updates[0][1].startswith("2023-11-15T07:13:20+09:00"))
+    self.assertIn("1 uploaded / 2 waiting / 0 skipped", releases.updates[0][2])
+    uploader.step()
+    self.assertEqual(len(releases.updates), 1)
+    uploader.step()
+    self.assertEqual(len(releases.updates), 2)
+    self.assertIn("3 uploaded / 0 waiting / 0 skipped", releases.updates[-1][2])
+
+  def test_a_status_failure_does_not_block_logs_and_is_retried_when_idle(self):
+    self.segment(1, 0)
+    self.segment(1, 1)
+    releases = FakeReleases()
+    releases.update_error = urllib.error.URLError("offline")
+    uploader = self.uploader(releases)
+    self.assertTrue(uploader.step())
+    self.assertTrue(uploader.step())
+    self.assertEqual(len(releases.assets), 2)
+    releases.update_error = None
+    self.assertTrue(uploader.step())
+    self.assertIn("2 uploaded / 0 waiting", releases.updates[-1][2])
+
+  def test_bad_start_metadata_does_not_invent_a_date(self):
+    self.assertIsNone(qlog_start(b"broken qlog"))
+    self.segment(1, 0)
+    releases = FakeReleases()
+    self.uploader(releases).step()
+    self.assertEqual(releases.updates[0][1], route(1))
+    self.assertIn("**unknown**", releases.updates[0][2])
+
+  def test_gps_fix_corrects_the_boot_clock_without_changing_the_start_of_the_drive(self):
+    from openpilot.cereal import log
+
+    initial, gps = log.Event.new_message(), log.Event.new_message()
+    initial.logMonoTime = 1_000_000_000
+    initial.init("initData").wallTimeNanos = 1_600_000_000_000_000_000
+    gps.logMonoTime = 8_000_000_000
+    location = gps.init("gpsLocationExternal")
+    location.hasFix = True
+    location.unixTimestampMillis = 1_700_000_007_000
+    data = zstandard.ZstdCompressor().compress(initial.to_bytes() + gps.to_bytes())
+    self.assertAlmostEqual(qlog_start(data), 1_700_000_000.)
+
+  def test_an_unfixed_gps_clock_is_ignored_after_the_device_clock_was_corrected(self):
+    from openpilot.cereal import log
+
+    initial, gps, clock = (log.Event.new_message() for _ in range(3))
+    initial.logMonoTime = 1_000_000_000
+    initial.init("initData").wallTimeNanos = 1_600_000_000_000_000_000
+    gps.logMonoTime = 7_000_000_000
+    gps.init("gpsLocationExternal").unixTimestampMillis = 1_400_000_000_000
+    clock.logMonoTime = 8_000_000_000
+    clock.init("clocks").wallTimeNanos = 1_700_000_007_000_000_000
+    data = zstandard.ZstdCompressor().compress(initial.to_bytes() + gps.to_bytes() + clock.to_bytes())
+    self.assertAlmostEqual(qlog_start(data), 1_700_000_000.)
 
   def test_one_file_per_step_qlogs_as_they_are_then_swaglogs_compressed(self):
     qlog = self.segment(1, 0, qlog=b"QLOG")
@@ -347,6 +464,7 @@ class TestGithubUploader(LogDirs):
     uploader = self.uploader(releases)
     uploader.step()
     uploader.step()
+    self.assertFalse(uploader.step())  # cleanup runs once the log queue is empty
     self.assertEqual((releases.ids, releases.lookups, releases.prunes), ({route(1): 1}, 1, 1))
 
   def test_a_failed_prune_is_tried_again_on_the_next_step(self):
@@ -354,10 +472,24 @@ class TestGithubUploader(LogDirs):
     releases = FakeReleases()
     releases.prune_error = urllib.error.URLError("offline")
     uploader = self.uploader(releases)
+    self.assertTrue(uploader.step())  # the qlog is uploaded before cleanup is attempted
     with self.assertRaises(urllib.error.URLError):
       uploader.step()
-    self.assertTrue(uploader.step())
+    self.assertFalse(uploader.step())
     self.assertEqual((releases.prunes, len(releases.assets)), (1, 1))
+
+  def test_new_logs_preempt_retrying_a_failed_cleanup(self):
+    self.segment(1, 0)
+    releases = FakeReleases()
+    releases.prune_error = urllib.error.URLError("cleanup unavailable")
+    uploader = self.uploader(releases)
+    self.assertTrue(uploader.step())
+    with self.assertRaises(urllib.error.URLError):
+      uploader.step()
+    self.segment(2, 0)
+    self.assertTrue(uploader.step())
+    self.assertEqual([name for _, name, _ in releases.assets],
+                     [f"{route(1)}--0--qlog.zst", f"{route(2)}--0--qlog.zst"])
 
   def test_a_failed_upload_raises_and_leaves_the_file_pending(self):
     path = self.segment(1, 0)
@@ -402,6 +534,7 @@ class TestGithubUploader(LogDirs):
     uploader = self.uploader(releases)
     self.assertTrue(uploader.step())
     self.assertTrue(is_uploaded(path))
+    self.assertIn("0 uploaded / 1 waiting / 1 skipped", releases.updates[0][2])
     releases.upload_error = None
     self.assertTrue(uploader.step())
     self.assertEqual([name for _, name, _ in releases.assets], [f"{route(1)}--1--qlog.zst"])

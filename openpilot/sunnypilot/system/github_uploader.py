@@ -11,7 +11,7 @@ newest drives there.
 
 The device's network is the driver's phone hotspot, which leaves with the driver a few minutes
 after parking. So each file goes up on its own as soon as it is closed, during the drive, instead
-of in one batch at the end.
+of in one batch at the end. The newest drive and its diagnostics go before the backlog.
 
 All it needs is GithubLogRepo ("owner/name") and GithubLogToken, a fine-grained token for that
 one repo with Contents read and write. Nothing here talks to comma.
@@ -21,6 +21,7 @@ links, which mapd writes to KoreaCameraPage (korea_map_data.camera_page). That g
 once no log file is waiting.
 """
 import base64
+from datetime import UTC, datetime, timedelta, timezone
 import json
 import os
 import re
@@ -40,6 +41,7 @@ from openpilot.system.loggerd.xattr_cache import getxattr, setxattr
 KEEP_DRIVES = 30  # routes, one per onroad cycle: a busy day makes about ten
 UPLOAD_ATTR_NAME = "user.github.upload"  # comma's uploader marks user.upload, sunnylink's user.sunny.upload
 UPLOAD_ATTR_VALUE = b"1"
+UPLOAD_ATTR_SKIPPED = b"skipped"
 # loggerd removes a segment's rlog.lock and only then flushes the segment's files
 # (system/loggerd/logger.cc, LoggerState::next and ~LoggerState). Removing the lock is the last
 # change to the directory, so a directory left alone this long holds finished files.
@@ -60,20 +62,21 @@ ROUTE_RE = re.compile(r"^[0-9a-f]{8}--[0-9a-f]{10}$")
 
 SWAGLOG_ZSTD_LEVEL = 10  # the level loggerd writes qlogs with (system/loggerd/logger.h)
 IDLE_S = 10.
-UPLOAD_GAP_S = 1.  # GitHub's secondary rate limits: 80 content-creating requests a minute, 500 an hour
+UPLOAD_GAP_S = 10.  # Leave room for release metadata and cleanup under GitHub's 500 content requests/hour.
 MAX_BACKOFF_S = 300.
 RATE_LIMIT_BACKOFF_S = 60.  # once GitHub rate-limits, it asks for at least a minute before the next try
 REPO_RE = re.compile(r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$")
 PAGE_PATH = "cameras.md"
+STATUS_UPDATE_S = 60.
 
 
 def is_uploaded(path: str) -> bool:
-  return getxattr(path, UPLOAD_ATTR_NAME) == UPLOAD_ATTR_VALUE
+  return getxattr(path, UPLOAD_ATTR_NAME) in (UPLOAD_ATTR_VALUE, UPLOAD_ATTR_SKIPPED)
 
 
-def mark_uploaded(path: str) -> None:
+def mark_uploaded(path: str, skipped: bool = False) -> None:
   try:
-    setxattr(path, UPLOAD_ATTR_NAME, UPLOAD_ATTR_VALUE)
+    setxattr(path, UPLOAD_ATTR_NAME, UPLOAD_ATTR_SKIPPED if skipped else UPLOAD_ATTR_VALUE)
   except OSError:
     # Uploaded but unmarked: the next pass sends it again, and GitHub's "already exists" counts as done.
     cloudlog.exception("github_uploader: could not mark %s", path)
@@ -170,6 +173,36 @@ class PartialAsset(Exception):
   """GitHub held a half-made asset under this name (or doesn't list it yet): the file stays pending and goes up again."""
 
 
+def qlog_start(data: bytes) -> float | None:
+  """The recorded drive start, never the date GitHub happened to receive the file."""
+  from openpilot.cereal import log
+
+  try:
+    raw = zstandard.ZstdDecompressor().stream_reader(data).read()
+    start, first_mono, gps, clock = None, None, None, None
+    for event in log.Event.read_multiple_bytes(raw):
+      kind = event.which()
+      if kind == "initData" and event.initData.wallTimeNanos and start is None:
+        start = event.initData.wallTimeNanos * 1e-9
+        first_mono = event.logMonoTime
+      elif kind in ("gpsLocation", "gpsLocationExternal"):
+        location = getattr(event, kind)
+        if location.hasFix and location.unixTimestampMillis > 0:
+          gps = (event.logMonoTime, location.unixTimestampMillis * 1_000_000)
+      elif kind == "clocks" and event.clocks.wallTimeNanos:
+        clock = (event.logMonoTime, event.clocks.wallTimeNanos)
+    if start is not None:
+      # initData can predate timed's clock correction; a fixed GPS or the last clock gives the real start.
+      reference = gps or clock
+      if reference is not None:
+        start = (reference[1] + first_mono - reference[0]) * 1e-9
+      datetime.fromtimestamp(start, UTC)  # reject an invalid clock without blocking the log upload
+      return start
+  except Exception:
+    pass  # malformed logs are still worth uploading for diagnosis
+  return None
+
+
 class GithubReleases:
   """The GitHub REST calls the uploader needs. `opener` has urlopen's shape, so tests can script answers.
 
@@ -227,21 +260,27 @@ class GithubReleases:
       page += 1
     raise PartialAsset(name)  # not listed yet: try again later
 
-  def prune(self, keep: int = KEEP_DRIVES) -> None:
+  def prune(self, keep: int = KEEP_DRIVES, protected: set[str] | None = None) -> None:
     """Delete the device's releases beyond the `keep` newest, with their tags. Other releases stay.
 
-    Newest by creation time on GitHub, not by route counter: GitHub's clock is the one to trust,
-    and the counter starts over if the device's params are reset."""
+    Protect the device's newest local drives even when older backfill was published later.
+    Fill any remaining slots by publication time, including after a device counter reset."""
     releases = self._call("GET", f"{API_URL}/repos/{self._repo}/releases?per_page=100") or []
     drive_releases = sorted((r for r in releases if ROUTE_RE.match(str(r.get("tag_name", "")))),
-                            key=lambda r: r["created_at"], reverse=True)
-    for release in drive_releases[keep:]:
+                            key=lambda r: r.get("published_at") or r["created_at"], reverse=True)
+    protected = protected or set()
+    older = [r for r in drive_releases if r["tag_name"] not in protected]
+    slots = max(0, keep - sum(r["tag_name"] in protected for r in drive_releases))
+    for release in older[slots:]:
       self._call("DELETE", f"{API_URL}/repos/{self._repo}/releases/{release['id']}")
       try:
         self._call("DELETE", f"{API_URL}/repos/{self._repo}/git/refs/tags/{release['tag_name']}")
       except urllib.error.HTTPError as e:
         if e.code not in (404, 422):  # the tag is gone already
           raise
+
+  def update_release(self, release_id: int, name: str, body: str) -> None:
+    self._call("PATCH", f"{API_URL}/repos/{self._repo}/releases/{release_id}", json.dumps({"name": name, "body": body}).encode())
 
   def put_file(self, path: str, text: str) -> bool:
     """Make `path` on the default branch hold `text`. False, and no commit, when it does already, as
@@ -264,7 +303,7 @@ class GithubReleases:
 
 
 class GithubUploader:
-  """Uploads the oldest pending file per step: finished qlogs first, then closed swaglog files, then cameras.md."""
+  """Uploads the newest drive's finished qlogs and diagnostics before older drives."""
 
   # The wall clock on purpose: segment_closed compares it with file mtimes.
   def __init__(self, releases, log_root: str, swaglog_root: str, clock=time.time):  # noqa: TID251
@@ -275,21 +314,71 @@ class GithubUploader:
     self._release_ids: dict[str, int] = {}
     self._prune_due = False
     self._page_sent: str | None = None
+    self._start_times: dict[str, float | None] = {}
+    self._status_due: set[str] = set()
+    self._status_updated: dict[str, float] = {}
 
   def pending(self) -> list[tuple[str, str, str]]:
-    return pending_qlogs(self.log_root, self._clock()) + pending_swaglogs(self.swaglog_root, drive_windows(self.log_root))
+    files = pending_qlogs(self.log_root, self._clock()) + pending_swaglogs(self.swaglog_root, drive_windows(self.log_root))
+    # Stable: within each drive, qlogs remain in segment order, then its diagnostics.
+    return sorted(files, key=lambda item: int(item[0][:8], 16), reverse=True)
+
+  def _publish_status(self, pending: list[tuple[str, str, str]]) -> bool:
+    now = self._clock()
+    routes = drives(self.log_root)
+    for route in sorted(self._status_due, reverse=True):
+      waiting = [name for r, name, _ in pending if r == route]
+      if waiting and abs(now - self._status_updated.get(route, 0.)) < STATUS_UPDATE_S:
+        continue
+      self._status_updated[route] = now
+      try:
+        paths = [os.path.join(d, "qlog.zst") for d in routes.get(route, []) if os.path.isfile(os.path.join(d, "qlog.zst"))]
+        if route not in self._start_times:
+          self._start_times[route] = None
+          if paths:
+            with open(paths[0], "rb") as f:
+              self._start_times[route] = qlog_start(f.read())
+        attributes = [getxattr(p, UPLOAD_ATTR_NAME) for p in paths]
+        uploaded = attributes.count(UPLOAD_ATTR_VALUE)
+        skipped = attributes.count(UPLOAD_ATTR_SKIPPED)
+        zone = timezone(timedelta(hours=9))
+        start = self._start_times[route]
+        started = datetime.fromtimestamp(start, zone).isoformat(timespec="seconds") if start is not None else "unknown"
+        name = f"{started} · {route}" if start is not None else route
+        body = "\n\n".join((
+          f"Drive start (KST): **{started}**",
+          f"Route: `{route}`",
+          f"qlogs: **{uploaded} uploaded / {len(paths) - uploaded - skipped} waiting / {skipped} skipped** ({len(paths)} locally retained segments).",
+          f"Diagnostic logs waiting: **{sum(n.startswith('swaglog.') for n in waiting)}**.",
+          f"Updated (KST): {datetime.fromtimestamp(now, zone).isoformat(timespec='seconds')}",
+          "The segment still being recorded waits until it closes. Upload continues while the device is connected.",
+        ))
+        self.releases.update_release(self._release_ids[route], name, body)
+      except Exception as e:
+        # Optional metadata must never hold up the next drive's logs or expose a response body.
+        cloudlog.warning("github_uploader: release status failed: %s", type(e).__name__)
+        continue
+      self._status_due.remove(route)
+      return True
+    return False
 
   def step(self, page: str | None = None) -> bool:
-    """Upload the oldest pending file, or with none pending, `page` as cameras.md if it changed: last, so
+    """Upload the newest drive's next file, or with none pending, `page` as cameras.md if it changed: last, so
     it never holds up a drive's logs. False when there is nothing to do; a failed request raises."""
     pending = self.pending()
     if not pending:
-      if not page or page == self._page_sent:
-        return False
-      if self.releases.put_file(PAGE_PATH, page):
-        cloudlog.info("github_uploader: %s updated", PAGE_PATH)
-      self._page_sent = page
-      return True
+      if self._publish_status(pending):
+        return True
+      if page and page != self._page_sent:
+        if self.releases.put_file(PAGE_PATH, page):
+          cloudlog.info("github_uploader: %s updated", PAGE_PATH)
+        self._page_sent = page
+        return True
+      # Cleanup can time out on old releases; it must never stand between a drive and its logs.
+      if self._prune_due:
+        self.releases.prune(protected=set(drives(self.log_root)))
+        self._prune_due = False
+      return False
     route, name, path = pending[0]
     try:
       with open(path, "rb") as f:
@@ -304,9 +393,6 @@ class GithubUploader:
       release_id, created = self.releases.release_id(route)
       self._release_ids[route] = release_id
       self._prune_due |= created
-    if self._prune_due:
-      self.releases.prune()
-      self._prune_due = False
     try:
       self.releases.upload(release_id, name, data)
     except urllib.error.HTTPError as e:
@@ -316,17 +402,20 @@ class GithubUploader:
         # GitHub refuses this file for good (an empty qlog left by a power cut, a release's 1001st
         # asset). Skip it, or it would hold back every file after it.
         cloudlog.warning("github_uploader: GitHub refused %s (HTTP 422), skipped", name)
-        mark_uploaded(path)
+        mark_uploaded(path, skipped=True)
+        self._status_due.add(route)
+        self._publish_status(pending[1:])
         return True
       raise
     mark_uploaded(path)
+    self._status_due.add(route)
+    self._publish_status(pending[1:])
     return True
 
 
 def next_backoff(backoff: float, http_status: int | None) -> float:
   """Seconds to wait after a failed step: doubling from IDLE_S up to MAX_BACKOFF_S, and at least
-  RATE_LIMIT_BACKOFF_S when GitHub rate-limits (403 or 429). The first run's backlog passes the
-  hourly limit, so a few "HTTP 403" warnings then are expected."""
+  RATE_LIMIT_BACKOFF_S when GitHub rate-limits (403 or 429)."""
   floor = RATE_LIMIT_BACKOFF_S if http_status in (403, 429) else IDLE_S
   return min(max(2 * backoff, floor), MAX_BACKOFF_S)
 
