@@ -111,9 +111,43 @@ def setup_git_options(cwd: str) -> None:
     ("protocol.version", "2"),
     ("gc.auto", "0"),
     ("gc.autoDetach", "false"),
+    ("fetch.recurseSubmodules", "false"),
+    ("submodule.recurse", "false"),
   ]
   for option, value in git_cfg:
     run(["git", "config", option, value], cwd)
+
+
+def update_submodules(cwd: str) -> None:
+  run(["git", "submodule", "init"], cwd)
+  run(["git", "submodule", "sync", "--recursive"], cwd)
+
+  tinygrad_entry = run(["git", "ls-tree", "HEAD", "--", "tinygrad_repo"], cwd).split()
+  if tinygrad_entry and tinygrad_entry[0] == "160000":
+    tinygrad = Path(cwd) / "tinygrad_repo"
+    url = run(["git", "config", "--get", "submodule.tinygrad.url"], cwd).strip()
+    if not (tinygrad / ".git").exists():
+      git_dir = Path(cwd) / run(["git", "rev-parse", "--git-path", "modules/tinygrad"], cwd).strip()
+      if git_dir.is_dir():
+        # A deinitialized submodule can still have a reusable object cache.
+        tinygrad.mkdir(parents=True, exist_ok=True)
+        (tinygrad / ".git").write_text(f"gitdir: {os.path.relpath(git_dir, tinygrad)}\n")
+      else:
+        run(["git", "init", str(tinygrad)], cwd)
+        run(["git", "submodule", "absorbgitdirs", "--", "tinygrad_repo"], cwd)
+
+    setup_git_options(str(tinygrad))
+    run(["git", "config", "remote.origin.url", url], str(tinygrad))
+    run(["git", "config", "remote.origin.promisor", "true"], str(tinygrad))
+    run(["git", "config", "remote.origin.partialclonefilter", "blob:none"], str(tinygrad))
+    # The pinned commit itself contains large mock GPU fixtures: depth alone cannot exclude them.
+    run(["git", "sparse-checkout", "set", "--no-cone", "/*", "!/test/mockgpu/"], str(tinygrad))
+    commit = tinygrad_entry[2]
+    run(["git", "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "--filter=blob:none", "origin", commit], str(tinygrad))
+    run(["git", "checkout", "--force", "--detach", commit], str(tinygrad))
+
+  run(["git", "-c", "fetch.recurseSubmodules=false", "submodule", "update", "--checkout", "--init", "--recursive", "--depth=1"], cwd)
+  run(["git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"], cwd)
 
 
 def dismount_overlay() -> None:
@@ -371,7 +405,7 @@ class Updater:
     run(["git", "config", "--replace-all", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"], OVERLAY_MERGED)
 
     branch = self.target_branch
-    git_fetch_output = run(["git", "fetch", "origin", branch], OVERLAY_MERGED)
+    git_fetch_output = run(["git", "fetch", "--depth=1", "--no-tags", "--no-recurse-submodules", "origin", branch], OVERLAY_MERGED)
     cloudlog.info("git fetch success: %s", git_fetch_output)
 
     cloudlog.info("git reset in progress")
@@ -382,12 +416,10 @@ class Updater:
       ["git", "branch", "--set-upstream-to", f"origin/{branch}"],
       ["git", *nolfs, "reset", "--hard"],
       ["git", "clean", "-xdff"],
-      ["git", "submodule", "sync"],
-      ["git", "submodule", "update", "--init", "--recursive"],
-      ["git", "submodule", "foreach", "--recursive", "git", "reset", "--hard"],
     ]
     r = [run(cmd, OVERLAY_MERGED) for cmd in cmds]
     cloudlog.info("git reset success: %s", '\n'.join(r))
+    update_submodules(OVERLAY_MERGED)
 
     # Only checkouts with LFS files need a client, so release updates don't depend on git-lfs
     if run(["git", "ls-files", ":(attr:filter=lfs)"], OVERLAY_MERGED):

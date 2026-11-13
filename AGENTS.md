@@ -22,3 +22,7 @@ Before assigning a triage role, read `docs/agents/triage-labels.md` for its labe
 ### Domain docs
 
 Before exploring domain behavior or changing its terminology, read `docs/agents/domain.md`.
+
+### Device updates
+
+Before downloading, installing, or troubleshooting an update on a comma device, read `docs/agents/device-updates.md`. Use pinned shallow downloads and the documented tinygrad exclusions; preserve the active checkout and respect the requested download/install scope.
