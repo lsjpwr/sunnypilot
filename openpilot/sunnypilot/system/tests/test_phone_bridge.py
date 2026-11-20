@@ -752,16 +752,16 @@ class TestSettingsWrite:
     assert phone.request("POST", "/v1/setting", {"key": "IsMetric", "value": True}, token=phone.token)[0] == 404
 
 
-PANEL_FILES = ("selfdrive/ui/mici/layouts/settings/toggles.py",  # the panel
+PANEL_FILES = ("selfdrive/ui/mici/layouts/settings/driving.py",  # the panel
                "selfdrive/ui/layouts/settings/initial_cruise_speed.py")  # where its initial max speed button keeps its key
-NOT_A_SETTING = {"ShowDebugInfo", "RecordFrontLock", "MapDataSource"}  # read by the panel, not offered by it
+NOT_A_SETTING = {"ShowDebugInfo", "RecordFrontLock", "AlwaysOnDMLock", "MapDataSource"}  # read by the panel, not offered by it
 
 
-def panel_keys() -> set[str]:
+def panel_keys(files=PANEL_FILES) -> set[str]:
   """Every string in the panel's source that is the name of a param."""
   root = pathlib.Path(__file__).resolve().parents[3]
   known = {key.decode() for key in Params().all_keys()}
-  return {node.value for name in PANEL_FILES for node in ast.walk(ast.parse((root / name).read_text(encoding="utf-8")))
+  return {node.value for name in files for node in ast.walk(ast.parse((root / name).read_text(encoding="utf-8")))
           if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in known}
 
 
@@ -773,7 +773,9 @@ class TestPanelGuard:
     assert not unclassified, f"{sorted(unclassified)} are on mici's toggles panel: put each in ALLOWED_TITLES or EXCLUDED (phone_bridge_settings.py)"
 
   def test_no_listed_key_has_left_the_panel(self):
-    gone = (set(ALLOWED_TITLES) | set(EXCLUDED) | NOT_A_SETTING) - panel_keys()
+    # IsMetric moved to the device panel; the phone still serves it.
+    moved = panel_keys(("selfdrive/ui/mici/layouts/settings/device/device_layout.py",)) & {"IsMetric"}
+    gone = (set(ALLOWED_TITLES) | set(EXCLUDED) | NOT_A_SETTING) - panel_keys() - moved
     assert not gone, f"{sorted(gone)} are no longer on mici's toggles panel: take each out of phone_bridge_settings.py"
 
   def test_a_key_is_not_both_allowed_and_excluded(self):

@@ -102,8 +102,7 @@ class TestUpdatedManualOnly(OpenpilotTestCase):
     p.put("RouteCount", 200, block=True)
     p.put("LastUpdateUptimeOnroad", 0.0, block=True)
     p.put("LastUpdateRouteCount", 0, block=True)
-    with mock.patch.object(updated, "run", side_effect=updated.subprocess.CalledProcessError(1, "git")), \
-         mock.patch.object(updated, "get_build_metadata"):
+    with mock.patch.object(updated, "run", side_effect=updated.subprocess.CalledProcessError(1, "git")):
       for manual_only in (False, True):
         p.put_bool("UpdaterManualOnly", manual_only, block=True)
         updated.Updater().set_params(False, 1, None)
