@@ -33,7 +33,7 @@ MAP_SOURCE_DESCRIPTIONS = [
 ]
 
 SPEED_LIMIT_MODE_BUTTONS = [tr("Off"), tr("Info"), tr("Warning"), tr("Assist")]
-SPEED_LIMIT_OFFSET_TYPE_BUTTONS = [tr("None"), tr("Fixed"), tr("%")]
+SPEED_LIMIT_OFFSET_TYPE_BUTTONS = [tr("None"), tr("Fixed"), tr("%"), tr("Per Speed")]
 
 SPEED_LIMIT_MODE_DESCRIPTIONS = [
   tr("Off: Disables the Speed Limit functions."),
@@ -46,6 +46,7 @@ SPEED_LIMIT_OFFSET_DESCRIPTIONS = [
   tr("None: No Offset"),
   tr("Fixed: Adds a fixed offset [Speed Limit + Offset]"),
   tr("Percent: Adds a percent offset [Speed Limit + (Offset % Speed Limit)]"),
+  tr("Per Speed: Configure offsets for each speed range in sunnylink"),
 ]
 
 
@@ -344,7 +345,7 @@ class SpeedLimitSettingsLayout(Widget):
       self._speed_limit_mode.action_item.set_enabled_buttons(None)
 
     offset_type = ui_state.params.get("SpeedLimitOffsetType", return_default=True)
-    self._speed_limit_value_offset.set_visible(offset_type != int(SpeedLimitOffsetType.off))
+    self._speed_limit_value_offset.set_visible(offset_type in (SpeedLimitOffsetType.fixed, SpeedLimitOffsetType.percentage))
 
   def _render(self, rect):
     if self._current_panel == PanelType.POLICY:

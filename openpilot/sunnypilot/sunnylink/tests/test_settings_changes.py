@@ -554,7 +554,8 @@ class TestKoreaSectionsOnCruise(OpenpilotTestCase):
     section = _find_section(schema, "cruise", "speed_limits")
     keys = [item["key"] for sub_panel in section["sub_panels"] for item in sub_panel["items"]]
     assert keys == ["SpeedLimitMode", "SpeedLimitPolicy", "MapDataSource", "SpeedLimitOffsetType",
-                    "SpeedLimitValueOffset", "TeslaAutoSpeedLimitAssist", "TeslaAutoSpeedLimitRoadMode",
+                    "SpeedLimitValueOffset", "SpeedLimitOffsetBelow50", "SpeedLimitOffset60", "SpeedLimitOffset70",
+                    "SpeedLimitOffset80", "SpeedLimitOffsetAbove90", "TeslaAutoSpeedLimitAssist", "TeslaAutoSpeedLimitRoadMode",
                     "TeslaAutoSpeedLimitDelay", "TeslaAutoSpeedLimitMax"], keys
 
 

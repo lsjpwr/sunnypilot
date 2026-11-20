@@ -5,6 +5,7 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 import time
+from bisect import bisect_right
 
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import custom
@@ -23,6 +24,15 @@ ALL_SOURCES = tuple(SpeedLimitSource.schema.enumerants.values())
 
 # km/h. School zones and the like: RoadLimitMode.low_zones follows a limit this low or lower.
 LOW_ZONE_MAX_KPH = 30
+
+PER_SPEED_OFFSET_KEYS = (
+  "SpeedLimitOffsetBelow50",
+  "SpeedLimitOffset60",
+  "SpeedLimitOffset70",
+  "SpeedLimitOffset80",
+  "SpeedLimitOffsetAbove90",
+)
+PER_SPEED_OFFSET_THRESHOLDS = (50, 70, 80, 90)
 
 
 class SpeedLimitResolver:
@@ -71,6 +81,7 @@ class SpeedLimitResolver:
       self.params
     )
     self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
+    self.per_speed_offsets = self._read_per_speed_offsets()
     self.map_source = self.params.get("MapDataSource", return_default=True)
 
     self.speed_limit = 0.
@@ -100,7 +111,11 @@ class SpeedLimitResolver:
       self.is_metric = self.params.get_bool("IsMetric")
       self.offset_type = self.params.get("SpeedLimitOffsetType", return_default=True)
       self.offset_value = self.params.get("SpeedLimitValueOffset", return_default=True)
+      self.per_speed_offsets = self._read_per_speed_offsets()
       self.map_source = self.params.get("MapDataSource", return_default=True)
+
+  def _read_per_speed_offsets(self) -> tuple[int, ...]:
+    return tuple(get_sanitize_int_param(key, -30, 30, self.params) for key in PER_SPEED_OFFSET_KEYS)
 
   @property
   def low_zone_limit_final(self) -> float:
@@ -123,6 +138,12 @@ class SpeedLimitResolver:
       return float(self.offset_value * (CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS))
     elif self.offset_type == OffsetType.percentage:
       return float(self.offset_value * 0.01 * limit)
+    elif self.offset_type == OffsetType.per_speed:
+      if limit <= 0.:
+        return 0.
+      unit = CV.KPH_TO_MS if self.is_metric else CV.MPH_TO_MS
+      bucket = bisect_right(tuple(speed * unit for speed in PER_SPEED_OFFSET_THRESHOLDS), limit)
+      return float(self.per_speed_offsets[bucket] * unit)
     else:
       raise NotImplementedError("Offset not supported")
 

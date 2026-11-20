@@ -199,3 +199,22 @@ class TestLowZoneLimit(OpenpilotTestCase):
 
   def test_over_30_is_not_a_zone(self):
     assert self.zone_kph(40, 40) == 0.
+
+
+  def test_per_speed_offset_uses_the_confirmed_low_zone_limit(self):
+    params = Params()
+    params.put("SpeedLimitOffsetType", int(OffsetType.per_speed), block=True)
+    params.put("SpeedLimitOffsetBelow50", -2, block=True)
+    self.resolver = SpeedLimitResolver()
+    self.resolver.speed_limit = 80 * CV.KPH_TO_MS
+    self.assertAlmostEqual(self.resolver._get_speed_limit_offset(), 15 * CV.KPH_TO_MS)
+    self.assertAlmostEqual(self.zone_kph(20, 30), 28.)
+
+  def test_per_speed_boundaries_follow_the_selected_units(self):
+    params = Params()
+    params.put("SpeedLimitOffsetType", int(OffsetType.per_speed), block=True)
+    params.put_bool("IsMetric", False, block=True)
+    resolver = SpeedLimitResolver()
+    for limit, offset in ((49, 0), (50, 5), (69, 5), (70, 10), (80, 15), (90, 20)):
+      with self.subTest(limit=limit):
+        self.assertAlmostEqual(resolver._offset_for(limit * CV.MPH_TO_MS), offset * CV.MPH_TO_MS)
