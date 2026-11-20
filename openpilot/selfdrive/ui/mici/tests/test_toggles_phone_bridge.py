@@ -21,7 +21,7 @@ class TestPhoneBridgeToggles(OpenpilotTestCase):
     gui_app.init_window("test_phone_bridge_toggles")
     self.addCleanup(gui_app.close)
 
-    from openpilot.selfdrive.ui.mici.layouts.settings.toggles import TogglesLayoutMici
+    from openpilot.selfdrive.ui.mici.layouts.settings.driving import DrivingLayoutMici
     from openpilot.selfdrive.ui.ui_state import ui_state
 
     # ui_state.params is a process-wide singleton: see _ensure_params_dir in test_toggles_api_key.py
@@ -31,7 +31,7 @@ class TestPhoneBridgeToggles(OpenpilotTestCase):
 
     original_started = ui_state.started
     self.addCleanup(setattr, ui_state, "started", original_started)
-    return TogglesLayoutMici(), ui_state, gui_app
+    return DrivingLayoutMici(), ui_state, gui_app
 
   def test_the_switch_only_moves_while_parked(self):
     layout, ui_state, _ = self._layout()
@@ -67,7 +67,7 @@ class TestPhoneBridgeToggles(OpenpilotTestCase):
     layout._pair_btn._click_callback()
     dialog = gui_app._nav_stack[-1]
 
-    import openpilot.selfdrive.ui.mici.layouts.settings.toggles as toggles
+    import openpilot.selfdrive.ui.mici.layouts.settings.driving as toggles
     with patch.object(toggles.time, "monotonic", return_value=dialog._until - 1):
       dialog._update_state()
     self.assertFalse(dialog.is_dismissing)

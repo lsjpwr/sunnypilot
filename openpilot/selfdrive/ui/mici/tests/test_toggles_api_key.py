@@ -72,7 +72,7 @@ class TestApiKeyCallback(OpenpilotTestCase):
     gui_app.init_window("test_api_key_callback")
     self.addCleanup(gui_app.close)
 
-    from openpilot.selfdrive.ui.mici.layouts.settings.toggles import TogglesLayoutMici
+    from openpilot.selfdrive.ui.mici.layouts.settings.driving import DrivingLayoutMici
     from openpilot.selfdrive.ui.ui_state import ui_state
 
     _ensure_params_dir(self, ui_state)
@@ -88,11 +88,11 @@ class TestApiKeyCallback(OpenpilotTestCase):
         ui_state.params.remove("KoreaMapApiKey")
     self.addCleanup(_restore)
 
-    def submit(text: str) -> TogglesLayoutMici:
+    def submit(text: str) -> DrivingLayoutMici:
       """Open a fresh settings screen (label reflects current param state, like a
       real navigation to it would) and drive the actual dialog confirm path."""
       stored = ui_state.params.get("KoreaMapApiKey")
-      layout = TogglesLayoutMici()
+      layout = DrivingLayoutMici()
       layout._api_key_btn._click_callback()  # tap "speed camera API key" -> pushes the real BigInputDialog
       dialog = gui_app._nav_stack[-1]
       if stored:
@@ -144,7 +144,7 @@ class TestKoreaModeGating(OpenpilotTestCase):
     gui_app.init_window("test_korea_mode_gating")
     self.addCleanup(gui_app.close)
 
-    from openpilot.selfdrive.ui.mici.layouts.settings.toggles import TogglesLayoutMici
+    from openpilot.selfdrive.ui.mici.layouts.settings.driving import DrivingLayoutMici
     from openpilot.selfdrive.ui.ui_state import ui_state
     from openpilot.sunnypilot.mapd import MapSource
 
@@ -162,7 +162,7 @@ class TestKoreaModeGating(OpenpilotTestCase):
     # hold that fixed so this test isolates the MapDataSource dimension only.
     ui_state.started = False
 
-    layout = TogglesLayoutMici()
+    layout = DrivingLayoutMici()
     korea_nav_toggle = dict(layout._refresh_toggles)["KoreaExternalNavEnabled"]
 
     ui_state.params.put("MapDataSource", int(MapSource.osm), block=True)
@@ -191,7 +191,7 @@ class TestKoreaModeGating(OpenpilotTestCase):
     gui_app.init_window("test_camera_kind_toggles")
     self.addCleanup(gui_app.close)
 
-    from openpilot.selfdrive.ui.mici.layouts.settings.toggles import TogglesLayoutMici
+    from openpilot.selfdrive.ui.mici.layouts.settings.driving import DrivingLayoutMici
     from openpilot.selfdrive.ui.ui_state import ui_state
     from openpilot.sunnypilot.mapd import MapSource
 
@@ -205,7 +205,7 @@ class TestKoreaModeGating(OpenpilotTestCase):
       ui_state.started = original_started
     self.addCleanup(_restore)
 
-    layout = TogglesLayoutMici()
+    layout = DrivingLayoutMici()
     toggles = dict(layout._refresh_toggles)
     keys = ("KoreaCameraSpeedEnabled", "KoreaCameraSignalEnabled", "KoreaCameraSectionEnabled", "KoreaCameraZoneEnabled",
             "KoreaCameraMobileExclude")
