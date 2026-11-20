@@ -34,7 +34,7 @@ def solve(mpc: LongitudinalMpc, v_ego: float, d_rel: float, v_lead: float) -> np
   """Run one MPC tick and return a copy of the obstacle positions it was handed."""
   mpc.set_weights()
   mpc.set_cur_state(v_ego, 0.)
-  mpc.update(radar_state(d_rel, v_lead))
+  mpc.update(None, radar_state(d_rel, v_lead))
   return np.array(mpc.params[:, 2])
 
 

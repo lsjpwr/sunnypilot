@@ -3,7 +3,7 @@ import time
 from openpilot.cereal import log
 
 from openpilot.system.ui.widgets.scroller import NavScroller
-from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigToggle, BigParamControl, BigMultiParamToggle
+from openpilot.selfdrive.ui.mici.widgets.button import BigButton, BigParamControl, BigMultiParamToggle
 from openpilot.selfdrive.ui.mici.widgets.dialog import BigDialog, BigInputDialog
 from openpilot.system.ui.lib.application import gui_app
 from openpilot.selfdrive.ui.layouts.settings.common import restart_needed_callback
@@ -102,9 +102,9 @@ class DrivingLayoutMici(NavScroller):
     self._scroller.add_widgets([
       self._personality_toggle,
       self._initial_cruise_speed,
-      ldw_toggle,
       always_on_dm_toggle,
       self._dm_mode_toggle,
+      ldw_toggle,
       record_front,
       record_mic,
       enable_openpilot,

@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from opendbc.car.tesla.interface import CarInterface
 from opendbc.car.tesla.values import CAR
@@ -10,6 +11,13 @@ from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
+
+
+class TimestampedMessages(dict):
+  def __init__(self, messages, model_time):
+    super().__init__(messages)
+    self.logMonoTime = {"modelV2": model_time}
 
 
 class TestLongitudinalSmoothing(OpenpilotTestCase):
@@ -101,6 +109,35 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
         planner.update(sm)
         self.assertLess(planner.output_a_target, previous - 0.1, "Lead braking must exceed the comfort step on the same tick")
         self.assertLess(planner.output_a_target, 0.0)
+
+  def test_mpc_matches_the_trajectory_to_the_radard_frame(self):
+    planner, sm = self._planner_and_sm(60.0, False, 1.0)
+    maneuver = Maneuver("approach", 10., initial_speed=16.67, initial_distance_lead=45.,
+                        speed_lead_values=[15., 0.], lead_relevancy=True)
+    lead_messages = maneuver._make_messages(0)
+    sm["modelV2"].leadsV3 = lead_messages["modelV2"].leadsV3
+    sm["radarState"] = lead_messages["radarState"]
+    sm["radarState"].mdMonoTime = 100
+
+    with patch.object(planner.mpc, "update", wraps=planner.mpc.update) as update:
+      planner.update(TimestampedMessages(sm, 100))
+      self.assertIs(update.call_args.args[0], sm["modelV2"])
+      planner.update(TimestampedMessages(sm, 101))
+      self.assertIsNone(update.call_args.args[0])
+
+  def test_aggressive_boost_uses_only_one_implementation(self):
+    planner, sm = self._planner_and_sm(60.0, False, -0.4)
+    sm["selfdriveState"].personality = "aggressive"
+    with patch.object(planner.accel_boost_sp, "update_params"), patch.object(planner.accel_boost_sp, "update", return_value=-0.35) as boost:
+      planner.accel_boost_sp.enabled = False
+      planner.update(sm)
+      self.assertAlmostEqual(planner.output_a_target, -0.3, places=6)
+      boost.assert_not_called()
+
+      planner.accel_boost_sp.enabled = True
+      planner.update(sm)
+      self.assertAlmostEqual(boost.call_args.args[1], -0.4, places=6)
+      self.assertAlmostEqual(planner.output_a_target, -0.35, places=6)
 
   def test_low_speed_e2e_exit_releases_stop_and_returns_to_pid(self):
     planner, sm = self._planner_and_sm(0.36, False, 3.5)

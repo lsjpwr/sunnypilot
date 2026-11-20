@@ -3,6 +3,7 @@ import numpy as np
 
 import openpilot.cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
@@ -23,6 +24,7 @@ J_CRUISE_BP = [0., 10.0, 25., 40.]
 # their a_target), so -0.5 caps their slowdowns: closed loop, SCC-Map 100->60 km/h at 0.6 m/s^2 arrives 10.2 km/h
 # over and a 1.2 m/s^2 curve 33.8 km/h over, against 0.2 and 7.5 at -1.2 (test_cruise_min_closed_loop.py).
 A_CRUISE_MIN = -1.2
+AGGRESSIVE_ACCEL_BOOST = 0.1  # m/s^2
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
 
@@ -57,6 +59,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     LongitudinalPlannerSP.update(self, sm)
 
     v_ego = sm['carState'].vEgo
+    personality = sm['selfdriveState'].personality
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
     v_cruise = v_cruise_kph * CV.KPH_TO_MS
     if sm['controlsState'].forceDecel:
@@ -89,12 +92,16 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     j_cruise = np.interp(v_ego, J_CRUISE_BP, J_CRUISE_VALS)
     a_target = np.clip(a_target, a_prev - j_cruise * self.dt, a_prev + j_cruise * self.dt)
 
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
+    self.mpc.set_weights(prev_accel_constraint, personality=personality)
     if self.CP.openpilotLongitudinalControl:
       self.mpc.set_cur_state(self.v_desired_filter.x, a_target)
     else:
       self.mpc.set_cur_state(v_ego, sm['carState'].aEgo)
-    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality)
+    radar_state = sm['radarState']
+    model_time = getattr(sm, 'logMonoTime', {}).get('modelV2', 0)
+    # A newer model frame can arrive while SubMaster drains the sockets.
+    same_model_frame = not model_time or not radar_state.mdMonoTime or radar_state.mdMonoTime == model_time
+    self.mpc.update(sm['modelV2'] if same_model_frame else None, radar_state, personality=personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -110,12 +117,18 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
                                               action_t=action_t)
     output_should_stop_mpc = should_stop(v_ego, output_a_target_mpc)
     # When SCC already sets a slowdown target, keep the model's acceleration unmodified.
-    if self.scc.map.is_active or self.scc.vision.is_active:
+    scc_active = self.scc.map.is_active or self.scc.vision.is_active
+    if scc_active:
       self.curve_speed.reset()
       curve_offset = 0.
     else:
       curve_offset = self.curve_speed.update(sm['modelV2'], sm['vehicleParameters'].roll)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration + curve_offset
+    if (personality == log.LongitudinalPersonality.aggressive and not self.accel_boost_sp.enabled
+        and not scc_active and curve_offset == 0.):
+      speed_scale = np.interp(v_ego, [5.0, 10.0], [0.0, 1.0])
+      accel_scale = np.interp(output_a_target_e2e, [-1.0, -0.5], [0.0, 1.0])
+      output_a_target_e2e += AGGRESSIVE_ACCEL_BOOST * speed_scale * accel_scale
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     # update_targets reseeds self.output_a_target with the SCC/SLA target; the cruise law's bound is last frame's output
@@ -148,7 +161,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     longitudinalPlan.accels = self.a_desired_trajectory.tolist()
     longitudinalPlan.jerks = self.j_desired_trajectory.tolist()
 
-    longitudinalPlan.hasLead = sm['radarState'].leadOne.present
+    longitudinalPlan.hasLead = sm['radarState'].leadOne.present or sm['radarState'].leadTwo.present
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
     longitudinalPlan.fcw = self.fcw
 
