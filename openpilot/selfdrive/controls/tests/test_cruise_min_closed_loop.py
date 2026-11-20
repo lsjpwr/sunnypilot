@@ -15,6 +15,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 import openpilot.selfdrive.controls.lib.longitudinal_planner as lp
+from openpilot.selfdrive.test.longitudinal_maneuvers.maneuver import Maneuver
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.map_controller import allowed_speed
 
@@ -93,10 +94,30 @@ class TestCruiseMinClosedLoop(OpenpilotTestCase):
     arrive, _, _ = run(lp.A_CRUISE_MIN, start, fn, d)
     self.assertLessEqual(arrive, target + ARRIVAL_MARGIN_KPH)
 
+  def test_upstream_curve_braking_yields_to_an_active_scc(self):
+    Params().put_bool("AccelBoostSP", False, block=True)
+    CP = CarInterface.get_non_essential_params(CAR.TESLA_MODEL_Y)
+    CP_SP = CarInterface.get_non_essential_params_sp(CP, CAR.TESLA_MODEL_Y)
+    CP.openpilotLongitudinalControl = True
+    sm = Maneuver("curve", 1., initial_speed=20., cruise_values=[30., 30.])._make_messages(0)
+    sm["modelV2"].action.desiredAcceleration = 0.
+    sm["modelV2"].position.t = [1.]
+    sm["modelV2"].velocity.x = [20.]
+    sm["modelV2"].orientationRate.z = [0.2]
+
+    for source in ("map", "vision"):
+      with self.subTest(source=source), patch.object(LongitudinalPlannerSP, "update_targets", return_value=(30., 0.)):
+        planner = lp.LongitudinalPlanner(CP, CP_SP, init_v=20.)
+        planner.update(sm)
+        self.assertAlmostEqual(planner.output_a_target, -0.5 * DT_MDL)
+        getattr(planner.scc, source).is_active = True
+        planner.update(sm)
+        self.assertAlmostEqual(planner.output_a_target, 0.)
+
 
 if __name__ == "__main__":
   for name, (start, target, (fn, d), design) in CASES.items():
     for a_min in (-0.5, -1.2):
       arrive, peak, t = run(a_min, start, fn, d)
-      print(f"{name:28s} A_CRUISE_MIN={a_min:+.1f}  arrive={arrive:5.1f} km/h (target {target}, over {arrive - target:+5.1f})"
-            f"  peak decel={peak:+.2f} m/s^2 (design -{design})  over {d:.0f} m in {t:.1f} s")
+      print(f"{name:28s} A_CRUISE_MIN={a_min:+.1f}  arrive={arrive:5.1f} km/h (target {target}, over {arrive - target:+5.1f})",
+            f"  peak decel={peak:+.2f} m/s^2 (design -{design})  over {d:.0f} m in {t:.1f} s", sep="")
