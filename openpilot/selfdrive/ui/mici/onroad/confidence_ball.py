@@ -71,7 +71,9 @@ class ConfidenceBall(Widget, ConfidenceBallSP):
       engaged = (rl.Color(255, 0, 21, 255), rl.Color(255, 0, 89, 255))
     override = (rl.Color(255, 255, 255, 255), rl.Color(82, 82, 82, 255))
     disengaged = (rl.Color(102, 102, 102, 255), rl.Color(26, 26, 26, 255))
-    top_dot_color, bottom_dot_color = (status_fade.color({UIStatus.ENGAGED: e, UIStatus.OVERRIDE: o, UIStatus.DISENGAGED: d})
+    lat_only, long_only = self.get_lat_long_dot_colors()
+    top_dot_color, bottom_dot_color = (status_fade_mads.color({UIStatus.ENGAGED: e, UIStatus.OVERRIDE: o, UIStatus.DISENGAGED: d,
+                                                              UIStatus.LAT_ONLY: lat_only, UIStatus.LONG_ONLY: long_only})
                                        for e, o, d in zip(engaged, override, disengaged, strict=True))
 
     draw_circle_gradient(dot_x, dot_height, status_dot_radius,
