@@ -18,7 +18,6 @@ from types import SimpleNamespace
 from unittest import mock
 
 import openpilot.cereal.messaging as messaging
-from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.parameterized import parameterized
 from openpilot.common.params import Params

@@ -16,6 +16,7 @@ from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (LEAD_DANGER_FACTOR, LongitudinalMpc,
                                                                             STOP_DISTANCE)
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.stop_distance import (CONGESTION_LEAD_V_ENTER, CONGESTION_LEAD_V_EXIT,
                                                                        OFFSET_SLEW, STANDSTILL_V, STOP_DISTANCE_MAX,
                                                                        STOP_DISTANCE_MIN, StopDistanceController)
@@ -288,6 +289,7 @@ def planner_sm(v_ego: float, v_lead: float) -> MockSubMaster:
   model.modelV2.orientationRate.z = [0.01] * 33   # a straight path divides by zero in SCC vision
   model.modelV2.velocity.x = [v_ego] * 33
   model.modelV2.position.x = [float(i) for i in range(33)]
+  model.modelV2.position.t = ModelConstants.T_IDXS  # commaai's AccelBoost reads the plan's average speed
   services['modelV2'] = model.modelV2.as_reader()
 
   return MockSubMaster(services)
