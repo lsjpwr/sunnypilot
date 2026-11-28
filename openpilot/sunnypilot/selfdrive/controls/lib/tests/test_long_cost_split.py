@@ -6,12 +6,10 @@ See the LICENSE.md file in the root directory for more details.
 """
 import numpy as np
 
-from openpilot.cereal import log
 import openpilot.cereal.messaging as messaging
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (COST_DIM, COST_E_DIM, LongitudinalMpc,
-                                                                            PARAM_DIM, T_IDXS)
-from openpilot.selfdrive.modeld.constants import ModelConstants
+                                                                            PARAM_DIM)
 
 # Recorded from the solver before the split existed. The neutral defaults have to reproduce
 # these: they are the only baseline the change can be rolled back to.
@@ -54,7 +52,7 @@ def drive(mpc: LongitudinalMpc, v_ego: float, d_rel: float, v_lead: float, ticks
   for _ in range(ticks):
     mpc.set_weights()
     mpc.set_cur_state(v_ego, 0.)
-    mpc.update(None, reader)
+    mpc.update(reader)
   return mpc
 
 
@@ -131,7 +129,7 @@ class TestTheSplit(OpenpilotTestCase):
     for _ in range(5):
       mpc.set_weights()
       mpc.set_cur_state(30., 0.)
-      mpc.update(None, reader)
+      mpc.update(reader)
 
     # The acceleration bound is a slack constraint, not a hard box: the stock solver already
     # overshoots it by about 5e-6. 1e-3 is well clear of that and still fails loudly on a runaway.
@@ -144,51 +142,10 @@ class TestTheSplit(OpenpilotTestCase):
     # transposed column order would go unnoticed -- silently, and only at non-neutral factors.
     # leadTwo is nearer and slower here, so its obstacle wins every node.
     mpc = LongitudinalMpc()
-    mpc.update(None, radar_state(80., 28., lead_two=(40., 12.)))
+    mpc.update(radar_state(80., 28., lead_two=(40., 12.)))
 
     np.testing.assert_allclose(mpc.params[:,6], mpc.params[:,6][0], atol=1e-9)
     self.assertAlmostEqual(mpc.params[0,6], 12., places=6)
-
-  def test_the_velocity_cost_follows_the_accepted_vision_lead(self):
-    radar = radar_state(80., 28., lead_two=(40., 12.)).as_builder()
-    radar.leadTwo.modelProb = 0.51  # radard can confirm a Tesla vision lead through DAS_object
-    model = log.ModelDataV2()
-    lead = model.init('leadsV3', 2)[1]
-    lead.x = [100., 120., 138., 154., 168., 180.]
-    lead.v = [22., 21., 20., 19., 18., 17.]
-    mpc = tuned(0.5, 1.0)
-    mpc.set_cur_state(15., 0.)
-    mpc.update(model, radar)
-
-    expected_v = np.interp(T_IDXS, ModelConstants.LEAD_T_IDXS, [12., 11., 10., 9., 8., 7.])
-    np.testing.assert_allclose(mpc.params[:,6], expected_v)
-    self.assertEqual(mpc.solution_status, 0)
-
-  def test_missing_invalid_and_unmatched_vision_keep_the_existing_extrapolation(self):
-    radar = radar_state(45., 15.).as_builder()
-    radar.leadOne.aLeadK = -1.
-    radar.leadOne.aLeadTau = 1.5
-    mpc = LongitudinalMpc()
-    mpc.set_cur_state(20., 0.)
-    mpc.update(None, radar)
-    expected = mpc.params[:,2].copy()
-    radar.leadOne.modelProb = 0.9
-    model = log.ModelDataV2()
-    mpc.update(model, radar)
-    np.testing.assert_allclose(mpc.params[:,2], expected)
-
-    lead = model.init('leadsV3', 1)[0]
-    for positions in ([0.], [0., 0., 0., float('nan'), 0., 0.]):
-      with self.subTest(positions=positions):
-        lead.x = positions
-        lead.v = [0.] * 6
-        mpc.update(model, radar)
-        np.testing.assert_allclose(mpc.params[:,2], expected)
-
-    lead.x = [0.] * 6
-    radar.leadOne.modelProb = 0.
-    mpc.update(model, radar)
-    np.testing.assert_allclose(mpc.params[:,2], expected)
 
   def test_stock_spacing_with_the_top_velocity_weight_converges(self):
     # The other reachable corner of the offered range: stock coupling plus the maximum extra

@@ -3,11 +3,11 @@ import numpy as np
 
 import openpilot.cereal.messaging as messaging
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
-from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.selfdrive.controls.lib.accel_boost import AccelBoost
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeed
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
@@ -24,7 +24,6 @@ J_CRUISE_BP = [0., 10.0, 25., 40.]
 # their a_target), so -0.5 caps their slowdowns: closed loop, SCC-Map 100->60 km/h at 0.6 m/s^2 arrives 10.2 km/h
 # over and a 1.2 m/s^2 curve 33.8 km/h over, against 0.2 and 7.5 at -1.2 (test_cruise_min_closed_loop.py).
 A_CRUISE_MIN = -1.2
-AGGRESSIVE_ACCEL_BOOST = 0.1  # m/s^2
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 
 
@@ -44,6 +43,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc)
     self.fcw = False
     self.dt = dt
+    self.accel_boost = AccelBoost()
     self.curve_speed = CurveSpeed(dt)
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
@@ -77,6 +77,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.v_desired_filter.x = v_ego
       self.output_a_target = np.clip(sm['carState'].aEgo, ACCEL_MIN, ACCEL_MAX)
       self.a_cruise = self.output_a_target
+      self.accel_boost.reset()
       self.curve_speed.reset()
 
     # Prevent divergence, smooth in current v_ego
@@ -97,11 +98,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       self.mpc.set_cur_state(self.v_desired_filter.x, a_target)
     else:
       self.mpc.set_cur_state(v_ego, sm['carState'].aEgo)
-    radar_state = sm['radarState']
-    model_time = getattr(sm, 'logMonoTime', {}).get('modelV2', 0)
-    # A newer model frame can arrive while SubMaster drains the sockets.
-    same_model_frame = not model_time or not radar_state.mdMonoTime or radar_state.mdMonoTime == model_time
-    self.mpc.update(sm['modelV2'] if same_model_frame else None, radar_state, personality=personality)
+    self.mpc.update(sm['radarState'], personality=personality)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -124,17 +121,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     else:
       curve_offset = self.curve_speed.update(sm['modelV2'], sm['vehicleParameters'].roll)
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration + curve_offset
-    if (personality == log.LongitudinalPersonality.aggressive and not self.accel_boost_sp.enabled
-        and not scc_active and curve_offset == 0.):
-      speed_scale = np.interp(v_ego, [5.0, 10.0], [0.0, 1.0])
-      accel_scale = np.interp(output_a_target_e2e, [-1.0, -0.5], [0.0, 1.0])
-      output_a_target_e2e += AGGRESSIVE_ACCEL_BOOST * speed_scale * accel_scale
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     # update_targets reseeds self.output_a_target with the SCC/SLA target; the cruise law's bound is last frame's output
     self.a_cruise = get_cruise_accel(v_cruise, v_ego, self.a_cruise, a_prev, self.dt)
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
 
+    # sunnypilot: AccelBoostSP replaces commaai's boost while it is on, and neither boost rides over an SCC slowdown.
+    # commaai's boost updates every frame so its filters are current when it takes over.
+    boosted_e2e = self.accel_boost.update(sm, output_a_target_e2e, curve_offset)
+    if not self.accel_boost_sp.enabled and not scc_active:
+      output_a_target_e2e = boosted_e2e
     output_a_target_e2e = self.update_accel_boost(sm, output_a_target_e2e, output_a_target_mpc, self.a_cruise)
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
@@ -161,7 +158,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     longitudinalPlan.accels = self.a_desired_trajectory.tolist()
     longitudinalPlan.jerks = self.j_desired_trajectory.tolist()
 
-    longitudinalPlan.hasLead = sm['radarState'].leadOne.present or sm['radarState'].leadTwo.present
+    longitudinalPlan.hasLead = sm['radarState'].leadOne.present
     longitudinalPlan.longitudinalPlanSource = self.mpc.source
     longitudinalPlan.fcw = self.fcw
 
