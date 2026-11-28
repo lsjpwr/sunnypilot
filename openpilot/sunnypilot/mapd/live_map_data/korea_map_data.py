@@ -25,14 +25,12 @@ coordinates differ from the database's, and the phone knows neither a zone nor w
 """
 import datetime
 import json
-import math
 import os
 import platform
 import time
 import urllib.parse
 from dataclasses import dataclass
 
-from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.hardware.hw import Paths
 from openpilot.common.params import Params
@@ -399,12 +397,13 @@ class KoreaMapData(BaseMapData):
         self._last_written_destination = payload
 
   def update_location(self) -> None:
-    location = self.sm['liveLocationKalman']
-    self.localizer_valid = (location.status == log.LiveLocationKalman.Status.valid) and location.positionGeodetic.valid
+    location = self.sm['gpsLocationSP']
+    # gps_fuser sets hasFix exactly when the message is valid: a fused fix, or a raw one under 2 s old
+    self.localizer_valid = location.hasFix
 
     if self.localizer_valid:
-      self.last_bearing = math.degrees(location.calibratedOrientationNED.value[2]) % 360.
-      self.last_position = Coordinate(location.positionGeodetic.value[0], location.positionGeodetic.value[1])
+      self.last_bearing = location.bearingDeg % 360.
+      self.last_position = Coordinate(location.latitude, location.longitude)
 
     self.link = None
     self.camera = None

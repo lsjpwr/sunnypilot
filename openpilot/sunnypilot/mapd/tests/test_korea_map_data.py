@@ -132,12 +132,12 @@ def make_bump_data(bump=None, enabled=True, arch_kph=25, trapezoid_kph=35, posit
 
 
 def location_message():
-  """A default liveLocationKalman: status uninitialized, positionGeodetic invalid.
+  """A default gpsLocationSP: no fix.
 
   That leaves last_position as whatever the test preset, which is what we want -- this
   test is about the reload call, not about the localizer.
   """
-  return {'liveLocationKalman': messaging.new_message('liveLocationKalman').liveLocationKalman}
+  return {'gpsLocationSP': messaging.new_message('gpsLocationSP').gpsLocationSP}
 
 
 class TestPublishedValues(unittest.TestCase):
@@ -628,7 +628,7 @@ class TestTickOrdering(unittest.TestCase):
     update_location, after the early return, would leave MapTargetVelocities unwritten (and
     so stale) for that entire window instead of the empty list SCC-Map is safe to read."""
     data = make_data()
-    data.sm = StubSM({'liveLocationKalman': messaging.new_message('liveLocationKalman').liveLocationKalman})
+    data.sm = StubSM({'gpsLocationSP': messaging.new_message('gpsLocationSP').gpsLocationSP})
     data.pm = SimpleNamespace(send=lambda *a, **k: None)
     data.read_bump_params = lambda: None  # covered by TestReadBumpParams; irrelevant here
     data.read_camera_params = lambda: None  # covered by TestReadCameraParams; irrelevant here
@@ -722,29 +722,24 @@ class SingleLocationSM:
   would silently shadow that one for every test below it in the file.
   """
 
-  def __init__(self, llk):
-    self._llk = llk
+  def __init__(self, location):
+    self._location = location
 
   def __getitem__(self, key):
-    return self._llk
+    return self._location
 
   def update(self, timeout):
     pass
 
 
-def valid_llk(lat=37.5000, lon=127.0200, heading_deg=90.):
-  return SimpleNamespace(
-    status=log.LiveLocationKalman.Status.valid,
-    gpsOK=True,
-    positionGeodetic=SimpleNamespace(valid=True, value=[lat, lon, 0.]),
-    calibratedOrientationNED=SimpleNamespace(value=[0., 0., math.radians(heading_deg)]),
-  )
+def valid_fix(lat=37.5000, lon=127.0200, heading_deg=90.):
+  return SimpleNamespace(hasFix=True, gpsOK=True, latitude=lat, longitude=lon, bearingDeg=heading_deg)
 
 
 class TestRouteReachesTheLookups(unittest.TestCase):
   def test_the_route_is_handed_to_every_lookup(self):
     data = make_data()
-    data.sm = SingleLocationSM(valid_llk())
+    data.sm = SingleLocationSM(valid_fix())
     data.last_position = Coordinate(37.5000, 127.0200)
     data.last_bearing = 90.
     data.curve_points = []
@@ -768,7 +763,7 @@ class TestRouteReachesTheLookups(unittest.TestCase):
 
   def test_no_route_source_means_an_empty_route(self):
     data = make_data()
-    data.sm = SingleLocationSM(valid_llk())
+    data.sm = SingleLocationSM(valid_fix())
     data.last_position = Coordinate(37.5000, 127.0200)
     data.route_source = None
     data.db = None
@@ -780,7 +775,7 @@ class TestRouteReachesTheLookups(unittest.TestCase):
 
   def test_the_enabled_kinds_reach_next_camera(self):
     data = make_data()
-    data.sm = SingleLocationSM(valid_llk())
+    data.sm = SingleLocationSM(valid_fix())
     data.last_position = Coordinate(37.5000, 127.0200)
     data.camera_kinds = frozenset({CAMERA_ZONE})
 
@@ -801,7 +796,7 @@ class TestRouteReachesTheLookups(unittest.TestCase):
     """Off a route there are two lookups, the sign's and the slowdown's: an excluded camera
     must leave both."""
     data = make_data()
-    data.sm = SingleLocationSM(valid_llk())
+    data.sm = SingleLocationSM(valid_fix())
     data.last_position = Coordinate(37.5000, 127.0200)
     data.camera_exclude = ((37.5000, 127.0223),)
 
@@ -821,7 +816,7 @@ class TestRouteReachesTheLookups(unittest.TestCase):
   def test_off_route_lookups_ignore_the_stored_routes_levels(self):
     """A stored old line cannot filter cameras on the road we are now driving."""
     data = make_data()
-    data.sm = SingleLocationSM(valid_llk())
+    data.sm = SingleLocationSM(valid_fix())
     data.last_position = Coordinate(37.5000, 127.0200)
     route = [(37.5100, 127.0200), (37.5100, 127.0320)]
     spans = [route]
@@ -911,7 +906,7 @@ class TestRecentCameras(unittest.TestCase):
   def drive(self, *slots, exclude=()):
     """One update_location per slot, with next_camera answering that slot's camera (or None)."""
     data = make_data()
-    data.sm = SingleLocationSM(valid_llk())
+    data.sm = SingleLocationSM(valid_fix())
     data.last_position = Coordinate(37.5000, 127.0200)
     data.camera_exclude = exclude
     ahead = [None]
@@ -1223,7 +1218,7 @@ class TestSideRoadCamera(unittest.TestCase):
       data.route_source = SimpleNamespace(latest=lambda: (route, []), set_position=lambda lat, lon: None)
     data.db = KoreaMapDB(cams, links)
     self.addCleanup(data.db.close)
-    data.sm = SingleLocationSM(valid_llk(37.5000, 127.0200, heading_deg=90.))
+    data.sm = SingleLocationSM(valid_fix(37.5000, 127.0200, heading_deg=90.))
     data.last_position = Coordinate(37.5000, 127.0200)
     data.update_location()
     data.publish_targets()
@@ -1546,13 +1541,13 @@ class TestCameraPassHold(unittest.TestCase):
   """Past a camera not known to face the front, its limit holds at the car until camera_pass_hold metres past it:
   a 후면 camera photographs the rear plate after the car has passed."""
 
-  POLE = (37.5000, 127.0204)  # ~35 m east of where valid_llk puts the car
+  POLE = (37.5000, 127.0204)  # ~35 m east of where valid_fix puts the car
   M_PER_DEG_LON = 88200.      # at 37.5 N
 
   def pass_pole(self, camera, hold=60):
     """Two update_locations: next_camera answers the camera, then lets it go."""
     data = make_data()
-    data.sm = SingleLocationSM(valid_llk())
+    data.sm = SingleLocationSM(valid_fix())
     data.camera_pass_hold = hold
     ahead = [camera]
     data.db = SimpleNamespace(
@@ -1650,7 +1645,7 @@ def phone_tick(*navs, starts=(), end=None, near=lambda *a: [], **attrs):
                             cameras_near=near, close=lambda: None)
   for i, nav in enumerate(navs):
     data.external.nav = nav
-    data.sm = SingleLocationSM(valid_llk(*east(30. * i)))
+    data.sm = SingleLocationSM(valid_fix(*east(30. * i)))
     data.update_location()
   return data
 
@@ -1752,7 +1747,7 @@ class TestPhoneItems(unittest.TestCase):
 
   def test_the_phone_still_brakes_when_there_is_no_database(self):
     data = make_data(external=StubExternal(phone_nav(phone_item(limit=50), phone_item("bump", m=80., limit=0))))
-    data.sm = SingleLocationSM(valid_llk(*east(0)))
+    data.sm = SingleLocationSM(valid_fix(*east(0)))
     data.update_location()
     self.assertIsNone(data.db)
     self.assertEqual(data.camera.limit_kph, 50)
@@ -1763,7 +1758,7 @@ class TestPhoneItems(unittest.TestCase):
   def test_the_phone_still_brakes_when_the_database_query_fails(self, exc):
     db = ExplodingDB(exc)
     data = make_data(external=StubExternal(phone_nav(phone_item(limit=50), phone_item("bump", m=80., limit=0))))
-    data.sm = SingleLocationSM(valid_llk(*east(0)))
+    data.sm = SingleLocationSM(valid_fix(*east(0)))
     data.db = db
     data.update_location()
     self.assertIsNone(data.db)
@@ -1773,7 +1768,7 @@ class TestPhoneItems(unittest.TestCase):
 
   def test_no_position_yet_fills_nothing_and_does_not_raise(self):
     data = make_data(external=StubExternal(phone_nav(phone_item(limit=50))))
-    data.sm = location_message()  # uninitialized, so last_position stays unset
+    data.sm = location_message()  # no fix, so last_position stays unset
     data.last_position = None
     data.update_location()
     self.assertIsNone(data.camera)
@@ -1890,7 +1885,7 @@ class TestPhoneCameraMatchesTheDatabase(unittest.TestCase):
 
   def test_without_a_database_the_phones_place_and_values_stand(self):
     data = make_data(external=StubExternal(parsed_nav(entry(100., rear=True, sig=True))))
-    data.sm = SingleLocationSM(valid_llk(*east(0)))
+    data.sm = SingleLocationSM(valid_fix(*east(0)))
     data.update_location()
     self.assertIsNone(data.db)
     self.assertEqual((data.camera.lat, data.camera.lon, data.camera.kind, data.camera.facing),
