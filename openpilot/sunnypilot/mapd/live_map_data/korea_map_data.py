@@ -49,6 +49,7 @@ from openpilot.sunnypilot.mapd.korea.route import RouteSource, curve_targets, di
 from openpilot.sunnypilot.mapd.korea.tesla import TeslaDestinationSource, Trip
 from openpilot.sunnypilot.mapd.live_map_data.base_map_data import BaseMapData, MAX_SPEED_LIMIT
 from openpilot.sunnypilot.navd.helpers import Coordinate
+from openpilot.sunnypilot.selfdrive.locationd.gps_fuser import MAX_BEARING_ACCURACY, MIN_BEARING_SPEED
 
 KOREA_MAP_DIR = Paths.korea_map_root()
 KOREA_CAMERAS_PATH = os.path.join(KOREA_MAP_DIR, "korea_cameras.sqlite")
@@ -402,8 +403,10 @@ class KoreaMapData(BaseMapData):
     self.localizer_valid = location.hasFix
 
     if self.localizer_valid:
-      self.last_bearing = location.bearingDeg % 360.
       self.last_position = Coordinate(location.latitude, location.longitude)
+      # a raw fix's bearing only counts on the fuser's own terms; until one does, keep the last heading (None at start)
+      if location.fused or (location.speed > MIN_BEARING_SPEED and 0. < location.bearingAccuracyDeg < MAX_BEARING_ACCURACY):
+        self.last_bearing = location.bearingDeg
 
     self.link = None
     self.camera = None

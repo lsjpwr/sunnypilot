@@ -127,8 +127,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_cruise = get_cruise_accel(v_cruise, v_ego, self.a_cruise, a_prev, self.dt)
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
 
-    # sunnypilot: AccelBoostSP replaces commaai's boost while it is on, and neither boost rides over an SCC slowdown.
-    # commaai's boost updates every frame so its filters are current when it takes over.
+    # sunnypilot: AccelBoostSP replaces commaai's boost while it is on. commaai's boost stays at zero over an SCC
+    # slowdown, so it ramps back in over ~1 s once SCC lets go; otherwise it updates every frame to be current.
+    if scc_active:
+      self.accel_boost.reset()
     boosted_e2e = self.accel_boost.update(sm, output_a_target_e2e, curve_offset)
     if not self.accel_boost_sp.enabled and not scc_active:
       output_a_target_e2e = boosted_e2e

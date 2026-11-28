@@ -731,8 +731,32 @@ class SingleLocationSM:
     pass
 
 
-def valid_fix(lat=37.5000, lon=127.0200, heading_deg=90.):
-  return SimpleNamespace(hasFix=True, gpsOK=True, latitude=lat, longitude=lon, bearingDeg=heading_deg)
+def valid_fix(lat=37.5000, lon=127.0200, heading_deg=90., fused=True, speed=10., bearing_accuracy_deg=1.):
+  return SimpleNamespace(hasFix=True, gpsOK=True, fused=fused, latitude=lat, longitude=lon, bearingDeg=heading_deg,
+                         speed=speed, bearingAccuracyDeg=bearing_accuracy_deg)
+
+
+class TestBearingFromTheFuser(unittest.TestCase):
+  def bearing_after(self, fix):
+    data = make_data()
+    data.last_bearing = 90.
+    data.sm = SingleLocationSM(fix)
+    data.update_location()
+    self.assertEqual((data.last_position.latitude, data.last_position.longitude), (fix.latitude, fix.longitude))
+    return data.last_bearing
+
+  def test_a_fused_heading_is_taken(self):
+    self.assertEqual(self.bearing_after(valid_fix(37.6, 127.1, heading_deg=200.)), 200.)
+
+  def test_a_raw_bearing_is_taken_on_the_fusers_terms(self):
+    self.assertEqual(self.bearing_after(valid_fix(37.6, 127.1, heading_deg=200., fused=False)), 200.)
+
+  def test_a_raw_bearing_too_slow_or_too_rough_keeps_the_last_heading(self):
+    for fix in (valid_fix(37.6, 127.1, heading_deg=200., fused=False, speed=1.),
+                valid_fix(37.6, 127.1, heading_deg=200., fused=False, bearing_accuracy_deg=45.),
+                valid_fix(37.6, 127.1, heading_deg=200., fused=False, bearing_accuracy_deg=0.)):
+      with self.subTest(speed=fix.speed, accuracy=fix.bearingAccuracyDeg):
+        self.assertEqual(self.bearing_after(fix), 90.)
 
 
 class TestRouteReachesTheLookups(unittest.TestCase):

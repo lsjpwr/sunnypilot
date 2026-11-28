@@ -4,13 +4,15 @@ from unittest.mock import patch
 from opendbc.car.tesla.interface import CarInterface
 from opendbc.car.tesla.values import CAR
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
-from openpilot.cereal import messaging
+from openpilot.cereal import log, messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL, DT_MDL
 from openpilot.common.test import OpenpilotTestCase
 from openpilot.selfdrive.car.cruise import V_CRUISE_UNSET
+from openpilot.selfdrive.controls.lib.accel_boost import get_accel_boost
 from openpilot.selfdrive.controls.lib.longcontrol import LongControl, LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlanner
+from openpilot.selfdrive.modeld.constants import ModelConstants
 
 
 class TestLongitudinalSmoothing(OpenpilotTestCase):
@@ -103,7 +105,7 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
         self.assertLess(planner.output_a_target, previous - 0.1, "Lead braking must exceed the comfort step on the same tick")
         self.assertLess(planner.output_a_target, 0.0)
 
-  def test_accel_boost_uses_only_one_implementation(self):
+  def test_accel_boost_applies_only_one_implementation(self):
     planner, sm = self._planner_and_sm(60.0, False, -0.4)
     sm["selfdriveState"].personality = "aggressive"
     with patch.object(planner.accel_boost_sp, "update_params"), \
@@ -119,6 +121,30 @@ class TestLongitudinalSmoothing(OpenpilotTestCase):
       self.assertAlmostEqual(boost_sp.call_args.args[1], -0.4, places=6)
       self.assertAlmostEqual(planner.output_a_target, -0.35, places=6)
       self.assertEqual(boost.call_count, 2)  # commaai's filters keep running while AccelBoostSP drives
+
+  def test_commaai_boost_ramps_back_in_after_an_scc_slowdown(self):
+    planner, sm = self._planner_and_sm(60.0, False, 0.5)
+    v_ego = sm["carState"].vEgo
+    sm["modelV2"].orientationRate.z = [0.01] * 33  # nearly straight: no curve offset to close the boost's gate
+    sm["modelV2"].position.t = ModelConstants.T_IDXS
+    sm["modelV2"].position.x = [(v_ego + 2.) * t for t in ModelConstants.T_IDXS]  # the plan runs ahead: gate open
+    scc_update = planner.scc.update
+
+    def scc_map_active(*args, **kwargs):
+      scc_update(*args, **kwargs)
+      planner.scc.map.is_active = True
+
+    bias, _ = get_accel_boost(log.LongitudinalPersonality.standard)
+    with patch.object(planner.accel_boost_sp, "update_params"):
+      planner.accel_boost_sp.enabled = False
+      with patch.object(planner.scc, "update", scc_map_active):
+        for _ in range(100):
+          planner.update(sm)
+      planner.update(sm)  # SCC lets go
+      self.assertLess(planner.accel_boost.bias_filter.x, 0.2 * bias)
+      for _ in range(100):
+        planner.update(sm)
+      self.assertAlmostEqual(planner.accel_boost.bias_filter.x, bias, delta=0.01)
 
   def test_low_speed_e2e_exit_releases_stop_and_returns_to_pid(self):
     planner, sm = self._planner_and_sm(0.36, False, 3.5)
